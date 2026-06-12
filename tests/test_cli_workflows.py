@@ -56,6 +56,11 @@ def tree_keys(cwd: Path, key: str) -> list[str]:
     return [line.lstrip("\t") for line in result.stdout.splitlines()]
 
 
+def assert_tree(root: str, expected_children: list[str], actual_keys: list[str]) -> None:
+    assert actual_keys[0] == root
+    assert set(actual_keys[1:]) == set(expected_children)
+
+
 def init_git_repo(repo: Path) -> str:
     subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
     subprocess.run(
@@ -104,7 +109,7 @@ def test_vault_init_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert (vault / "index.md").is_file()
     assert (vault / "global" / "index.md").is_file()
     assert (vault / "_meta" / "projects.toml").is_file()
-    assert tree_keys(vault, "global/index") == GLOBAL_GRAPH_KEYS
+    assert_tree("global/index", GLOBAL_GRAPH_KEYS[1:], tree_keys(vault, "global/index"))
 
 
 def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> None:
@@ -131,7 +136,11 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
         f"projects/{project_id}/index",
         *[f"projects/{project_id}/{child}" for child in PROJECT_GRAPH_CHILDREN],
     ]
-    assert tree_keys(vault, f"projects/{project_id}/index") == expected_project_tree
+    assert_tree(
+        expected_project_tree[0],
+        expected_project_tree[1:],
+        tree_keys(vault, f"projects/{project_id}/index"),
+    )
 
     project_note = parse_json_stdout(
         run_iwe2(

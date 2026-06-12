@@ -36,6 +36,16 @@ MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.CONVENTION: "conventions",
 }
 
+GLOBAL_INDEX_DIRECTORIES: tuple[str, ...] = (
+    "advice",
+    "traps",
+    "workflows",
+    "tools",
+    "style",
+    "facts",
+    "conventions",
+)
+
 VAULT_DIRECTORIES: tuple[Path, ...] = (
     Path("global/advice"),
     Path("global/traps"),
@@ -74,8 +84,9 @@ def init_vault(vault: Path) -> JsonObject:
     run_checked(["iwe", "init"], cwd=vault)
     for relative_dir in VAULT_DIRECTORIES:
         (vault / relative_dir).mkdir(parents=True)
-    write_new_file(vault / "index.md", "# Agent Memory Vault\n")
-    write_new_file(vault / "global" / "index.md", "# Global Memory\n")
+    write_new_file(vault / "index.md", parent_index_body("Agent Memory Vault", ("global",)))
+    write_new_file(vault / "global" / "index.md", parent_index_body("Global Memory", GLOBAL_INDEX_DIRECTORIES))
+    write_section_indexes(vault / "global", GLOBAL_INDEX_DIRECTORIES)
     write_new_file(vault / "_meta" / "projects.toml", tomli_w.dumps({"projects": []}))
     return {"vault": str(vault)}
 
@@ -87,9 +98,11 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
     project_id = project_id_from_remote(remote)
     project_dir = vault / "projects" / project_id
     project_dir.mkdir(parents=True)
-    write_new_file(project_dir / "index.md", f"# {project_id}\n")
+    write_new_file(project_dir / "index.md", parent_index_body(project_id, PROJECT_DIRECTORIES))
     for directory in PROJECT_DIRECTORIES:
         (project_dir / directory).mkdir()
+    write_section_indexes(project_dir, PROJECT_DIRECTORIES)
+    append_index_link(vault / "index.md", project_id, f"projects/{project_id}/index.md")
 
     config = ProjectConfig(
         vault=vault,
@@ -210,6 +223,31 @@ def run_checked(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[s
 def write_new_file(path: Path, content: str) -> None:
     assert not path.exists(), f"refusing to overwrite {path}"
     path.write_text(content, encoding="utf-8")
+
+
+def write_section_indexes(root: Path, sections: Sequence[str]) -> None:
+    for section in sections:
+        write_new_file(root / section / "index.md", leaf_index_body(section_title(section)))
+
+
+def parent_index_body(title: str, children: Sequence[str]) -> str:
+    assert children, "parent index must include at least one child"
+    links = "\n\n".join(f"[{section_title(child)}]({child}/index.md)" for child in children)
+    return f"# {title}\n\n{links}\n"
+
+
+def leaf_index_body(title: str) -> str:
+    return f"# {title}\n"
+
+
+def section_title(section: str) -> str:
+    return section.replace("-", " ").title()
+
+
+def append_index_link(index_path: Path, title: str, target: str) -> None:
+    assert index_path.is_file(), "parent index must exist before linking project"
+    with index_path.open("a", encoding="utf-8") as index_file:
+        index_file.write(f"[{title}]({target})\n")
 
 
 def git_root_for(cwd: Path) -> Path:
