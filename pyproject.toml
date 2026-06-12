@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "iwe2"
+version = "0.1.0"
+description = "IWE-backed Markdown memory vault CLI"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "cyclopts>=3",
+    "pydantic>=2",
+    "python-slugify>=8",
+    "PyYAML>=6",
+    "tomli-w>=1",
+]
+
+[project.scripts]
+iwe2 = "iwe2.cli:app"
+
+[tool.importlinter]
+root_packages = ["iwe2"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "CLI depends inward on operations and models"
+type = "layers"
+layers = [
+    "iwe2.cli",
+    "iwe2.operations",
+    "iwe2.models",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iwe2"]
