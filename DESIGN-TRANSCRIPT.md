@@ -1,7 +1,6 @@
 Is there something like iwe that can be repurposed for an LLM agent memory system? One would want a centralized store instead of per-project stores, where one can initialize it in a project to set up a subfolder in the centralized "vault" and easily scope their queries to either the project or global memories. This allows agents in a project to record repo-specific decisions, traps, workflows, etc, as well as fluidly move more general items "up" into memories, advice, etc that span all projects on a machine. Thus one can version control the entire vault and have a transferable set of memories. One COULD build this from the ground up, but one should also consider either repurposing a tool with nearby functionalities, forking such a tool, composing several tools into a thin wrapper CLI, etc. The goal is to minimize owned code surface while getting the actual needed functionality. Note that most tools advertised as "LLM memory tools" are the wrong paradigm here: they hide memories in databases so that e.g. they can use reranking and embedding techniques, when there are CLI tools that can do this more easily on-the-fly (e.g. semgrep, probe, etc), meaning that one really wants a simple organized managed markdown hierarchy, where the tool has some basic searching/aggregation/filtering capabilities but ultimately allows manual management with standard file system tools and searching with standard CLI tools (e.g. clever greps). One mostly wants a convenience layer on top of what is the agent equivalent of a headless Obsidian vault. Survey, analysis, recommendations?
 
-----------------
-
+---
 
 Yes. The closest fit is **not** a conventional “LLM memory” product. It is a **single central Markdown knowledge graph**, with a thin project-aware CLI wrapper around existing tools. The best base is **IWE**, optionally paired with **zk** or **Probe/ripgrep** for body search.
 
@@ -124,6 +123,7 @@ Before changing architecture, search both project and global memory:
 
 ```bash
 mem search --scope both "<task or subsystem>"
+```
 ````
 
 Record durable repo-specific lessons with:
@@ -204,14 +204,14 @@ A useful frontmatter schema:
 
 ```yaml
 ---
-type: decision        # decision | trap | workflow | fact | advice | convention
-scope: project        # project | global
+type: decision # decision | trap | workflow | fact | advice | convention
+scope: project # project | global
 project_id: github.com__owner__repo
-status: active        # active | superseded | tentative
+status: active # active | superseded | tentative
 created: 2026-06-12
 updated: 2026-06-12
-source: human         # human | agent | imported
-confidence: high      # low | medium | high
+source: human # human | agent | imported
+confidence: high # low | medium | high
 promotable: false
 supersedes: []
 related: []
@@ -372,20 +372,19 @@ agent-vault/
 
 Do **not** start with Basic Memory, Memsearch, or a vector database product unless you decide that agent-driven semantic retrieval is more important than transparent, manually editable, Git-versioned Markdown. Basic Memory is the nearest “LLM memory” tool, but its project isolation and index-backed design are not as natural for a single transferable cross-project vault. IWE plus a wrapper gives the cleaner substrate: one vault, normal files, normal Git, graph-aware Markdown operations, and standard CLI search.
 
-[1]: https://github.com/iwe-org/iwe "GitHub - iwe-org/iwe: Markdown memory system for you and your AI agent · GitHub"
-[2]: https://iwe.md/docs/agentic/mcp/ "MCP Server – IWE"
-[3]: https://iwe.md/docs/agentic/find/ "IWE Find – IWE"
-[4]: https://github.com/zk-org/zk "GitHub - zk-org/zk: A plain text note-taking assistant · GitHub"
-[5]: https://zk-org.github.io/zk/notes/note-filtering.html "Searching and filtering notes - zk : a plain text note-taking assistant"
-[6]: https://zk-org.github.io/zk/notes/notebook.html "Notebook - zk : a plain text note-taking assistant"
-[7]: https://docs.basicmemory.com/start-here/what-is-basic-memory "What is Basic Memory - Basic Memory"
-[8]: https://docs.basicmemory.com/concepts/projects-and-folders "Projects and folders - Basic Memory"
-[9]: https://github.com/zilliztech/memsearch "GitHub - zilliztech/memsearch: A persistent, unified memory layer for all your AI agents (e.g. Claude Code, Codex), backed by Markdown and Milvus. · GitHub"
-[10]: https://knightli.com/en/2026/05/01/qmd-markdown-search-for-ai-agents/ "qmd: Local Markdown Document Search for AI Agents"
-[11]: https://docs.openclaw.ai/concepts/memory "Memory overview - OpenClaw"
-[12]: https://github.com/probelabs/memaris "GitHub - probelabs/memaris: Stop re-teaching your AI. Turn past Claude Code sessions into persistent memory. · GitHub"
-[13]: https://github.com/foambubble/foam "GitHub - foambubble/foam: A personal knowledge management and sharing system for VSCode · GitHub"
-[14]: https://iwe.md/docs/concepts/query-language/ "Query Language – IWE"
-[15]: https://github.com/probelabs/probe "GitHub - probelabs/probe: AI-friendly semantic code search engine for large codebases. Combines ripgrep speed with tree-sitter AST parsing. Powers AI coding assistants with precise, context-aware code understanding. · GitHub"
-[16]: https://github.com/probelabs/probe/blob/main/docs/probe-cli/search.md "probe/docs/probe-cli/search.md at main · probelabs/probe · GitHub"
-
+[1]: https://github.com/iwe-org/iwe 'GitHub - iwe-org/iwe: Markdown memory system for you and your AI agent · GitHub'
+[2]: https://iwe.md/docs/agentic/mcp/ 'MCP Server – IWE'
+[3]: https://iwe.md/docs/agentic/find/ 'IWE Find – IWE'
+[4]: https://github.com/zk-org/zk 'GitHub - zk-org/zk: A plain text note-taking assistant · GitHub'
+[5]: https://zk-org.github.io/zk/notes/note-filtering.html 'Searching and filtering notes - zk : a plain text note-taking assistant'
+[6]: https://zk-org.github.io/zk/notes/notebook.html 'Notebook - zk : a plain text note-taking assistant'
+[7]: https://docs.basicmemory.com/start-here/what-is-basic-memory 'What is Basic Memory - Basic Memory'
+[8]: https://docs.basicmemory.com/concepts/projects-and-folders 'Projects and folders - Basic Memory'
+[9]: https://github.com/zilliztech/memsearch 'GitHub - zilliztech/memsearch: A persistent, unified memory layer for all your AI agents (e.g. Claude Code, Codex), backed by Markdown and Milvus. · GitHub'
+[10]: https://knightli.com/en/2026/05/01/qmd-markdown-search-for-ai-agents/ 'qmd: Local Markdown Document Search for AI Agents'
+[11]: https://docs.openclaw.ai/concepts/memory 'Memory overview - OpenClaw'
+[12]: https://github.com/probelabs/memaris 'GitHub - probelabs/memaris: Stop re-teaching your AI. Turn past Claude Code sessions into persistent memory. · GitHub'
+[13]: https://github.com/foambubble/foam 'GitHub - foambubble/foam: A personal knowledge management and sharing system for VSCode · GitHub'
+[14]: https://iwe.md/docs/concepts/query-language/ 'Query Language – IWE'
+[15]: https://github.com/probelabs/probe 'GitHub - probelabs/probe: AI-friendly semantic code search engine for large codebases. Combines ripgrep speed with tree-sitter AST parsing. Powers AI coding assistants with precise, context-aware code understanding. · GitHub'
+[16]: https://github.com/probelabs/probe/blob/main/docs/probe-cli/search.md 'probe/docs/probe-cli/search.md at main · probelabs/probe · GitHub'

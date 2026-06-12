@@ -51,11 +51,11 @@ Error model:
 
 Code ownership budget:
 
-| Component | Planned owner | Local code allowed | Local code forbidden | Max bespoke LOC |
-| --- | --- | --- | --- | --- |
-| CLI presentation | local | Cyclopts command declarations and docstrings | Business logic in callbacks | 120 |
-| Config/models | local | Pydantic models, enums, path validation | Loose dict/Any config plumbing | 180 |
-| Vault/project/note/search operations | local | Thin filesystem and subprocess orchestration | Custom graph parser, database, embeddings, reranker | 320 |
-| Graph retrieval/refactor | IWE | Subprocess invocation with checked failures | Reimplementing backlink or context retrieval | 40 |
-| Body search | `rg` | Scope root selection and output formatting | Custom search index or fuzzy ranker | 80 |
-| Tests | local | Real CLI integration tests | Mocks, source-text policy tests, helper-only tests | 260 |
+| Component                            | Planned owner | Local code allowed                           | Local code forbidden                                | Max bespoke LOC |
+| ------------------------------------ | ------------- | -------------------------------------------- | --------------------------------------------------- | --------------- |
+| CLI presentation                     | local         | Cyclopts command declarations and docstrings | Business logic in callbacks                         | 120             |
+| Config/models                        | local         | Pydantic models, enums, path validation      | Loose dict/Any config plumbing                      | 180             |
+| Vault/project/note/search operations | local         | Thin filesystem and subprocess orchestration | Custom graph parser, database, embeddings, reranker | 320             |
+| Graph retrieval/refactor             | IWE           | Subprocess invocation with checked failures  | Reimplementing backlink or context retrieval        | 40              |
+| Body search                          | `rg`          | Scope root selection and output formatting   | Custom search index or fuzzy ranker                 | 80              |
+| Tests                                | local         | Real CLI integration tests                   | Mocks, source-text policy tests, helper-only tests  | 260             |

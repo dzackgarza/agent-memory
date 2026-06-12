@@ -173,9 +173,7 @@ def test_promote_moves_memory_to_global_and_leaves_project_pointer(tmp_path: Pat
         )
     )
 
-    promoted = parse_json_stdout(
-        run_iwe2(repo, "promote", str(note["key"]), "--to", "global/traps")
-    )
+    promoted = parse_json_stdout(run_iwe2(repo, "promote", str(note["key"]), "--to", "global/traps"))
 
     destination = Path(str(promoted["path"]))
     pointer = Path(str(note["path"]))
