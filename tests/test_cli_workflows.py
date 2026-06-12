@@ -8,6 +8,25 @@ from pathlib import Path
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+GLOBAL_GRAPH_KEYS = [
+    "global/index",
+    "global/advice/index",
+    "global/traps/index",
+    "global/workflows/index",
+    "global/tools/index",
+    "global/style/index",
+    "global/facts/index",
+    "global/conventions/index",
+]
+PROJECT_GRAPH_CHILDREN = [
+    "decisions/index",
+    "traps/index",
+    "workflows/index",
+    "sessions/index",
+    "facts/index",
+    "advice/index",
+    "conventions/index",
+]
 
 
 def run_iwe2(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -26,6 +45,15 @@ def run_iwe2(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
     )
+
+
+def run_iwe(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["iwe", *args], cwd=cwd, check=True, text=True, capture_output=True)
+
+
+def tree_keys(cwd: Path, key: str) -> list[str]:
+    result = run_iwe(cwd, "tree", "-k", key, "-f", "keys")
+    return [line.lstrip("\t") for line in result.stdout.splitlines()]
 
 
 def init_git_repo(repo: Path) -> str:
@@ -76,6 +104,7 @@ def test_vault_init_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert (vault / "index.md").is_file()
     assert (vault / "global" / "index.md").is_file()
     assert (vault / "_meta" / "projects.toml").is_file()
+    assert tree_keys(vault, "global/index") == GLOBAL_GRAPH_KEYS
 
 
 def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> None:
@@ -98,6 +127,11 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
             "global/tools",
         ],
     }
+    expected_project_tree = [
+        f"projects/{project_id}/index",
+        *[f"projects/{project_id}/{child}" for child in PROJECT_GRAPH_CHILDREN],
+    ]
+    assert tree_keys(vault, f"projects/{project_id}/index") == expected_project_tree
 
     project_note = parse_json_stdout(
         run_iwe2(
