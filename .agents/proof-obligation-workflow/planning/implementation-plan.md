@@ -60,5 +60,6 @@ Code ownership budget:
 | Config/models                        | local         | Pydantic models, enums, path validation      | Loose dict/Any config plumbing                      | 180             |
 | Vault/project/note/search operations | local         | Thin filesystem and subprocess orchestration | Custom graph parser, database, embeddings, reranker | 320             |
 | Graph retrieval/refactor             | IWE           | Subprocess invocation with checked failures  | Reimplementing backlink or context retrieval        | 40              |
+| Title/key graph search               | IWE           | Scope anchor selection and output formatting | Custom fuzzy matcher or graph-query implementation  | 40              |
 | Body search                          | `rg`          | Scope root selection and output formatting   | Custom search index or fuzzy ranker                 | 80              |
 | Tests                                | local         | Real CLI integration tests                   | Mocks, source-text policy tests, helper-only tests  | 260             |

@@ -34,13 +34,13 @@ Reader task: classify the current changed surface against the proof workflow pla
 | Hidden test branches         | None found | Serena symbol overview shows tests call the installed CLI through helpers, not production test modes. |
 | Local QC authority           | None added | The top-level `justfile` delegates to `~/ai-review-ci`; no local generic tool config was added.       |
 | Bespoke graph engine         | None added | IWE owns graph layout, retrieval, and refactor mechanics; wrapper code owns scope and policy glue.    |
-| Custom search index          | None added | Body search uses `rg` over selected vault roots.                                                      |
+| Custom search index          | None added | Title/key graph search uses IWE `find`; body search uses `rg` over selected vault roots.              |
 
 ## Owned-Surface Budget
 
 The implementation remains inside the accepted ownership split: local code owns CLI
 composition, strict models, memory-specific filesystem layout, project bootstrap,
-promotion policy, and scope root selection. IWE, Git, and `rg` own graph behavior,
-repository identity, and lexical search.
+promotion policy, scope root selection, and graph anchor selection. IWE, Git, and `rg`
+own graph behavior, repository identity, title/key graph search, and lexical search.
 
 No implementation-diff issue requires rerouting to architecture minimization.

@@ -202,8 +202,15 @@ def create_note(
 
 def search_notes(scope: SearchScope, query: str, cwd: Path) -> str:
     config = load_project_config(cwd)
+    graph_outputs = [
+        run_checked(
+            ["iwe", "find", query, "--included-by", anchor, "--format", "keys"],
+            cwd=config.vault,
+        ).stdout
+        for anchor in search_anchors(config, scope)
+    ]
     roots = search_roots(config, scope)
-    result = run_checked(
+    body_output = run_ripgrep_search(
         [
             "rg",
             "--line-number",
@@ -214,7 +221,7 @@ def search_notes(scope: SearchScope, query: str, cwd: Path) -> str:
         ],
         cwd=config.vault,
     )
-    return result.stdout
+    return "".join([*graph_outputs, body_output])
 
 
 def retrieve_note(key: str, cwd: Path) -> str:
@@ -529,6 +536,34 @@ def note_metadata(
             promotable=False,
         ).to_yaml_payload()
     raise AssertionError(f"unsupported note scope: {scope}")
+
+
+def run_ripgrep_search(args: Sequence[str], cwd: Path) -> str:
+    result = subprocess.run(args, cwd=cwd, check=False, text=True, capture_output=True)
+    if result.returncode == 0:
+        return result.stdout
+    if result.returncode == 1:
+        assert result.stdout == ""
+        assert result.stderr == ""
+        return ""
+    raise subprocess.CalledProcessError(
+        result.returncode,
+        args,
+        output=result.stdout,
+        stderr=result.stderr,
+    )
+
+
+def search_anchors(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
+    project_anchor = f"projects/{config.project_id}/index:0"
+    global_anchor = "global/index:0"
+    if scope is SearchScope.PROJECT:
+        return (project_anchor,)
+    if scope is SearchScope.GLOBAL:
+        return (global_anchor,)
+    if scope is SearchScope.BOTH:
+        return (project_anchor, global_anchor)
+    raise AssertionError(f"unsupported search scope: {scope}")
 
 
 def search_roots(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
