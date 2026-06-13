@@ -278,6 +278,60 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
     assert "project-signal-7dcbd96d belongs only to this repository" in retrieved.stdout
 
 
+def test_search_uses_iwe_graph_filters_for_title_matches(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_id = init_git_repo(repo)
+    vault = tmp_path / "vault"
+    run_iwe2(tmp_path, "vault", "init", str(vault))
+    run_iwe2(repo, "project", "init", "--vault", str(vault))
+
+    project_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "note",
+            "--scope",
+            "project",
+            "--type",
+            "decision",
+            "--title",
+            "Project Graph Beacon",
+            "--content",
+            "body-only-project-content-9c0f8c2e",
+        )
+    )
+    global_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "note",
+            "--scope",
+            "global",
+            "--type",
+            "advice",
+            "--title",
+            "Global Graph Beacon",
+            "--content",
+            "body-only-global-content-6f3cbdb4",
+        )
+    )
+    project_key = str(project_note["key"])
+    global_key = str(global_note["key"])
+    assert project_key == f"projects/{project_id}/decisions/project-graph-beacon"
+    assert global_key == "global/advice/global-graph-beacon"
+
+    project_search = run_iwe2(repo, "search", "--scope", "project", "GB")
+    assert project_key in project_search.stdout
+    assert global_key not in project_search.stdout
+
+    global_search = run_iwe2(repo, "search", "--scope", "global", "GB")
+    assert global_key in global_search.stdout
+    assert project_key not in global_search.stdout
+
+    combined_search = run_iwe2(repo, "search", "--scope", "both", "GB")
+    assert project_key in combined_search.stdout
+    assert global_key in combined_search.stdout
+
+
 def test_squash_consolidates_project_graph_with_iwe(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
