@@ -137,6 +137,11 @@ def assert_okf_concept_metadata(
     assert metadata["title"] == title
     assert metadata["description"] == description
     assert metadata["tags"] == tags
+    assert "status" not in metadata
+    assert "authority" not in metadata
+    assert "expires" not in metadata
+    assert "safe_to_act" not in metadata
+    assert "requires_confirmation" not in metadata
     assert_okf_timestamp(metadata["timestamp"])
 
 
