@@ -106,6 +106,18 @@ def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> dict[str, obj
     return decoded
 
 
+def probe_result_files(result: dict[str, object]) -> set[Path]:
+    records = result["results"]
+    assert isinstance(records, list)
+    files: set[Path] = set()
+    for record in records:
+        assert isinstance(record, dict)
+        file_value = record["file"]
+        assert isinstance(file_value, str)
+        files.add(Path(file_value).resolve())
+    return files
+
+
 def load_project_config(repo: Path) -> dict[str, object]:
     return tomllib.loads((repo / ".agent-memory.toml").read_text())
 
@@ -335,6 +347,95 @@ def test_search_uses_iwe_graph_filters_for_title_matches(tmp_path: Path) -> None
     combined_search = run_iwe2(repo, "search", "--scope", "both", "GB")
     assert project_key in combined_search.stdout
     assert global_key in combined_search.stdout
+
+
+def test_search_context_uses_probe_with_scope_roots(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    vault = tmp_path / "vault"
+    run_iwe2(tmp_path, "vault", "init", str(vault))
+    run_iwe2(repo, "project", "init", "--vault", str(vault))
+
+    project_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "note",
+            "--scope",
+            "project",
+            "--type",
+            "decision",
+            "--title",
+            "Probe Project Context",
+            "--content",
+            "ranked-context-token-48a4 project-only probe evidence",
+        )
+    )
+    global_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "note",
+            "--scope",
+            "global",
+            "--type",
+            "advice",
+            "--title",
+            "Probe Global Context",
+            "--content",
+            "ranked-context-token-48a4 global-only probe evidence",
+        )
+    )
+
+    project_search = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "search-context",
+            "--scope",
+            "project",
+            "--max-results",
+            "5",
+            "--max-tokens",
+            "2000",
+            "ranked-context-token-48a4",
+        )
+    )
+    project_files = probe_result_files(project_search)
+    assert Path(str(project_note["path"])).resolve() in project_files
+    assert Path(str(global_note["path"])).resolve() not in project_files
+
+    global_search = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "search-context",
+            "--scope",
+            "global",
+            "--max-results",
+            "5",
+            "--max-tokens",
+            "2000",
+            "ranked-context-token-48a4",
+        )
+    )
+    global_files = probe_result_files(global_search)
+    assert Path(str(global_note["path"])).resolve() in global_files
+    assert Path(str(project_note["path"])).resolve() not in global_files
+
+    combined_search = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "search-context",
+            "--scope",
+            "both",
+            "--max-results",
+            "5",
+            "--max-tokens",
+            "4000",
+            "ranked-context-token-48a4",
+        )
+    )
+    combined_files = probe_result_files(combined_search)
+    assert Path(str(project_note["path"])).resolve() in combined_files
+    assert Path(str(global_note["path"])).resolve() in combined_files
 
 
 def test_squash_consolidates_project_graph_with_iwe(tmp_path: Path) -> None:
