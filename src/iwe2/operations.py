@@ -4,6 +4,7 @@ import subprocess
 import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 
 import tomli_w
@@ -25,7 +26,29 @@ from iwe2.models import (
 
 JsonValue = str | list[str]
 JsonObject = dict[str, JsonValue]
+IndexEntry = tuple[str, str, str]
 ProjectRecord = dict[str, str]
+
+OKF_VERSION = "0.1"
+ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
+GLOBAL_INDEX_DESCRIPTIONS: dict[str, str] = {
+    "advice": "Global advice memories.",
+    "traps": "Global traps memories.",
+    "workflows": "Global workflow memories.",
+    "tools": "Global tool memories.",
+    "style": "Global style memories.",
+    "facts": "Global fact memories.",
+    "conventions": "Global convention memories.",
+}
+PROJECT_INDEX_DESCRIPTIONS: dict[str, str] = {
+    "decisions": "Project decision memories.",
+    "traps": "Project trap memories.",
+    "workflows": "Project workflow memories.",
+    "sessions": "Project session memories.",
+    "facts": "Project fact memories.",
+    "advice": "Project advice memories.",
+    "conventions": "Project convention memories.",
+}
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.DECISION: "decisions",
@@ -78,14 +101,31 @@ class MemoryDocument:
     metadata: dict[str, MetadataValue]
     body: str
 
+    def metadata_str(self, key: str) -> str:
+        value = self.metadata[key]
+        assert isinstance(value, str), f"metadata field must be a string: {key}"
+        return value
+
 
 def init_vault(vault: Path) -> JsonObject:
     vault.mkdir(parents=True)
     run_checked(["iwe", "init"], cwd=vault)
     for relative_dir in VAULT_DIRECTORIES:
         (vault / relative_dir).mkdir(parents=True)
-    write_new_file(vault / "index.md", parent_index_body("Agent Memory Vault", ("global",)))
-    write_new_file(vault / "global" / "index.md", parent_index_body("Global Memory", GLOBAL_INDEX_DIRECTORIES))
+    write_new_file(
+        vault / "index.md",
+        render_memory(
+            {"okf_version": OKF_VERSION},
+            parent_index_body("Agent Memory Vault", ROOT_INDEX_ENTRIES),
+        ),
+    )
+    write_new_file(
+        vault / "global" / "index.md",
+        parent_index_body(
+            "Global Memory",
+            directory_index_entries(GLOBAL_INDEX_DIRECTORIES, GLOBAL_INDEX_DESCRIPTIONS),
+        ),
+    )
     write_section_indexes(vault / "global", GLOBAL_INDEX_DIRECTORIES)
     write_new_file(vault / "_meta" / "projects.toml", tomli_w.dumps({"projects": []}))
     return {"vault": str(vault)}
@@ -98,11 +138,25 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
     project_id = project_id_from_remote(remote)
     project_dir = vault / "projects" / project_id
     project_dir.mkdir(parents=True)
-    write_new_file(project_dir / "index.md", parent_index_body(project_id, PROJECT_DIRECTORIES))
+    write_new_file(
+        project_dir / "index.md",
+        parent_index_body(
+            project_id,
+            directory_index_entries(
+                PROJECT_DIRECTORIES,
+                PROJECT_INDEX_DESCRIPTIONS,
+            ),
+        ),
+    )
     for directory in PROJECT_DIRECTORIES:
         (project_dir / directory).mkdir()
     write_section_indexes(project_dir, PROJECT_DIRECTORIES)
-    append_index_link(vault / "index.md", project_id, f"projects/{project_id}/index.md")
+    append_index_link(
+        vault / "index.md",
+        project_id,
+        f"projects/{project_id}/index.md",
+        "Project memory bundle.",
+    )
 
     config = ProjectConfig(
         vault=vault,
@@ -115,7 +169,11 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
         vault / "_meta" / "projects.toml",
         {"project_id": project_id, "root": str(git_root), "remote": remote},
     )
-    return {"project_id": project_id, "vault": str(vault), "project_root": str(git_root)}
+    return {
+        "project_id": project_id,
+        "vault": str(vault),
+        "project_root": str(git_root),
+    }
 
 
 def create_note(
@@ -131,9 +189,11 @@ def create_note(
     directory = memory_directory(config, scope, memory_type)
     path = directory / f"{slug}.md"
     key = memory_key(config.vault, path)
-    metadata = note_metadata(config, scope, memory_type)
+    description = okf_description(content)
+    metadata = note_metadata(config, scope, memory_type, title, description)
     body = f"# {title}\n\n{content}\n"
     write_new_memory(path, metadata, body)
+    append_index_link(directory / "index.md", title, path.name, description)
     return {"key": key, "path": str(path)}
 
 
@@ -170,12 +230,18 @@ def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
     assert destination_path.parent.is_dir(), "promotion destination directory must exist"
 
     source_document = read_memory(source_path)
-    memory_type = MemoryType(str(source_document.metadata["type"]))
+    memory_type = MemoryType(source_document.metadata_str("type"))
+    title = source_document.metadata_str("title")
+    description = source_document.metadata_str("description")
     run_checked(["iwe", "rename", key, destination_key], cwd=config.vault)
 
     promoted_document = read_memory(destination_path)
     promoted_metadata = PromotedNoteMetadata(
         type=memory_type,
+        title=title,
+        description=description,
+        tags=okf_tags(MemoryScope.GLOBAL, memory_type, ("promoted",)),
+        timestamp=okf_timestamp(),
         scope=MemoryScope.GLOBAL,
         status="active",
         source="agent",
@@ -184,9 +250,20 @@ def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
         origin_project_id=config.project_id,
     ).to_yaml_payload()
     write_memory(destination_path, promoted_metadata, promoted_document.body)
+    append_index_link(
+        destination_path.parent / "index.md",
+        title,
+        destination_path.name,
+        description,
+    )
 
+    pointer_description = f"Promoted to {destination_key}."
     pointer_metadata = ProjectNoteMetadata(
         type=memory_type,
+        title=title,
+        description=pointer_description,
+        tags=okf_tags(MemoryScope.PROJECT, memory_type, ("promotion-pointer",)),
+        timestamp=okf_timestamp(),
         scope=MemoryScope.PROJECT,
         status="active",
         source="agent",
@@ -194,12 +271,10 @@ def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
         promotable=False,
         project_id=config.project_id,
     ).to_yaml_payload()
-    pointer_body = f"# {source_path.stem}\n\nPromoted to [[{destination_key}]].\n"
-    if source_path.parent.exists():
-        assert source_path.parent.is_dir(), "project memory parent must be a directory"
-    else:
-        source_path.parent.mkdir(parents=True)
+    pointer_body = f"# {title}\n\nPromoted to [[{destination_key}]].\n"
+    assert source_path.parent.is_dir(), "project memory parent must be a directory"
     write_new_memory(source_path, pointer_metadata, pointer_body)
+    replace_index_link(source_path.parent / "index.md", title, source_path.name, pointer_description)
     return {"key": destination_key, "path": str(destination_path)}
 
 
@@ -230,24 +305,69 @@ def write_section_indexes(root: Path, sections: Sequence[str]) -> None:
         write_new_file(root / section / "index.md", leaf_index_body(section_title(section)))
 
 
-def parent_index_body(title: str, children: Sequence[str]) -> str:
-    assert children, "parent index must include at least one child"
-    links = "\n\n".join(f"[{section_title(child)}]({child}/index.md)" for child in children)
-    return f"# {title}\n\n{links}\n"
+def parent_index_body(title: str, entries: Sequence[IndexEntry]) -> str:
+    assert entries, "parent index must include at least one child"
+    links = "\n\n".join(okf_index_entry(*entry) for entry in entries)
+    return f"# {title}\n\n# Subdirectories\n\n{links}\n"
 
 
 def leaf_index_body(title: str) -> str:
-    return f"# {title}\n"
+    return f"# {title}\n\n# Concepts\n"
 
 
 def section_title(section: str) -> str:
     return section.replace("-", " ").title()
 
 
-def append_index_link(index_path: Path, title: str, target: str) -> None:
-    assert index_path.is_file(), "parent index must exist before linking project"
+def directory_index_entries(
+    children: Sequence[str],
+    descriptions: dict[str, str],
+) -> list[IndexEntry]:
+    return [(section_title(child), f"{child}/index.md", descriptions[child]) for child in children]
+
+
+def okf_index_entry(title: str, target: str, description: str) -> str:
+    assert target.endswith(".md"), "OKF index links must target markdown files"
+    # IWE follows paragraph links, while OKF index listings are bullets.
+    return f"* [{title}]({target}) - {description}\n\n[{title}]({target})"
+
+
+def okf_timestamp() -> str:
+    return f"{date.today().isoformat()}T00:00:00Z"
+
+
+def okf_description(content: str) -> str:
+    content_lines = content.strip().splitlines()
+    assert content_lines, "note content must provide an OKF description"
+    return content_lines[0]
+
+
+def okf_tags(
+    scope: MemoryScope,
+    memory_type: MemoryType,
+    extra_tags: Sequence[str],
+) -> list[str]:
+    return [scope.value, memory_type.value, *extra_tags]
+
+
+def append_index_link(index_path: Path, title: str, target: str, description: str) -> None:
+    assert index_path.is_file(), "parent index must exist before linking"
     with index_path.open("a", encoding="utf-8") as index_file:
-        index_file.write(f"[{title}]({target})\n")
+        index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
+
+
+def replace_index_link(index_path: Path, title: str, target: str, description: str) -> None:
+    assert index_path.is_file(), "index must exist before replacing a link"
+    # IWE rewrites the OKF bullet marker to "-" when it renames linked notes.
+    link_prefixes = (f"* [{title}](", f"- [{title}](")
+    lines = index_path.read_text(encoding="utf-8").splitlines()
+    matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
+    assert len(matching_indexes) == 1, "index must contain exactly one link for the title"
+    entry_start = matching_indexes[0]
+    assert lines[entry_start + 1] == "", "index entry must separate OKF and IWE links"
+    assert lines[entry_start + 2].startswith(f"[{title}]("), "index entry must include an IWE graph link"
+    lines[entry_start : entry_start + 3] = okf_index_entry(title, target, description).splitlines()
+    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def git_root_for(cwd: Path) -> Path:
@@ -322,10 +442,17 @@ def note_metadata(
     config: ProjectConfig,
     scope: MemoryScope,
     memory_type: MemoryType,
+    title: str,
+    description: str,
 ) -> dict[str, MetadataValue]:
+    timestamp = okf_timestamp()
     if scope is MemoryScope.PROJECT:
         return ProjectNoteMetadata(
             type=memory_type,
+            title=title,
+            description=description,
+            tags=okf_tags(scope, memory_type, ()),
+            timestamp=timestamp,
             scope=MemoryScope.PROJECT,
             status="active",
             source="agent",
@@ -336,6 +463,10 @@ def note_metadata(
     if scope is MemoryScope.GLOBAL:
         return GlobalNoteMetadata(
             type=memory_type,
+            title=title,
+            description=description,
+            tags=okf_tags(scope, memory_type, ()),
+            timestamp=timestamp,
             scope=MemoryScope.GLOBAL,
             status="active",
             source="agent",
@@ -383,7 +514,15 @@ def read_memory(path: Path) -> MemoryDocument:
     metadata: dict[str, MetadataValue] = {}
     for key, value in parsed.items():
         assert isinstance(key, str), "frontmatter keys must be strings"
-        assert isinstance(value, str | bool), "frontmatter values must be strings or booleans"
-        metadata[key] = value
+        if isinstance(value, datetime):
+            assert key == "timestamp", "only timestamp may be parsed as a YAML datetime"
+            assert value.tzinfo is not None, "timestamp must include timezone information"
+            metadata[key] = value.isoformat().replace("+00:00", "Z")
+        elif isinstance(value, list):
+            assert all(isinstance(item, str) for item in value), "frontmatter lists must contain strings"
+            metadata[key] = value
+        else:
+            assert isinstance(value, str | bool), "frontmatter values must be strings, booleans, datetimes, or string lists"
+            metadata[key] = value
     body = "".join(lines[closing_index + 1 :])
     return MemoryDocument(metadata=metadata, body=body)

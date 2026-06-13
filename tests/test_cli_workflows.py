@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tomllib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -69,9 +69,7 @@ def run_iwe2_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def run_iwe(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["iwe", *args], cwd=cwd, check=True, text=True, capture_output=True
-    )
+    return subprocess.run(["iwe", *args], cwd=cwd, check=True, text=True, capture_output=True)
 
 
 def tree_keys(cwd: Path, key: str) -> list[str]:
@@ -79,17 +77,13 @@ def tree_keys(cwd: Path, key: str) -> list[str]:
     return [line.lstrip("\t") for line in result.stdout.splitlines()]
 
 
-def assert_tree(
-    root: str, expected_children: list[str], actual_keys: list[str]
-) -> None:
+def assert_tree(root: str, expected_children: list[str], actual_keys: list[str]) -> None:
     assert actual_keys[0] == root
     assert set(actual_keys[1:]) == set(expected_children)
 
 
 def init_git_repo(repo: Path) -> str:
-    subprocess.run(
-        ["git", "init"], cwd=repo, check=True, text=True, capture_output=True
-    )
+    subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
     subprocess.run(
         [
             "git",
@@ -128,7 +122,7 @@ def frontmatter(markdown: Path) -> dict[str, object]:
 def assert_okf_timestamp(value: object) -> None:
     assert isinstance(value, str)
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    assert parsed.tzinfo == timezone.utc
+    assert parsed.tzinfo == UTC
 
 
 def assert_okf_concept_metadata(
@@ -158,14 +152,11 @@ def test_vault_init_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert (vault / "global" / "index.md").is_file()
     assert (vault / "_meta" / "projects.toml").is_file()
     assert frontmatter(vault / "index.md") == {"okf_version": "0.1"}
-    assert (
-        "* [Global](/global/) - Global memory shared across projects."
-        in (vault / "index.md").read_text()
-    )
+    assert "* [Global](global/index.md) - Global memory shared across projects." in (vault / "index.md").read_text()
     global_index = (vault / "global" / "index.md").read_text()
     assert not global_index.startswith("---\n")
-    assert "* [Advice](/global/advice/) - Global advice memories." in global_index
-    assert "* [Traps](/global/traps/) - Global traps memories." in global_index
+    assert "* [Advice](advice/index.md) - Global advice memories." in global_index
+    assert "* [Traps](traps/index.md) - Global traps memories." in global_index
     assert_tree("global/index", GLOBAL_GRAPH_KEYS[1:], tree_keys(vault, "global/index"))
 
 
@@ -211,14 +202,8 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
     )
     project_index = (vault / "projects" / project_id / "index.md").read_text()
     assert not project_index.startswith("---\n")
-    assert (
-        f"* [Decisions](/projects/{project_id}/decisions/) - Project decision memories."
-        in project_index
-    )
-    assert (
-        f"* [{project_id}](/projects/{project_id}/) - Project memory bundle."
-        in (vault / "index.md").read_text()
-    )
+    assert "* [Decisions](decisions/index.md) - Project decision memories." in project_index
+    assert f"* [{project_id}](projects/{project_id}/index.md) - Project memory bundle." in (vault / "index.md").read_text()
 
     project_note = parse_json_stdout(
         run_iwe2(
@@ -251,10 +236,7 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
 
     project_path = Path(str(project_note["path"]))
     global_path = Path(str(global_note["path"]))
-    assert (
-        project_path
-        == vault / "projects" / project_id / "decisions" / "project-alpha.md"
-    )
+    assert project_path == vault / "projects" / project_id / "decisions" / "project-alpha.md"
     assert global_path == vault / "global" / "advice" / "global-beta.md"
     assert_okf_concept_metadata(
         frontmatter(project_path),
@@ -273,14 +255,8 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
         tags=["global", "advice"],
     )
     assert frontmatter(global_path)["scope"] == "global"
-    assert (
-        f"* [Project Alpha](/projects/{project_id}/decisions/project-alpha.md) - project-signal-7dcbd96d belongs only to this repository"
-        in (project_path.parent / "index.md").read_text()
-    )
-    assert (
-        "* [Global Beta](/global/advice/global-beta.md) - global-signal-cde4b9f6 belongs to shared agent practice"
-        in (global_path.parent / "index.md").read_text()
-    )
+    assert "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d belongs only to this repository" in (project_path.parent / "index.md").read_text()
+    assert "* [Global Beta](global-beta.md) - global-signal-cde4b9f6 belongs to shared agent practice" in (global_path.parent / "index.md").read_text()
 
     project_search = run_iwe2(repo, "search", "--scope", "project", "signal")
     assert "project-signal-7dcbd96d" in project_search.stdout
@@ -322,18 +298,13 @@ def test_promote_moves_memory_to_global_and_leaves_project_pointer(
         )
     )
 
-    promoted = parse_json_stdout(
-        run_iwe2(repo, "promote", str(note["key"]), "--to", "global/traps")
-    )
+    promoted = parse_json_stdout(run_iwe2(repo, "promote", str(note["key"]), "--to", "global/traps"))
 
     destination = Path(str(promoted["path"]))
     pointer = Path(str(note["path"]))
     assert destination == vault / "global" / "traps" / "promotion-trap.md"
     assert pointer == vault / "projects" / project_id / "traps" / "promotion-trap.md"
-    assert (
-        "promote-signal-f88f0a72 must become shared knowledge"
-        in destination.read_text()
-    )
+    assert "promote-signal-f88f0a72 must become shared knowledge" in destination.read_text()
     assert_okf_concept_metadata(
         frontmatter(destination),
         memory_type="trap",
@@ -352,14 +323,8 @@ def test_promote_moves_memory_to_global_and_leaves_project_pointer(
     )
     assert frontmatter(pointer)["scope"] == "project"
     assert "global/traps/promotion-trap" in pointer.read_text()
-    assert (
-        "* [Promotion Trap](/global/traps/promotion-trap.md) - promote-signal-f88f0a72 must become shared knowledge"
-        in (destination.parent / "index.md").read_text()
-    )
-    assert (
-        f"* [Promotion Trap](/projects/{project_id}/traps/promotion-trap.md) - Promoted to global/traps/promotion-trap."
-        in (pointer.parent / "index.md").read_text()
-    )
+    assert "* [Promotion Trap](promotion-trap.md) - promote-signal-f88f0a72 must become shared knowledge" in (destination.parent / "index.md").read_text()
+    assert "* [Promotion Trap](promotion-trap.md) - Promoted to global/traps/promotion-trap." in (pointer.parent / "index.md").read_text()
 
 
 def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:

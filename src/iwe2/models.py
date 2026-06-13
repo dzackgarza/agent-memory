@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
 ProjectRootStrategy = Literal["git-root"]
-MetadataValue = str | bool
+MetadataValue = str | bool | list[str]
 
 GLOBAL_SCOPES: tuple[str, ...] = (
     "global/advice",
@@ -82,6 +82,10 @@ class BaseNoteMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     type: MemoryType
+    title: str
+    description: str
+    tags: list[str]
+    timestamp: str
     scope: MemoryScope
     status: Literal["active"]
     source: Literal["agent"]
@@ -91,6 +95,10 @@ class BaseNoteMetadata(BaseModel):
     def base_yaml_payload(self) -> dict[str, MetadataValue]:
         return {
             "type": self.type.value,
+            "title": self.title,
+            "description": self.description,
+            "tags": self.tags,
+            "timestamp": self.timestamp,
             "scope": self.scope.value,
             "status": self.status,
             "source": self.source,
