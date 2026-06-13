@@ -10,6 +10,7 @@ Reader task: classify the current changed surface against the proof workflow pla
 | Path                                   | Classification                    | Plan anchor                                                                               |
 | -------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------- |
 | `src/iwe2/__init__.py`                 | Planned production code           | Package exports from `planning/implementation-plan.md`.                                   |
+| `src/iwe2/__main__.py`                 | Planned production code           | Executable module entrypoint from `planning/implementation-plan.md`.                      |
 | `src/iwe2/cli.py`                      | Planned production code           | Cyclopts command surface from `planning/implementation-plan.md`.                          |
 | `src/iwe2/models.py`                   | Planned production code           | Strict config/frontmatter contracts from `planning/implementation-plan.md`.               |
 | `src/iwe2/operations.py`               | Planned production code           | Filesystem, Git, IWE, and `rg` orchestration from `architecture/owned-surface-ledger.md`. |

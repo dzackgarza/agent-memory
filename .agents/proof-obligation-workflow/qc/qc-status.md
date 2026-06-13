@@ -54,6 +54,20 @@ code only to satisfy this detector.
 ## Product Proof Route
 
 The product proof still rests on the public CLI integration tests in
-`tests/test_cli_workflows.py`. The delegated `just test` run did not reach pytest because
-deptry stopped the gate first; this QC document therefore records the gate status, not a
-fresh green product-test result.
+`tests/test_cli_workflows.py`.
+
+Direct product proof command:
+
+```bash
+uv run --project /home/dzack/iwe2 --directory /home/dzack/iwe2 pytest tests/test_cli_workflows.py -q
+```
+
+Result:
+
+```text
+5 passed in 12.15s
+```
+
+The delegated `just test` run did not reach pytest because deptry stopped the gate
+first. This QC document therefore records both the direct product-test result and the
+delegated gate status.

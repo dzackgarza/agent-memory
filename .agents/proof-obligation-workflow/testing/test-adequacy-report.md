@@ -24,6 +24,7 @@ mocks, source-text policing, skipped tests, or helper-only branch tests.
 | IOB-005 graph retrieval    | TEST-004 retrieves a note created in the same workflow through `iwe2 retrieve <key>`.                                                                                              | Retrieval that bypasses IWE or returns fixed text fails on the dynamic note body.                    |
 | IOB-006 promotion          | TEST-005 promotes a project trap to `global/traps`, then checks destination content, `scope: global`, `origin_project_id`, and the project pointer.                                | Promotion that loses content, drops provenance, or deletes the project-local audit pointer fails.    |
 | IOB-007 doctor             | TEST-006 runs `iwe2 doctor` after real initialization and checks the exact vault path, project ID, project root, and required tools.                                               | A hollow status command or a command that does not inspect the declared project contract fails.      |
+| IOB-008 module entrypoint  | TEST-007 runs `python -m iwe2 vault init <vault>` through the project runner and checks the durable IWE vault graph state.                                                         | A package without `iwe2.__main__` or a module entrypoint dispatching to a different surface fails.   |
 
 ## Residual Edges
 
@@ -37,5 +38,5 @@ mocks, source-text policing, skipped tests, or helper-only branch tests.
 ## Conclusion
 
 The test plan excludes the main gaming paths for the MVP: no-op initialization,
-directory-only vault creation, hard-coded project identity, unscoped search,
-placeholder retrieval, lossy promotion, and hollow doctor output.
+directory-only vault creation, missing module execution, hard-coded project identity,
+unscoped search, placeholder retrieval, lossy promotion, and hollow doctor output.
