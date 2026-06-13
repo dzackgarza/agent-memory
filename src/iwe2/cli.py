@@ -16,6 +16,7 @@ from iwe2.operations import (
     promote_note,
     retrieve_note,
     search_notes,
+    squash_note,
 )
 from iwe2.operations import (
     doctor as run_doctor,
@@ -63,6 +64,11 @@ def search(query: str, *, scope: SearchScope) -> None:
 @app.command(name="retrieve")
 def retrieve(key: str) -> None:
     print(retrieve_note(key=key, cwd=Path.cwd()), end="")
+
+
+@app.command(name="squash")
+def squash(key: str, *, depth: int) -> None:
+    print(squash_note(key=key, depth=depth, cwd=Path.cwd()), end="")
 
 
 @app.command(name="promote")

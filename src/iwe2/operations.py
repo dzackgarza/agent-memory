@@ -223,6 +223,13 @@ def retrieve_note(key: str, cwd: Path) -> str:
     return result.stdout
 
 
+def squash_note(key: str, depth: int, cwd: Path) -> str:
+    assert depth > 0, f"squash depth must be positive: {depth}"
+    config = load_project_config(cwd)
+    result = run_checked(["iwe", "squash", key, "--depth", str(depth)], cwd=config.vault)
+    return result.stdout
+
+
 def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     assert destination.startswith("global/"), "promotion destination must be global"

@@ -26,6 +26,7 @@ Public API:
 - `iwe2 note --scope <project|global> --type <decision|trap|workflow|fact|advice|convention> --title <title> --content <content>`
 - `iwe2 search --scope <project|global|both> <query>`
 - `iwe2 retrieve <key>`
+- `iwe2 squash <key> --depth <depth>`
 - `iwe2 promote <key> --to <global-subdir>`
 - `iwe2 doctor`
 

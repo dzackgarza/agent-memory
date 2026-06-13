@@ -4,7 +4,7 @@ Target reader: a future agent deciding whether the current tests prove the MVP
 implementation obligations.
 
 Reader task: determine whether the public CLI tests exclude plausible broken
-implementations for IOB-001 through IOB-007.
+implementations for IOB-001 through IOB-009.
 
 ## Adequacy Verdict
 
@@ -25,6 +25,7 @@ mocks, source-text policing, skipped tests, or helper-only branch tests.
 | IOB-006 promotion          | TEST-005 promotes a project trap to `global/traps`, then checks destination content, `scope: global`, `origin_project_id`, and the project pointer.                                | Promotion that loses content, drops provenance, or deletes the project-local audit pointer fails.                                           |
 | IOB-007 doctor             | TEST-006 runs `iwe2 doctor` after real initialization and checks the exact vault path, project ID, project root, and required tools.                                               | A hollow status command or a command that does not inspect the declared project contract fails.                                             |
 | IOB-008 module entrypoint  | TEST-007 runs `python -m iwe2 vault init <vault>` through the project runner and checks the durable IWE vault graph state.                                                         | A package without `iwe2.__main__` or a module entrypoint dispatching to a different surface fails.                                          |
+| IOB-009 squash             | TEST-008 creates dynamic project and global notes, then runs `iwe2 squash <project-index-key> --depth 3`.                                                                          | A missing squash command, wrong vault cwd, placeholder output, or graph key rooted outside the project subtree fails.                       |
 
 ## Residual Edges
 
@@ -39,5 +40,5 @@ mocks, source-text policing, skipped tests, or helper-only branch tests.
 
 The test plan excludes the main gaming paths for the MVP: no-op initialization,
 directory-only vault creation, missing module execution, hard-coded project identity,
-missing repo-local AGENTS bootstrap, unscoped search, placeholder retrieval, lossy
-promotion, and hollow doctor output.
+missing repo-local AGENTS bootstrap, unscoped search, placeholder retrieval, hollow
+squash, lossy promotion, and hollow doctor output.
