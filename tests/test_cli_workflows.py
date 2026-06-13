@@ -592,4 +592,4 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     assert doctor["vault"] == str(vault)
     assert doctor["project_id"] == project_id
     assert doctor["project_root"] == str(repo)
-    assert doctor["tools"] == ["git", "iwe", "rg"]
+    assert doctor["tools"] == ["git", "iwe", "rg", "npx", "@probelabs/probe"]
