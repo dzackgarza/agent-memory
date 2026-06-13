@@ -7,6 +7,10 @@ accepted implementation target is a thin IWE wrapper that proves central vault s
 project bootstrap, scoped note creation, scoped body and title/key search, graph
 retrieval, promotion, and doctor verification.
 
+Dropped scope is not listed here as future work. Wrapper MCP server support,
+action-sensitive frontmatter, and lifecycle state frontmatter are rejected from the
+target even when the source transcript mentions adjacent ideas.
+
 | Deferred item                                         | Source anchor                                                                                                    | Deferral reason                                                                                                      | Proof status                             |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | `zk` indexed search and note creation                 | Transcript sections "Where zk fits" and "Final recommendation" mark `zk` as optional.                            | `rg` proves body search without adding a rebuildable SQLite index dependency to the MVP.                             | Not required by IOB-001 through IOB-007. |
