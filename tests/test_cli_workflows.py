@@ -278,6 +278,45 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
     assert "project-signal-7dcbd96d belongs only to this repository" in retrieved.stdout
 
 
+def test_squash_consolidates_project_graph_with_iwe(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_id = init_git_repo(repo)
+    vault = tmp_path / "vault"
+    run_iwe2(tmp_path, "vault", "init", str(vault))
+    run_iwe2(repo, "project", "init", "--vault", str(vault))
+    run_iwe2(
+        repo,
+        "note",
+        "--scope",
+        "project",
+        "--type",
+        "decision",
+        "--title",
+        "Squash Project Signal",
+        "--content",
+        "squash-project-signal-2d4f1c7a must appear in project consolidation",
+    )
+    run_iwe2(
+        repo,
+        "note",
+        "--scope",
+        "global",
+        "--type",
+        "advice",
+        "--title",
+        "Squash Global Signal",
+        "--content",
+        "squash-global-signal-88ec672b must stay outside project consolidation",
+    )
+
+    squashed = run_iwe2(repo, "squash", f"projects/{project_id}/index", "--depth", "3")
+
+    assert "# Squash Project Signal" in squashed.stdout
+    assert "squash-project-signal-2d4f1c7a must appear in project consolidation" in squashed.stdout
+    assert "squash-global-signal-88ec672b" not in squashed.stdout
+
+
 def test_project_init_replaces_existing_agents_memory_pointer(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
