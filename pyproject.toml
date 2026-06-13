@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-iwe2 = "iwe2.cli:app"
+iwe2 = "iwe2.cli:main"
 
 [tool.importlinter]
 root_packages = ["iwe2"]

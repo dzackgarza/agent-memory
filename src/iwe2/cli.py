@@ -1,54 +1,81 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated
 
 from cyclopts import App, Parameter
 
-from iwe2.models import MemoryScope, MemoryType, SearchScope
+from iwe2.models import ContentSearchMode, MemoryScope, MemoryType, SearchScope
 from iwe2.operations import (
     JsonValue,
-    create_note,
+    UsageError,
+    add_memory,
+    delete_memory,
+    init_global_vault,
     init_project,
-    init_vault,
-    promote_note,
-    retrieve_note,
-    search_context,
-    search_index,
-    search_notes,
-    squash_note,
+    merge_memory,
+    move_memory,
+    retrieve_memory,
+    search_content_exact,
+    search_content_fuzzy,
+    search_content_ranked,
+    search_keys,
+    search_memories,
+    search_metadata,
+    split_memory,
+    squash_memory,
+    update_memory,
+    validate_memory_vault,
 )
 from iwe2.operations import (
     doctor as run_doctor,
 )
 
-app = App(name="iwe2")
-vault_app = app.command(App(name="vault"))
-project_app = app.command(App(name="project"))
+app = App(
+    name="iwe2",
+    help=(
+        "Memory database CLI for global and project Markdown vaults. "
+        "Use `iwe2 maintain init-global --vault <path>` once, "
+        "`iwe2 init project --vault <path>` per repository, then `add`, `search`, "
+        "`retrieve`, `update`, and `delete` during normal agent work."
+    ),
+)
+init_app = app.command(App(name="init", help="Initialize project memory bindings."))
+search_app = app.command(App(name="search", help="Query memories by keys, content, or metadata."))
+maintain_app = app.command(App(name="maintain", help="Vault setup and maintenance workflows."))
 
 
-@vault_app.command(name="init")
-def vault_init(vault: Path) -> None:
-    emit(init_vault(vault))
+@maintain_app.command(name="init-global")
+def maintain_init_global(
+    vault: Annotated[Path, Parameter(help="Path to the global memory vault to initialize.")],
+) -> None:
+    """Create the global IWE-backed memory vault once."""
+    emit(init_global_vault(vault))
 
 
-@project_app.command(name="init")
-def project_init(*, vault: Path) -> None:
+@init_app.command(name="project")
+def init_project_command(
+    *,
+    vault: Annotated[Path, Parameter(help="Existing global memory vault for this repository.")],
+) -> None:
+    """Bind the current Git repository to the global memory vault."""
     emit(init_project(vault=vault, cwd=Path.cwd()))
 
 
-@app.command(name="note")
-def note(
+@app.command(name="add")
+def add_command(
     *,
-    scope: MemoryScope,
-    memory_type: Annotated[MemoryType, Parameter(name="type")],
-    title: str,
-    content: str,
+    scope: Annotated[MemoryScope, Parameter(help="Memory scope: project or global.")],
+    memory_type: Annotated[MemoryType, Parameter(name="type", help="Memory type directory to write into.")],
+    title: Annotated[str, Parameter(help="Memory title. The key is generated from this title.")],
+    content: Annotated[str, Parameter(help="Markdown body content to store under the title.")],
 ) -> None:
+    """Create a project or global memory."""
     emit(
-        create_note(
+        add_memory(
             scope=scope,
             memory_type=memory_type,
             title=title,
@@ -58,55 +85,150 @@ def note(
     )
 
 
-@app.command(name="search")
-def search(query: str, *, scope: SearchScope) -> None:
-    print(search_notes(scope=scope, query=query, cwd=Path.cwd()), end="")
-
-
-@app.command(name="search-context")
-def search_context_command(
-    query: str,
+@app.command(name="update")
+def update_command(
+    key: Annotated[str, Parameter(help="Memory key to update.")],
     *,
-    scope: SearchScope,
-    max_results: int,
-    max_tokens: int,
+    title: Annotated[str | None, Parameter(help="Replacement title.")] = None,
+    memory_type: Annotated[MemoryType | None, Parameter(name="type", help="Replacement memory type.")] = None,
+    content: Annotated[str | None, Parameter(help="Replacement Markdown body content.")] = None,
 ) -> None:
-    print(
-        search_context(
+    """Update a memory title, type, or body."""
+    emit(update_memory(key=key, title=title, memory_type=memory_type, content=content, cwd=Path.cwd()))
+
+
+@app.command(name="delete")
+def delete_command(key: Annotated[str, Parameter(help="Memory key to delete.")]) -> None:
+    """Delete a memory and clean its index entry."""
+    emit(delete_memory(key=key, cwd=Path.cwd()))
+
+
+@search_app.default
+def search_default(
+    query: Annotated[str, Parameter(help="Query text.")],
+    *,
+    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both.")],
+) -> None:
+    """Return a curated report combining key, exact content, fuzzy, and ranked search."""
+    emit(search_memories(scope=scope, query=query, cwd=Path.cwd()))
+
+
+@search_app.command(name="content")
+def search_content_command(
+    query: Annotated[str, Parameter(help="Content query text.")],
+    *,
+    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both.")],
+    mode: Annotated[ContentSearchMode, Parameter(help="Content search mode: exact, fuzzy, or ranked.")],
+) -> None:
+    """Search memory body text with the selected content mode."""
+    if mode is ContentSearchMode.EXACT:
+        emit(search_content_exact(scope=scope, query=query, cwd=Path.cwd()))
+    elif mode is ContentSearchMode.FUZZY:
+        emit(search_content_fuzzy(scope=scope, query=query, cwd=Path.cwd()))
+    elif mode is ContentSearchMode.RANKED:
+        emit(search_content_ranked(scope=scope, query=query, cwd=Path.cwd()))
+    else:
+        raise AssertionError(f"unsupported content search mode: {mode}")
+
+
+@search_app.command(name="metadata")
+def search_metadata_command(
+    *,
+    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both.")],
+    memory_type: Annotated[MemoryType | None, Parameter(name="type", help="Filter by memory type.")] = None,
+    tag: Annotated[str | None, Parameter(help="Filter by tag.")] = None,
+    created_after: Annotated[
+        str | None,
+        Parameter(help="Filter by ISO timestamp, for example 2026-06-13T00:00:00+00:00."),
+    ] = None,
+) -> None:
+    """Search memory frontmatter fields."""
+    emit(
+        search_metadata(
             scope=scope,
-            query=query,
-            max_results=max_results,
-            max_tokens=max_tokens,
+            memory_type=memory_type,
+            tag=tag,
+            created_after=created_after,
             cwd=Path.cwd(),
-        ),
-        end="",
+        )
     )
 
 
-@app.command(name="search-index")
-def search_index_command(query: str, *, scope: SearchScope, limit: int) -> None:
-    print(search_index(scope=scope, query=query, limit=limit, cwd=Path.cwd()), end="")
+@search_app.command(name="keys")
+def search_keys_command(
+    query: Annotated[str, Parameter(help="Query text for memory keys and titles.")],
+    *,
+    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both.")],
+) -> None:
+    """Search memory keys and titles."""
+    emit(search_keys(scope=scope, query=query, cwd=Path.cwd()))
 
 
 @app.command(name="retrieve")
-def retrieve(key: str) -> None:
-    print(retrieve_note(key=key, cwd=Path.cwd()), end="")
+def retrieve_command(key: Annotated[str, Parameter(help="Memory key to retrieve.")]) -> None:
+    """Retrieve one memory with graph context."""
+    print(retrieve_memory(key=key, cwd=Path.cwd()), end="")
 
 
-@app.command(name="squash")
-def squash(key: str, *, depth: int) -> None:
-    print(squash_note(key=key, depth=depth, cwd=Path.cwd()), end="")
+@maintain_app.command(name="squash")
+def maintain_squash_command(
+    key: Annotated[str, Parameter(help="Root memory key to squash.")],
+    *,
+    depth: Annotated[int, Parameter(help="Graph depth to include.")],
+) -> None:
+    """Consolidate a memory graph into rendered text."""
+    print(squash_memory(key=key, depth=depth, cwd=Path.cwd()), end="")
 
 
-@app.command(name="promote")
-def promote(key: str, *, destination: Annotated[str, Parameter(name="to")]) -> None:
-    emit(promote_note(key=key, destination=destination, cwd=Path.cwd()))
+@maintain_app.command(name="move")
+def maintain_move_command(
+    key: Annotated[str, Parameter(help="Memory key to move.")],
+    *,
+    destination: Annotated[str, Parameter(name="to", help="Destination scope path, such as global/traps.")],
+) -> None:
+    """Move a memory into a maintenance destination."""
+    emit(move_memory(key=key, destination=destination, cwd=Path.cwd()))
+
+
+@maintain_app.command(name="split")
+def maintain_split_command(
+    key: Annotated[str, Parameter(help="Memory key containing the section.")],
+    *,
+    section: Annotated[str, Parameter(help="Markdown section title to extract.")],
+) -> None:
+    """Extract a section into a separate memory."""
+    emit(split_memory(key=key, section=section, cwd=Path.cwd()))
+
+
+@maintain_app.command(name="merge")
+def maintain_merge_command(
+    key: Annotated[str, Parameter(help="Memory key receiving the referenced content.")],
+    *,
+    reference: Annotated[str, Parameter(help="Referenced memory key to inline.")],
+) -> None:
+    """Inline a referenced memory back into its parent."""
+    emit(merge_memory(key=key, reference=reference, cwd=Path.cwd()))
+
+
+@maintain_app.command(name="validate")
+def maintain_validate_command() -> None:
+    """Validate the current repository memory setup."""
+    emit(validate_memory_vault(cwd=Path.cwd()))
 
 
 @app.command(name="doctor")
-def doctor() -> None:
+def doctor_command() -> None:
+    """Validate the current repository memory setup."""
     emit(run_doctor(cwd=Path.cwd()))
 
 
 def emit(payload: Mapping[str, JsonValue]) -> None:
     print(json.dumps(payload, sort_keys=True))
+
+
+def main() -> None:
+    try:
+        app()
+    except UsageError as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(2) from error

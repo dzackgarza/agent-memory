@@ -28,6 +28,12 @@ class SearchScope(StrEnum):
     BOTH = "both"
 
 
+class ContentSearchMode(StrEnum):
+    EXACT = "exact"
+    FUZZY = "fuzzy"
+    RANKED = "ranked"
+
+
 class MemoryType(StrEnum):
     DECISION = "decision"
     TRAP = "trap"
@@ -44,11 +50,19 @@ class ProjectConfigFile(BaseModel):
     project_id: str
     project_root_strategy: ProjectRootStrategy
     global_scopes: list[str]
+    search_max_results: int
+    search_max_tokens: int
 
     @field_validator("vault", "project_id")
     @classmethod
     def require_nonempty(cls, value: str) -> str:
         assert value.strip(), "configuration strings must be nonempty"
+        return value
+
+    @field_validator("search_max_results", "search_max_tokens")
+    @classmethod
+    def require_positive_integer(cls, value: int) -> int:
+        assert value > 0, "search bounds must be positive"
         return value
 
 
@@ -59,6 +73,8 @@ class ProjectConfig(BaseModel):
     project_id: str
     project_root_strategy: ProjectRootStrategy
     global_scopes: tuple[str, ...]
+    search_max_results: int
+    search_max_tokens: int
 
     @classmethod
     def from_file_payload(cls, payload: ProjectConfigFile) -> ProjectConfig:
@@ -67,14 +83,18 @@ class ProjectConfig(BaseModel):
             project_id=payload.project_id,
             project_root_strategy=payload.project_root_strategy,
             global_scopes=tuple(payload.global_scopes),
+            search_max_results=payload.search_max_results,
+            search_max_tokens=payload.search_max_tokens,
         )
 
-    def to_toml_payload(self) -> dict[str, str | list[str]]:
+    def to_toml_payload(self) -> dict[str, str | int | list[str]]:
         return {
             "vault": str(self.vault),
             "project_id": self.project_id,
             "project_root_strategy": self.project_root_strategy,
             "global_scopes": list(self.global_scopes),
+            "search_max_results": self.search_max_results,
+            "search_max_tokens": self.search_max_tokens,
         }
 
 

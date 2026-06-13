@@ -6,6 +6,7 @@ import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from importlib import resources
 from pathlib import Path
 
 import tomli_w
@@ -13,7 +14,6 @@ import yaml
 from slugify import slugify
 
 from iwe2.models import (
-    GLOBAL_SCOPES,
     GlobalNoteMetadata,
     MemoryScope,
     MemoryType,
@@ -103,6 +103,39 @@ PROJECT_DIRECTORIES: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
+class StarterConfig:
+    default_vault: Path
+    global_scopes: tuple[str, ...]
+    search_max_results: int
+    search_max_tokens: int
+
+
+class UsageError(RuntimeError):
+    """Raised for invalid user setup state at the CLI boundary."""
+
+
+def starter_config() -> StarterConfig:
+    payload = tomllib.loads(resources.files("iwe2.defaults").joinpath("global.toml").read_text(encoding="utf-8"))
+    default_vault = payload["default_vault"]
+    global_scopes = payload["global_scopes"]
+    search_max_results = payload["search_max_results"]
+    search_max_tokens = payload["search_max_tokens"]
+    assert isinstance(default_vault, str), "starter config default_vault must be a string"
+    assert isinstance(global_scopes, list), "starter config global_scopes must be a list"
+    assert all(isinstance(scope, str) for scope in global_scopes), "starter config global_scopes entries must be strings"
+    assert isinstance(search_max_results, int), "starter config search_max_results must be an integer"
+    assert isinstance(search_max_tokens, int), "starter config search_max_tokens must be an integer"
+    assert search_max_results > 0, "starter config search_max_results must be positive"
+    assert search_max_tokens > 0, "starter config search_max_tokens must be positive"
+    return StarterConfig(
+        default_vault=Path(default_vault).expanduser(),
+        global_scopes=tuple(global_scopes),
+        search_max_results=search_max_results,
+        search_max_tokens=search_max_tokens,
+    )
+
+
+@dataclass(frozen=True)
 class MemoryDocument:
     metadata: dict[str, MetadataValue]
     body: str
@@ -113,7 +146,7 @@ class MemoryDocument:
         return value
 
 
-def init_vault(vault: Path) -> JsonObject:
+def init_global_vault(vault: Path) -> JsonObject:
     vault.mkdir(parents=True)
     run_checked(["git", "init"], cwd=vault)
     configure_vault_git(vault)
@@ -145,6 +178,7 @@ def init_vault(vault: Path) -> JsonObject:
 
 def init_project(vault: Path, cwd: Path) -> JsonObject:
     assert (vault / ".iwe" / "config.toml").is_file(), "vault must be initialized with IWE"
+    starter = starter_config()
     git_root = git_root_for(cwd)
     remote = git_remote(git_root)
     project_id = project_id_from_remote(remote)
@@ -174,7 +208,9 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
         vault=vault,
         project_id=project_id,
         project_root_strategy="git-root",
-        global_scopes=GLOBAL_SCOPES,
+        global_scopes=starter.global_scopes,
+        search_max_results=starter.search_max_results,
+        search_max_tokens=starter.search_max_tokens,
     )
     write_new_file(git_root / ".agent-memory.toml", tomli_w.dumps(config.to_toml_payload()))
     write_agents_pointer(git_root, vault, project_id)
@@ -191,7 +227,7 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
     }
 
 
-def create_note(
+def add_memory(
     scope: MemoryScope,
     memory_type: MemoryType,
     title: str,
@@ -214,71 +250,246 @@ def create_note(
     return {"key": key, "path": str(path)}
 
 
-def search_notes(scope: SearchScope, query: str, cwd: Path) -> str:
+def update_memory(
+    key: str,
+    title: str | None,
+    memory_type: MemoryType | None,
+    content: str | None,
+    cwd: Path,
+) -> JsonObject:
+    if title is None and memory_type is None and content is None:
+        raise UsageError("Update requires at least one of --title, --type, or --content.")
     config = load_project_config(cwd)
-    graph_outputs = [
-        run_checked(
+    source_path = config.vault / f"{key}.md"
+    document = read_memory(source_path)
+    old_title = metadata_string(document.metadata, "title")
+    old_scope = MemoryScope(metadata_string(document.metadata, "scope"))
+    old_type = MemoryType(metadata_string(document.metadata, "type"))
+    new_title = title if title is not None else old_title
+    new_type = memory_type if memory_type is not None else old_type
+    body = updated_memory_body(document.body, new_title, content)
+    description = okf_description(content if content is not None else body)
+    metadata = note_metadata(config, old_scope, new_type, new_title, description)
+    if old_scope is MemoryScope.PROJECT:
+        metadata["project_id"] = config.project_id
+    destination_dir = memory_directory(config, old_scope, new_type)
+    slug = slugify(new_title)
+    assert slug, "title must produce a nonempty slug"
+    destination_path = destination_dir / f"{slug}.md"
+    new_key = memory_key(config.vault, destination_path)
+    if new_key != key:
+        run_checked(["iwe", "rename", key, new_key], cwd=config.vault)
+    write_memory(destination_path, metadata, body)
+    if destination_path.parent == source_path.parent:
+        replace_index_link(destination_path.parent / "index.md", new_title, destination_path.name, description)
+    else:
+        remove_index_link(source_path.parent / "index.md", source_path.name, old_title)
+        append_index_link(destination_path.parent / "index.md", new_title, destination_path.name, description)
+    index_zk_notebook(config.vault)
+    commit_vault_changes(config.vault, f"Update {old_scope.value} {new_type.value} memory: {new_title}")
+    return {"key": new_key, "path": str(destination_path)}
+
+
+def delete_memory(key: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    path = config.vault / f"{key}.md"
+    document = read_memory(path)
+    title = metadata_string(document.metadata, "title")
+    remove_index_link(path.parent / "index.md", path.name, title)
+    run_checked(["iwe", "delete", key, "-f", "keys"], cwd=config.vault)
+    index_zk_notebook(config.vault)
+    commit_vault_changes(config.vault, f"Delete memory: {title}")
+    return {"deleted": key}
+
+
+def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    key_matches = key_search_records(config, scope, query)
+    exact_matches = exact_content_records(config, scope, query)
+    fuzzy_matches = fuzzy_content_records(config, scope, query)
+    results = dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[: config.search_max_results]
+    ranked_matches = search_content_ranked(scope, query, cwd)
+    ranked_results = ranked_matches["results"]
+    assert isinstance(ranked_results, list), "ranked search results must be a JSON list"
+    return {
+        "query": query,
+        "scope": scope.value,
+        "results": json_record_list(results),
+        "key_matches": json_record_list(key_matches),
+        "exact_content_matches": json_record_list(exact_matches),
+        "fuzzy_content_matches": json_record_list(fuzzy_matches),
+        "ranked_content_matches": ranked_results,
+    }
+
+
+def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    return {
+        "query": query,
+        "scope": scope.value,
+        "results": json_record_list(key_search_records(config, scope, query)),
+    }
+
+
+def search_content_exact(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    return {
+        "query": query,
+        "scope": scope.value,
+        "results": json_record_list(exact_content_records(config, scope, query)),
+    }
+
+
+def search_metadata(
+    scope: SearchScope,
+    memory_type: MemoryType | None,
+    tag: str | None,
+    created_after: str | None,
+    cwd: Path,
+) -> JsonObject:
+    config = load_project_config(cwd)
+    created_after_datetime = parse_created_after(created_after)
+    records: list[JsonObject] = []
+    required_fields = {"type", "title", "tags", "timestamp"}
+    for path in memory_files(config, scope):
+        document = read_memory(path)
+        if not required_fields.issubset(document.metadata.keys()):
+            continue
+        stored_type = metadata_string(document.metadata, "type")
+        if memory_type is not None and stored_type != memory_type.value:
+            continue
+        tags = document.metadata["tags"]
+        assert isinstance(tags, list), "memory tags must be a list"
+        assert all(isinstance(tag_value, str) for tag_value in tags), "memory tags must contain strings"
+        if tag is not None and tag not in tags:
+            continue
+        timestamp = metadata_string(document.metadata, "timestamp")
+        if created_after_datetime is not None and parse_memory_timestamp(timestamp) <= created_after_datetime:
+            continue
+        title = metadata_string(document.metadata, "title")
+        records.append(
+            {
+                "key": memory_key(config.vault, path),
+                "path": str(path),
+                "title": title,
+                "type": stored_type,
+                "tags": json_string_list(tags),
+                "timestamp": timestamp,
+            }
+        )
+    return {"scope": scope.value, "results": json_record_list(records[: config.search_max_results])}
+
+
+def key_search_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    records: list[JsonObject] = []
+    for anchor in search_anchors(config, scope):
+        output = run_checked(
             ["iwe", "find", query, "--included-by", anchor, "--format", "keys"],
             cwd=config.vault,
         ).stdout
-        for anchor in search_anchors(config, scope)
-    ]
-    roots = search_roots(config, scope)
-    body_output = run_ripgrep_search(
+        for key in output.splitlines():
+            if key:
+                records.append({"key": key, "source": "keys"})
+    return dedupe_records_by_key(records)[: config.search_max_results]
+
+
+def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    output = run_ripgrep_search(
         [
             "rg",
             "--line-number",
             "--with-filename",
             "--fixed-strings",
             query,
-            *[str(root) for root in roots],
+            *[str(root) for root in search_roots(config, scope)],
         ],
         cwd=config.vault,
     )
-    return "".join([*graph_outputs, body_output])
+    records: list[JsonObject] = []
+    for line in output.splitlines():
+        path_text, line_number_text, text = line.split(":", 2)
+        path = Path(path_text).resolve()
+        records.append(
+            {
+                "key": memory_key(config.vault, path),
+                "path": str(path),
+                "line": int(line_number_text),
+                "text": text,
+                "source": "exact",
+            }
+        )
+    return dedupe_records_by_key(records)[: config.search_max_results]
 
 
-def search_context(
-    scope: SearchScope,
-    query: str,
-    max_results: int,
-    max_tokens: int,
-    cwd: Path,
-) -> str:
-    assert max_results > 0, f"probe max results must be positive: {max_results}"
-    assert max_tokens > 0, f"probe max tokens must be positive: {max_tokens}"
+def fuzzy_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    results: list[JsonObject] = []
+    for root in search_roots(config, scope):
+        results.extend(
+            zk_search_root(
+                vault=config.vault,
+                root=root,
+                query=query,
+                limit=config.search_max_results,
+            )
+        )
+    return dedupe_records_by_key(results)[: config.search_max_results]
+
+
+def dedupe_records_by_key(records: Sequence[JsonObject]) -> list[JsonObject]:
+    seen: set[str] = set()
+    deduped: list[JsonObject] = []
+    for record in records:
+        key = record["key"]
+        assert isinstance(key, str), "search records must include string keys"
+        if key not in seen:
+            seen.add(key)
+            deduped.append(record)
+    return deduped
+
+
+def json_record_list(records: Sequence[JsonObject]) -> list[JsonValue]:
+    return [record for record in records]
+
+
+def json_string_list(values: Sequence[str]) -> list[JsonValue]:
+    return [value for value in values]
+
+
+def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     roots = search_roots(config, scope)
-    per_root_tokens = max_tokens // len(roots)
-    assert per_root_tokens > 0, "probe max tokens must cover every selected scope root"
+    per_root_tokens = config.search_max_tokens // len(roots)
+    assert per_root_tokens > 0, "ranked content search token budget must cover every selected scope root"
     payloads = [
         probe_search_root(
             root=root,
             query=query,
-            max_results=max_results,
+            max_results=config.search_max_results,
             max_tokens=per_root_tokens,
             cwd=config.vault,
         )
         for root in roots
     ]
-    return json.dumps(
-        merge_probe_payloads(
-            payloads,
-            max_results=max_results,
-            max_tokens=max_tokens,
-        ),
-        sort_keys=True,
+    return merge_probe_payloads(
+        payloads,
+        max_results=config.search_max_results,
+        max_tokens=config.search_max_tokens,
     )
 
 
-def search_index(scope: SearchScope, query: str, limit: int, cwd: Path) -> str:
-    assert limit > 0, f"zk indexed search limit must be positive: {limit}"
+def search_content_fuzzy(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    roots = search_roots(config, scope)
     results: list[JsonValue] = []
-    for root in roots:
-        results.extend(zk_search_root(vault=config.vault, root=root, query=query, limit=limit))
-    return json.dumps({"results": results[:limit]}, sort_keys=True)
+    for root in search_roots(config, scope):
+        results.extend(
+            zk_search_root(
+                vault=config.vault,
+                root=root,
+                query=query,
+                limit=config.search_max_results,
+            )
+        )
+    return {"query": query, "scope": scope.value, "results": results[: config.search_max_results]}
 
 
 def zk_search_root(vault: Path, root: Path, query: str, limit: int) -> list[JsonObject]:
@@ -411,6 +622,8 @@ def probe_results(payload: JsonObject) -> list[JsonObject]:
 
 
 def probe_skipped_files(payload: JsonObject) -> list[JsonObject]:
+    if "skipped_files" not in payload:
+        return []
     raw_skipped = payload["skipped_files"]
     assert isinstance(raw_skipped, list), "probe skipped files must be a list"
     skipped_files: list[JsonObject] = []
@@ -440,27 +653,47 @@ def json_int(payload: JsonObject, key: str) -> int:
     return value
 
 
-def retrieve_note(key: str, cwd: Path) -> str:
+def retrieve_memory(key: str, cwd: Path) -> str:
     config = load_project_config(cwd)
     result = run_checked(["iwe", "retrieve", "-k", key], cwd=config.vault)
     return result.stdout
 
 
-def squash_note(key: str, depth: int, cwd: Path) -> str:
+def squash_memory(key: str, depth: int, cwd: Path) -> str:
     assert depth > 0, f"squash depth must be positive: {depth}"
     config = load_project_config(cwd)
     result = run_checked(["iwe", "squash", key, "--depth", str(depth)], cwd=config.vault)
     return result.stdout
 
 
-def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
+def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    assert destination.startswith("global/"), "promotion destination must be global"
+    result = run_checked(["iwe", "extract", key, "--section", section, "-f", "keys"], cwd=config.vault)
+    index_zk_notebook(config.vault)
+    commit_vault_changes(config.vault, f"Split memory section: {section}")
+    return {"key": key, "section": section, "output": result.stdout}
+
+
+def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    result = run_checked(["iwe", "inline", key, "--reference", reference, "-f", "keys"], cwd=config.vault)
+    index_zk_notebook(config.vault)
+    commit_vault_changes(config.vault, f"Merge memory reference: {reference}")
+    return {"key": key, "reference": reference, "output": result.stdout}
+
+
+def validate_memory_vault(cwd: Path) -> JsonObject:
+    return doctor(cwd)
+
+
+def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    assert destination.startswith("global/"), "move destination must be global"
     source_path = config.vault / f"{key}.md"
-    assert source_path.is_file(), "memory to promote must exist"
+    assert source_path.is_file(), "memory to move must exist"
     destination_key = f"{destination}/{source_path.stem}"
     destination_path = config.vault / f"{destination_key}.md"
-    assert destination_path.parent.is_dir(), "promotion destination directory must exist"
+    assert destination_path.parent.is_dir(), "move destination directory must exist"
 
     source_document = read_memory(source_path)
     memory_type = MemoryType(source_document.metadata_str("type"))
@@ -468,8 +701,8 @@ def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
     description = source_document.metadata_str("description")
     run_checked(["iwe", "rename", key, destination_key], cwd=config.vault)
 
-    promoted_document = read_memory(destination_path)
-    promoted_metadata = PromotedNoteMetadata(
+    moved_document = read_memory(destination_path)
+    moved_metadata = PromotedNoteMetadata(
         type=memory_type,
         title=title,
         description=description,
@@ -481,7 +714,7 @@ def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
         promotable=False,
         origin_project_id=config.project_id,
     ).to_yaml_payload()
-    write_memory(destination_path, promoted_metadata, promoted_document.body)
+    write_memory(destination_path, moved_metadata, moved_document.body)
     append_index_link(
         destination_path.parent / "index.md",
         title,
@@ -507,7 +740,7 @@ def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
     write_new_memory(source_path, pointer_metadata, pointer_body)
     replace_index_link(source_path.parent / "index.md", title, source_path.name, pointer_description)
     index_zk_notebook(config.vault)
-    commit_vault_changes(config.vault, f"Promote memory {key} to {destination_key}")
+    commit_vault_changes(config.vault, f"Move memory {key} to {destination_key}")
     return {"key": destination_key, "path": str(destination_path)}
 
 
@@ -575,13 +808,14 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         "```\n\n"
         "Record durable repo-specific lessons with:\n\n"
         "```bash\n"
-        "iwe2 note --scope project --type decision --title <title> --content <content>\n"
-        "iwe2 note --scope project --type trap --title <title> --content <content>\n"
-        "iwe2 note --scope project --type workflow --title <title> --content <content>\n"
+        "iwe2 add --scope project --type decision --title <title> --content <content>\n"
+        "iwe2 add --scope project --type trap --title <title> --content <content>\n"
+        "iwe2 add --scope project --type workflow --title <title> --content <content>\n"
         "```\n\n"
-        "Promote reusable lessons with:\n\n"
+        "Use `iwe2 retrieve <key>`, `iwe2 update <key>`, and `iwe2 delete <key>` for memory CRUD.\n\n"
+        "Move reusable lessons during maintenance with:\n\n"
         "```bash\n"
-        "iwe2 promote <note-key> --to global/advice\n"
+        "iwe2 maintain move <key> --to global/advice\n"
         "```\n"
         f"{AGENTS_SECTION_END}\n"
     )
@@ -678,6 +912,36 @@ def replace_index_link(index_path: Path, title: str, target: str, description: s
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def remove_index_link(index_path: Path, target: str, title: str) -> None:
+    assert index_path.is_file(), "index must exist before removing a link"
+    lines = index_path.read_text(encoding="utf-8").splitlines()
+    okf_prefixes = (f"* [{title}]({target}) - ", f"- [{title}]({target}) - ")
+    graph_link = f"[{title}]({target})"
+    matching_indexes = [index for index, line in enumerate(lines) if line.startswith(okf_prefixes)]
+    assert len(matching_indexes) == 1, "index must contain exactly one removable OKF link"
+    entry_start = matching_indexes[0]
+    assert lines[entry_start + 1] == "", "index entry must separate OKF and IWE links"
+    assert lines[entry_start + 2] == graph_link, "index entry must include the matching IWE graph link"
+    del lines[entry_start : entry_start + 3]
+    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def metadata_string(metadata: dict[str, MetadataValue], key: str) -> str:
+    value = metadata[key]
+    assert isinstance(value, str), f"metadata field {key} must be a string"
+    return value
+
+
+def updated_memory_body(current_body: str, title: str, content: str | None) -> str:
+    if content is not None:
+        return f"# {title}\n\n{content}\n"
+    lines = current_body.splitlines(keepends=True)
+    assert lines, "memory body must not be empty"
+    assert lines[0].startswith("# "), "memory body must begin with a level-one title"
+    lines[0] = f"# {title}\n"
+    return "".join(lines)
+
+
 def git_root_for(cwd: Path) -> Path:
     result = run_checked(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
     root = Path(result.stdout.strip())
@@ -710,6 +974,13 @@ def project_id_from_remote(remote: str) -> str:
 def load_project_config(cwd: Path) -> ProjectConfig:
     git_root = git_root_for(cwd)
     config_path = git_root / ".agent-memory.toml"
+    if not config_path.is_file():
+        starter = starter_config()
+        raise UsageError(
+            "No project memory config found. Run `iwe2 maintain init-global --vault "
+            f"{starter.default_vault}` once if the global vault does not exist, then run "
+            "`iwe2 init project --vault <path-to-global-vault>` from this repository."
+        )
     raw = ProjectConfigFile.model_validate(tomllib.loads(config_path.read_text(encoding="utf-8")))
     return ProjectConfig.from_file_payload(raw)
 
@@ -824,6 +1095,29 @@ def search_roots(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
 
 def memory_key(vault: Path, path: Path) -> str:
     return path.relative_to(vault).with_suffix("").as_posix()
+
+
+def memory_files(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for root in search_roots(config, scope):
+        for path in sorted(root.rglob("*.md")):
+            if path.read_text(encoding="utf-8").startswith("---\n"):
+                paths.append(path)
+    return tuple(paths)
+
+
+def parse_created_after(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None, "created-after must include timezone information"
+    return parsed
+
+
+def parse_memory_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None, "memory timestamp must include timezone information"
+    return parsed
 
 
 def write_new_memory(path: Path, metadata: dict[str, MetadataValue], body: str) -> None:

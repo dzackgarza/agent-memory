@@ -1,4 +1,4 @@
-from iwe2.cli import app
+from iwe2.cli import main
 
 if __name__ == "__main__":
-    app()
+    main()
