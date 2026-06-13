@@ -8,7 +8,7 @@ Stack:
 - Cyclopts for CLI shape and help generation.
 - Pydantic v2 for strict command/config models.
 - Standard library `tomllib` plus `tomli-w` for TOML output.
-- IWE, `rg`, `npx`, and `@probelabs/probe` as required subprocess dependencies.
+- Git, IWE, `rg`, `npx`, and `@probelabs/probe` as required subprocess dependencies.
 
 Repository structure:
 
