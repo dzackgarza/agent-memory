@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +11,33 @@ from pathlib import Path
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ZK_VERSION = "v0.15.5"
+ZK_ASSET = "zk-v0.15.5-linux-amd64.tar.gz"
+ZK_BIN_DIR = Path(tempfile.mkdtemp(prefix="iwe2-zk-"))
+subprocess.run(
+    [
+        "gh",
+        "release",
+        "download",
+        ZK_VERSION,
+        "--repo",
+        "zk-org/zk",
+        "--pattern",
+        ZK_ASSET,
+        "--dir",
+        str(ZK_BIN_DIR),
+    ],
+    check=True,
+    text=True,
+    capture_output=True,
+)
+subprocess.run(
+    ["tar", "-xzf", str(ZK_BIN_DIR / ZK_ASSET), "-C", str(ZK_BIN_DIR)],
+    check=True,
+    text=True,
+    capture_output=True,
+)
+assert (ZK_BIN_DIR / "zk").is_file()
 GLOBAL_GRAPH_KEYS = [
     "global/index",
     "global/advice/index",
@@ -45,6 +74,7 @@ def run_iwe2(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         check=True,
         text=True,
         capture_output=True,
+        env=iwe2_env(),
     )
 
 
@@ -65,11 +95,18 @@ def run_iwe2_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         check=True,
         text=True,
         capture_output=True,
+        env=iwe2_env(),
     )
 
 
 def run_iwe(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["iwe", *args], cwd=cwd, check=True, text=True, capture_output=True)
+
+
+def iwe2_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PATH"] = f"{ZK_BIN_DIR}:{env['PATH']}"
+    return env
 
 
 def tree_keys(cwd: Path, key: str) -> list[str]:
@@ -128,6 +165,18 @@ def probe_result_files(result: dict[str, object]) -> set[Path]:
     return files
 
 
+def indexed_result_keys(result: dict[str, object]) -> set[str]:
+    records = result["results"]
+    assert isinstance(records, list)
+    keys: set[str] = set()
+    for record in records:
+        assert isinstance(record, dict)
+        key = record["key"]
+        assert isinstance(key, str)
+        keys.add(key)
+    return keys
+
+
 def load_project_config(repo: Path) -> dict[str, object]:
     return tomllib.loads((repo / ".agent-memory.toml").read_text())
 
@@ -182,6 +231,11 @@ def test_vault_init_creates_iwe_backed_layout(tmp_path: Path) -> None:
 
     assert Path(str(payload["vault"])) == vault
     assert git_probe.stdout.strip() == "true"
+    assert "A  .gitignore" in status_lines
+    assert "A  .zk/config.toml" in status_lines
+    assert "A  .zk/templates/default.md" in status_lines
+    assert "A  .zk/notebook.db" not in status_lines
+    assert "?? .zk/notebook.db" not in status_lines
     assert "A  index.md" in status_lines
     assert "?? index.md" not in status_lines
     assert (vault / ".iwe" / "config.toml").is_file()
@@ -463,6 +517,88 @@ def test_search_context_uses_probe_with_scope_roots(tmp_path: Path) -> None:
     assert Path(str(global_note["path"])).resolve() in combined_files
 
 
+def test_search_index_uses_zk_index_with_scope_roots(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_id = init_git_repo(repo)
+    vault = tmp_path / "vault"
+    run_iwe2(tmp_path, "vault", "init", str(vault))
+    run_iwe2(repo, "project", "init", "--vault", str(vault))
+
+    project_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "note",
+            "--scope",
+            "project",
+            "--type",
+            "decision",
+            "--title",
+            "Indexed Project Context",
+            "--content",
+            "indexed-search-token-3b9a project-only zk evidence",
+        )
+    )
+    global_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "note",
+            "--scope",
+            "global",
+            "--type",
+            "advice",
+            "--title",
+            "Indexed Global Context",
+            "--content",
+            "indexed-search-token-3b9a global-only zk evidence",
+        )
+    )
+
+    project_key = f"projects/{project_id}/decisions/indexed-project-context"
+    global_key = "global/advice/indexed-global-context"
+    assert project_note["key"] == project_key
+    assert global_note["key"] == global_key
+
+    project_search = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "search-index",
+            "--scope",
+            "project",
+            "--limit",
+            "5",
+            "indexed-search-token-3b9a",
+        )
+    )
+    assert indexed_result_keys(project_search) == {project_key}
+
+    global_search = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "search-index",
+            "--scope",
+            "global",
+            "--limit",
+            "5",
+            "indexed-search-token-3b9a",
+        )
+    )
+    assert indexed_result_keys(global_search) == {global_key}
+
+    combined_search = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "search-index",
+            "--scope",
+            "both",
+            "--limit",
+            "10",
+            "indexed-search-token-3b9a",
+        )
+    )
+    assert indexed_result_keys(combined_search) == {project_key, global_key}
+
+
 def test_squash_consolidates_project_graph_with_iwe(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -617,4 +753,4 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     assert doctor["vault"] == str(vault)
     assert doctor["project_id"] == project_id
     assert doctor["project_root"] == str(repo)
-    assert doctor["tools"] == ["git", "iwe", "rg", "npx", "@probelabs/probe"]
+    assert doctor["tools"] == ["git", "iwe", "rg", "npx", "@probelabs/probe", "zk"]
