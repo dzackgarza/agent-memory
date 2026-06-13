@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import tomllib
 from collections.abc import Sequence
@@ -24,7 +25,7 @@ from iwe2.models import (
     SearchScope,
 )
 
-JsonValue = str | list[str]
+type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 JsonObject = dict[str, JsonValue]
 IndexEntry = tuple[str, str, str]
 ProjectRecord = dict[str, str]
@@ -222,6 +223,155 @@ def search_notes(scope: SearchScope, query: str, cwd: Path) -> str:
         cwd=config.vault,
     )
     return "".join([*graph_outputs, body_output])
+
+
+def search_context(
+    scope: SearchScope,
+    query: str,
+    max_results: int,
+    max_tokens: int,
+    cwd: Path,
+) -> str:
+    assert max_results > 0, f"probe max results must be positive: {max_results}"
+    assert max_tokens > 0, f"probe max tokens must be positive: {max_tokens}"
+    config = load_project_config(cwd)
+    roots = search_roots(config, scope)
+    per_root_tokens = max_tokens // len(roots)
+    assert per_root_tokens > 0, "probe max tokens must cover every selected scope root"
+    payloads = [
+        probe_search_root(
+            root=root,
+            query=query,
+            max_results=max_results,
+            max_tokens=per_root_tokens,
+            cwd=config.vault,
+        )
+        for root in roots
+    ]
+    return json.dumps(
+        merge_probe_payloads(
+            payloads,
+            max_results=max_results,
+            max_tokens=max_tokens,
+        ),
+        sort_keys=True,
+    )
+
+
+def probe_search_root(
+    root: Path,
+    query: str,
+    max_results: int,
+    max_tokens: int,
+    cwd: Path,
+) -> JsonObject:
+    result = run_checked(
+        [
+            "npx",
+            "-y",
+            "@probelabs/probe@latest",
+            "search",
+            query,
+            str(root),
+            "--format",
+            "json",
+            "--max-results",
+            str(max_results),
+            "--max-tokens",
+            str(max_tokens),
+        ],
+        cwd=cwd,
+    )
+    decoded = json.loads(result.stdout)
+    assert isinstance(decoded, dict), "probe search must emit a JSON object"
+    return decoded
+
+
+def merge_probe_payloads(
+    payloads: Sequence[JsonObject],
+    max_results: int,
+    max_tokens: int,
+) -> JsonObject:
+    assert payloads, "probe payload merge requires at least one payload"
+    results: list[JsonObject] = []
+    skipped_files: list[JsonObject] = []
+    total_bytes = 0
+    total_tokens = 0
+    versions: set[str] = set()
+    for payload in payloads:
+        results.extend(probe_results(payload))
+        skipped_files.extend(probe_skipped_files(payload))
+        limits = json_child(payload, "limits")
+        total_bytes += json_int(limits, "total_bytes")
+        total_tokens += json_int(limits, "total_tokens")
+        version = payload["version"]
+        assert isinstance(version, str), "probe version must be a string"
+        versions.add(version)
+    assert len(versions) == 1, "all probe payloads must come from the same Probe version"
+    ranked_results = sorted(results, key=probe_score, reverse=True)[:max_results]
+    json_results: list[JsonValue] = []
+    for result in ranked_results:
+        json_results.append(result)
+    json_skipped_files: list[JsonValue] = []
+    for skipped_file in skipped_files:
+        json_skipped_files.append(skipped_file)
+    return {
+        "limits": {
+            "max_bytes": None,
+            "max_results": max_results,
+            "max_tokens": max_tokens,
+            "total_bytes": total_bytes,
+            "total_tokens": total_tokens,
+        },
+        "results": json_results,
+        "skipped_files": json_skipped_files,
+        "summary": {
+            "count": len(ranked_results),
+            "total_bytes": total_bytes,
+            "total_tokens": total_tokens,
+        },
+        "version": versions.pop(),
+    }
+
+
+def probe_results(payload: JsonObject) -> list[JsonObject]:
+    raw_results = payload["results"]
+    assert isinstance(raw_results, list), "probe results must be a list"
+    results: list[JsonObject] = []
+    for result in raw_results:
+        assert isinstance(result, dict), "probe result entries must be JSON objects"
+        results.append(result)
+    return results
+
+
+def probe_skipped_files(payload: JsonObject) -> list[JsonObject]:
+    raw_skipped = payload["skipped_files"]
+    assert isinstance(raw_skipped, list), "probe skipped files must be a list"
+    skipped_files: list[JsonObject] = []
+    for skipped_file in raw_skipped:
+        assert isinstance(skipped_file, dict), "probe skipped-file entries must be JSON objects"
+        skipped_files.append(skipped_file)
+    return skipped_files
+
+
+def probe_score(result: JsonObject) -> float:
+    score = result["score"]
+    assert isinstance(score, int | float), "probe result score must be numeric"
+    assert not isinstance(score, bool), "probe result score must be numeric"
+    return float(score)
+
+
+def json_child(payload: JsonObject, key: str) -> JsonObject:
+    child = payload[key]
+    assert isinstance(child, dict), f"probe {key} must be a JSON object"
+    return child
+
+
+def json_int(payload: JsonObject, key: str) -> int:
+    value = payload[key]
+    assert isinstance(value, int), f"probe {key} must be an integer"
+    assert not isinstance(value, bool), f"probe {key} must be an integer"
+    return value
 
 
 def retrieve_note(key: str, cwd: Path) -> str:

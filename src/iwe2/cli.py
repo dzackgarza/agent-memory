@@ -15,6 +15,7 @@ from iwe2.operations import (
     init_vault,
     promote_note,
     retrieve_note,
+    search_context,
     search_notes,
     squash_note,
 )
@@ -59,6 +60,26 @@ def note(
 @app.command(name="search")
 def search(query: str, *, scope: SearchScope) -> None:
     print(search_notes(scope=scope, query=query, cwd=Path.cwd()), end="")
+
+
+@app.command(name="search-context")
+def search_context_command(
+    query: str,
+    *,
+    scope: SearchScope,
+    max_results: int,
+    max_tokens: int,
+) -> None:
+    print(
+        search_context(
+            scope=scope,
+            query=query,
+            max_results=max_results,
+            max_tokens=max_tokens,
+            cwd=Path.cwd(),
+        ),
+        end="",
+    )
 
 
 @app.command(name="retrieve")

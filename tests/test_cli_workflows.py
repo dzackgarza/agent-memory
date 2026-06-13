@@ -427,7 +427,7 @@ def test_search_context_uses_probe_with_scope_roots(tmp_path: Path) -> None:
             "--scope",
             "both",
             "--max-results",
-            "5",
+            "20",
             "--max-tokens",
             "4000",
             "ranked-context-token-48a4",
