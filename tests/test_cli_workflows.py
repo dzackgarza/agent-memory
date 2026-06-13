@@ -162,8 +162,15 @@ def test_vault_init_creates_iwe_backed_layout(tmp_path: Path) -> None:
 
     result = run_iwe2(tmp_path, "vault", "init", str(vault))
     payload = parse_json_stdout(result)
+    git_probe = subprocess.run(
+        ["git", "-C", str(vault), "rev-parse", "--is-inside-work-tree"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
     assert Path(str(payload["vault"])) == vault
+    assert git_probe.stdout.strip() == "true"
     assert (vault / ".iwe" / "config.toml").is_file()
     assert (vault / "index.md").is_file()
     assert (vault / "global" / "index.md").is_file()
