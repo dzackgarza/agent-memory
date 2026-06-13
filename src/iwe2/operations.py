@@ -132,6 +132,7 @@ def init_vault(vault: Path) -> JsonObject:
     )
     write_section_indexes(vault / "global", GLOBAL_INDEX_DIRECTORIES)
     write_new_file(vault / "_meta" / "projects.toml", tomli_w.dumps({"projects": []}))
+    stage_vault_changes(vault)
     return {"vault": str(vault)}
 
 
@@ -174,6 +175,7 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
         vault / "_meta" / "projects.toml",
         {"project_id": project_id, "root": str(git_root), "remote": remote},
     )
+    stage_vault_changes(vault)
     return {
         "project_id": project_id,
         "vault": str(vault),
@@ -199,6 +201,7 @@ def create_note(
     body = f"# {title}\n\n{content}\n"
     write_new_memory(path, metadata, body)
     append_index_link(directory / "index.md", title, path.name, description)
+    stage_vault_changes(config.vault)
     return {"key": key, "path": str(path)}
 
 
@@ -441,6 +444,7 @@ def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
     assert source_path.parent.is_dir(), "project memory parent must be a directory"
     write_new_memory(source_path, pointer_metadata, pointer_body)
     replace_index_link(source_path.parent / "index.md", title, source_path.name, pointer_description)
+    stage_vault_changes(config.vault)
     return {"key": destination_key, "path": str(destination_path)}
 
 
@@ -461,6 +465,10 @@ def doctor(cwd: Path) -> JsonObject:
 
 def run_checked(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, cwd=cwd, check=True, text=True, capture_output=True)
+
+
+def stage_vault_changes(vault: Path) -> None:
+    run_checked(["git", "add", "--all", "."], cwd=vault)
 
 
 def write_new_file(path: Path, content: str) -> None:
