@@ -147,6 +147,26 @@ def git_status_lines(repo: Path) -> set[str]:
     return set(result.stdout.splitlines())
 
 
+def git_commit_subjects(repo: Path) -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "log", "--format=%s"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.splitlines()
+
+
+def git_tracked_files(repo: Path) -> set[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "ls-files"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return set(result.stdout.splitlines())
+
+
 def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     decoded = json.loads(result.stdout)
     assert isinstance(decoded, dict)
@@ -228,16 +248,17 @@ def test_vault_init_creates_iwe_backed_layout(tmp_path: Path) -> None:
         capture_output=True,
     )
     status_lines = git_status_lines(vault)
+    tracked_files = git_tracked_files(vault)
 
     assert Path(str(payload["vault"])) == vault
     assert git_probe.stdout.strip() == "true"
-    assert "A  .gitignore" in status_lines
-    assert "A  .zk/config.toml" in status_lines
-    assert "A  .zk/templates/default.md" in status_lines
-    assert "A  .zk/notebook.db" not in status_lines
-    assert "?? .zk/notebook.db" not in status_lines
-    assert "A  index.md" in status_lines
-    assert "?? index.md" not in status_lines
+    assert git_commit_subjects(vault) == ["Initialize iwe2 vault"]
+    assert status_lines == set()
+    assert ".gitignore" in tracked_files
+    assert ".zk/config.toml" in tracked_files
+    assert ".zk/templates/default.md" in tracked_files
+    assert ".zk/notebook.db" not in tracked_files
+    assert "index.md" in tracked_files
     assert (vault / ".iwe" / "config.toml").is_file()
     assert (vault / "index.md").is_file()
     assert (vault / "global" / "index.md").is_file()
@@ -333,11 +354,13 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
     global_path = Path(str(global_note["path"]))
     assert project_path == vault / "projects" / project_id / "decisions" / "project-alpha.md"
     assert global_path == vault / "global" / "advice" / "global-beta.md"
-    status_lines = git_status_lines(vault)
-    assert f"A  projects/{project_id}/decisions/project-alpha.md" in status_lines
-    assert "A  global/advice/global-beta.md" in status_lines
-    assert f"?? projects/{project_id}/decisions/project-alpha.md" not in status_lines
-    assert "?? global/advice/global-beta.md" not in status_lines
+    assert git_status_lines(vault) == set()
+    assert git_commit_subjects(vault)[:4] == [
+        "Record global advice memory: Global Beta",
+        "Record project decision memory: Project Alpha",
+        f"Register project {project_id}",
+        "Initialize iwe2 vault",
+    ]
     assert_okf_concept_metadata(
         frontmatter(project_path),
         memory_type="decision",
