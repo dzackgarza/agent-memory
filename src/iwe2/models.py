@@ -87,7 +87,6 @@ class BaseNoteMetadata(BaseModel):
     tags: list[str]
     timestamp: str
     scope: MemoryScope
-    status: Literal["active"]
     source: Literal["agent"]
     confidence: Literal["high"]
     promotable: bool
@@ -100,7 +99,6 @@ class BaseNoteMetadata(BaseModel):
             "tags": self.tags,
             "timestamp": self.timestamp,
             "scope": self.scope.value,
-            "status": self.status,
             "source": self.source,
             "confidence": self.confidence,
             "promotable": self.promotable,
