@@ -112,6 +112,7 @@ class MemoryDocument:
 
 def init_vault(vault: Path) -> JsonObject:
     vault.mkdir(parents=True)
+    run_checked(["git", "init"], cwd=vault)
     run_checked(["iwe", "init"], cwd=vault)
     for relative_dir in VAULT_DIRECTORIES:
         (vault / relative_dir).mkdir(parents=True)
