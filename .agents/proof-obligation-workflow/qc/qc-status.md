@@ -65,7 +65,7 @@ uv run --project /home/dzack/iwe2 --directory /home/dzack/iwe2 pytest tests/test
 Result:
 
 ```text
-11 passed in 53.73s
+11 passed in 54.37s
 ```
 
 The delegated `just test` run did not reach pytest because deptry stopped the gate
