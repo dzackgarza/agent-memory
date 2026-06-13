@@ -35,8 +35,8 @@ Raw finding block:
 pyproject.toml: DEP002 'python-slugify' defined as a dependency but not used in the codebase
 pyproject.toml: DEP002 'PyYAML' defined as a dependency but not used in the codebase
 pyproject.toml: DEP002 'types-PyYAML' defined as a dependency but not used in the codebase
-src/iwe2/operations.py:10:8: DEP001 'yaml' imported but missing from the dependency definitions
-src/iwe2/operations.py:11:1: DEP001 'slugify' imported but missing from the dependency definitions
+src/iwe2/operations.py:12:8: DEP001 'yaml' imported but missing from the dependency definitions
+src/iwe2/operations.py:13:1: DEP001 'slugify' imported but missing from the dependency definitions
 Found 5 dependency issues.
 ```
 
@@ -65,7 +65,7 @@ uv run --project /home/dzack/iwe2 --directory /home/dzack/iwe2 pytest tests/test
 Result:
 
 ```text
-5 passed in 12.15s
+11 passed in 53.73s
 ```
 
 The delegated `just test` run did not reach pytest because deptry stopped the gate

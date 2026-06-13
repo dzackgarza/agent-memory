@@ -12,6 +12,7 @@ Public commands:
 - `iwe2 note --scope <project|global> --type <type> --title <title> --content <content>`
 - `iwe2 search --scope <project|global|both> <query>`
 - `iwe2 search-context --scope <project|global|both> --max-results <count> --max-tokens <count> <query>`
+- `iwe2 search-index --scope <project|global|both> --limit <count> <query>`
 - `iwe2 retrieve <key>`
 - `iwe2 squash <key> --depth <depth>`
 - `iwe2 promote <key> --to <global-subdir>`
