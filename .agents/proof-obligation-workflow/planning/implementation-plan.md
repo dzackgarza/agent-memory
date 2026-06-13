@@ -32,7 +32,9 @@ Public API:
 State model:
 
 - The central vault is the source of memory files.
-- The repo-local `.agent-memory.toml` is a required pointer for project-scoped commands.
+- The repo-local `.agent-memory.toml` is a required machine-readable pointer for
+  project-scoped commands.
+- The repo-local `AGENTS.md` memory section is a required human/agent bootstrap pointer.
 - Notes are Markdown files with strict frontmatter and body text.
 - Project IDs are derived from Git remotes using the transcript's `github.com__owner__repo` shape.
 

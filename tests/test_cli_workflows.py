@@ -278,6 +278,55 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
     assert "project-signal-7dcbd96d belongs only to this repository" in retrieved.stdout
 
 
+def test_project_init_replaces_existing_agents_memory_pointer(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_id = init_git_repo(repo)
+    (repo / "AGENTS.md").write_text(
+        "# Existing repo instructions\n\n"
+        "Preserve local setup rules before memory.\n\n"
+        "<!-- iwe2:agent-memory:start -->\n"
+        "stale vault: /tmp/not-the-current-vault\n"
+        "<!-- iwe2:agent-memory:end -->\n\n"
+        "Preserve local setup rules after memory.\n",
+        encoding="utf-8",
+    )
+    vault = tmp_path / "vault"
+    run_iwe2(tmp_path, "vault", "init", str(vault))
+
+    run_iwe2(repo, "project", "init", "--vault", str(vault))
+
+    agents_pointer = (repo / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Preserve local setup rules before memory." in agents_pointer
+    assert "Preserve local setup rules after memory." in agents_pointer
+    assert "/tmp/not-the-current-vault" not in agents_pointer
+    assert agents_pointer.count("<!-- iwe2:agent-memory:start -->") == 1
+    assert agents_pointer.count("<!-- iwe2:agent-memory:end -->") == 1
+    assert f"This repository uses the central agent memory vault at `{vault}`." in agents_pointer
+    assert f"Project memory key: `projects/{project_id}/index`." in agents_pointer
+
+
+def test_project_init_appends_agents_memory_pointer_to_unmarked_agents(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_id = init_git_repo(repo)
+    (repo / "AGENTS.md").write_text(
+        "# Existing repo instructions\n\nPreserve instructions that are not managed by iwe2.\n",
+        encoding="utf-8",
+    )
+    vault = tmp_path / "vault"
+    run_iwe2(tmp_path, "vault", "init", str(vault))
+
+    run_iwe2(repo, "project", "init", "--vault", str(vault))
+
+    agents_pointer = (repo / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Preserve instructions that are not managed by iwe2." in agents_pointer
+    assert agents_pointer.count("<!-- iwe2:agent-memory:start -->") == 1
+    assert agents_pointer.count("<!-- iwe2:agent-memory:end -->") == 1
+    assert f"This repository uses the central agent memory vault at `{vault}`." in agents_pointer
+    assert f"Project memory key: `projects/{project_id}/index`." in agents_pointer
+
+
 def test_promote_moves_memory_to_global_and_leaves_project_pointer(
     tmp_path: Path,
 ) -> None:

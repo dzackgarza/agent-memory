@@ -30,6 +30,8 @@ IndexEntry = tuple[str, str, str]
 ProjectRecord = dict[str, str]
 
 OKF_VERSION = "0.1"
+AGENTS_SECTION_START = "<!-- iwe2:agent-memory:start -->"
+AGENTS_SECTION_END = "<!-- iwe2:agent-memory:end -->"
 ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
 GLOBAL_INDEX_DESCRIPTIONS: dict[str, str] = {
     "advice": "Global advice memories.",
@@ -165,6 +167,7 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
         global_scopes=GLOBAL_SCOPES,
     )
     write_new_file(git_root / ".agent-memory.toml", tomli_w.dumps(config.to_toml_payload()))
+    write_agents_pointer(git_root, vault, project_id)
     append_project_record(
         vault / "_meta" / "projects.toml",
         {"project_id": project_id, "root": str(git_root), "remote": remote},
@@ -298,6 +301,51 @@ def run_checked(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[s
 def write_new_file(path: Path, content: str) -> None:
     assert not path.exists(), f"refusing to overwrite {path}"
     path.write_text(content, encoding="utf-8")
+
+
+def agents_pointer_section(vault: Path, project_id: str) -> str:
+    return (
+        f"{AGENTS_SECTION_START}\n"
+        "# Agent memory\n\n"
+        f"This repository uses the central agent memory vault at `{vault}`.\n\n"
+        f"Project memory key: `projects/{project_id}/index`.\n\n"
+        "Before changing architecture, search both project and global memory:\n\n"
+        "```bash\n"
+        'iwe2 search --scope both "<task or subsystem>"\n'
+        "```\n\n"
+        "Record durable repo-specific lessons with:\n\n"
+        "```bash\n"
+        "iwe2 note --scope project --type decision --title <title> --content <content>\n"
+        "iwe2 note --scope project --type trap --title <title> --content <content>\n"
+        "iwe2 note --scope project --type workflow --title <title> --content <content>\n"
+        "```\n\n"
+        "Promote reusable lessons with:\n\n"
+        "```bash\n"
+        "iwe2 promote <note-key> --to global/advice\n"
+        "```\n"
+        f"{AGENTS_SECTION_END}\n"
+    )
+
+
+def write_agents_pointer(project_root: Path, vault: Path, project_id: str) -> None:
+    agents_path = project_root / "AGENTS.md"
+    section = agents_pointer_section(vault, project_id)
+    if not agents_path.exists():
+        write_new_file(agents_path, section)
+        return
+
+    existing = agents_path.read_text(encoding="utf-8")
+    has_start = AGENTS_SECTION_START in existing
+    has_end = AGENTS_SECTION_END in existing
+    assert has_start == has_end, f"malformed iwe2 AGENTS section in {agents_path}"
+    if has_start:
+        prefix, marked = existing.split(AGENTS_SECTION_START, 1)
+        _, suffix = marked.split(AGENTS_SECTION_END, 1)
+        agents_path.write_text(f"{prefix}{section}{suffix}", encoding="utf-8")
+        return
+
+    separator = "\n\n" if existing.strip() else ""
+    agents_path.write_text(f"{existing.rstrip()}{separator}{section}", encoding="utf-8")
 
 
 def write_section_indexes(root: Path, sections: Sequence[str]) -> None:
