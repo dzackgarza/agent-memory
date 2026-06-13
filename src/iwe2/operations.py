@@ -34,6 +34,8 @@ OKF_VERSION = "0.1"
 AGENTS_SECTION_START = "<!-- iwe2:agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- iwe2:agent-memory:end -->"
 ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
+VAULT_GIT_USER_NAME = "iwe2"
+VAULT_GIT_USER_EMAIL = "iwe2@localhost"
 ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
 GLOBAL_INDEX_DESCRIPTIONS: dict[str, str] = {
     "advice": "Global advice memories.",
@@ -114,6 +116,7 @@ class MemoryDocument:
 def init_vault(vault: Path) -> JsonObject:
     vault.mkdir(parents=True)
     run_checked(["git", "init"], cwd=vault)
+    configure_vault_git(vault)
     write_new_file(vault / ".gitignore", f"{ZK_NOTEBOOK_DB_IGNORE}\n")
     run_checked(["zk", "--no-input", "init", str(vault)], cwd=vault)
     run_checked(["iwe", "init"], cwd=vault)
@@ -136,7 +139,7 @@ def init_vault(vault: Path) -> JsonObject:
     write_section_indexes(vault / "global", GLOBAL_INDEX_DIRECTORIES)
     write_new_file(vault / "_meta" / "projects.toml", tomli_w.dumps({"projects": []}))
     index_zk_notebook(vault)
-    stage_vault_changes(vault)
+    commit_vault_changes(vault, "Initialize iwe2 vault")
     return {"vault": str(vault)}
 
 
@@ -180,7 +183,7 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
         {"project_id": project_id, "root": str(git_root), "remote": remote},
     )
     index_zk_notebook(vault)
-    stage_vault_changes(vault)
+    commit_vault_changes(vault, f"Register project {project_id}")
     return {
         "project_id": project_id,
         "vault": str(vault),
@@ -207,7 +210,7 @@ def create_note(
     write_new_memory(path, metadata, body)
     append_index_link(directory / "index.md", title, path.name, description)
     index_zk_notebook(config.vault)
-    stage_vault_changes(config.vault)
+    commit_vault_changes(config.vault, f"Record {scope.value} {memory_type.value} memory: {title}")
     return {"key": key, "path": str(path)}
 
 
@@ -504,7 +507,7 @@ def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
     write_new_memory(source_path, pointer_metadata, pointer_body)
     replace_index_link(source_path.parent / "index.md", title, source_path.name, pointer_description)
     index_zk_notebook(config.vault)
-    stage_vault_changes(config.vault)
+    commit_vault_changes(config.vault, f"Promote memory {key} to {destination_key}")
     return {"key": destination_key, "path": str(destination_path)}
 
 
@@ -530,8 +533,14 @@ def run_checked(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[s
     return subprocess.run(args, cwd=cwd, check=True, text=True, capture_output=True)
 
 
-def stage_vault_changes(vault: Path) -> None:
+def commit_vault_changes(vault: Path, message: str) -> None:
     run_checked(["git", "add", "--all", "."], cwd=vault)
+    run_checked(["git", "commit", "-m", message], cwd=vault)
+
+
+def configure_vault_git(vault: Path) -> None:
+    run_checked(["git", "config", "user.name", VAULT_GIT_USER_NAME], cwd=vault)
+    run_checked(["git", "config", "user.email", VAULT_GIT_USER_EMAIL], cwd=vault)
 
 
 def index_zk_notebook(vault: Path) -> None:
