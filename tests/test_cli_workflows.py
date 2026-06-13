@@ -100,6 +100,16 @@ def init_git_repo(repo: Path) -> str:
     return "github.com__dzackgarza__example-memory"
 
 
+def git_status_lines(repo: Path) -> set[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "status", "--short"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return set(result.stdout.splitlines())
+
+
 def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     decoded = json.loads(result.stdout)
     assert isinstance(decoded, dict)
@@ -168,9 +178,12 @@ def test_vault_init_creates_iwe_backed_layout(tmp_path: Path) -> None:
         text=True,
         capture_output=True,
     )
+    status_lines = git_status_lines(vault)
 
     assert Path(str(payload["vault"])) == vault
     assert git_probe.stdout.strip() == "true"
+    assert "A  index.md" in status_lines
+    assert "?? index.md" not in status_lines
     assert (vault / ".iwe" / "config.toml").is_file()
     assert (vault / "index.md").is_file()
     assert (vault / "global" / "index.md").is_file()
@@ -266,6 +279,11 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
     global_path = Path(str(global_note["path"]))
     assert project_path == vault / "projects" / project_id / "decisions" / "project-alpha.md"
     assert global_path == vault / "global" / "advice" / "global-beta.md"
+    status_lines = git_status_lines(vault)
+    assert f"A  projects/{project_id}/decisions/project-alpha.md" in status_lines
+    assert "A  global/advice/global-beta.md" in status_lines
+    assert f"?? projects/{project_id}/decisions/project-alpha.md" not in status_lines
+    assert "?? global/advice/global-beta.md" not in status_lines
     assert_okf_concept_metadata(
         frontmatter(project_path),
         memory_type="decision",
