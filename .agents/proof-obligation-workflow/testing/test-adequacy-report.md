@@ -33,7 +33,7 @@ mocks, source-text policing, skipped tests, or helper-only branch tests.
 | Missing Git remote negative path                               | Deferred  | The MVP happy path requires a real remote; failure propagates from Git and does not need speculative error-path code.               |
 | Missing `iwe`, `rg`, or `git` binaries                         | Deferred  | These are hard dependencies for this bespoke system. Setup failure should be loud, not tested through optional-dependency branches. |
 | IWE link rewriting across arbitrary backlinks during promotion | Delegated | The wrapper invokes IWE for graph-aware movement; the MVP verifies the wrapper-owned destination and pointer policy.                |
-| Probe, `zk`, and MCP retrieval modes                           | Deferred  | The design marks them optional or delegated. They are not part of the accepted MVP proof graph.                                     |
+| Probe and `zk` retrieval modes                                 | Deferred  | The design marks them optional complements. They are not part of the accepted MVP proof graph.                                      |
 
 ## Conclusion
 
