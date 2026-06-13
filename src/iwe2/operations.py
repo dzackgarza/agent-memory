@@ -33,6 +33,7 @@ ProjectRecord = dict[str, str]
 OKF_VERSION = "0.1"
 AGENTS_SECTION_START = "<!-- iwe2:agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- iwe2:agent-memory:end -->"
+ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
 ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
 GLOBAL_INDEX_DESCRIPTIONS: dict[str, str] = {
     "advice": "Global advice memories.",
@@ -113,6 +114,8 @@ class MemoryDocument:
 def init_vault(vault: Path) -> JsonObject:
     vault.mkdir(parents=True)
     run_checked(["git", "init"], cwd=vault)
+    write_new_file(vault / ".gitignore", f"{ZK_NOTEBOOK_DB_IGNORE}\n")
+    run_checked(["zk", "--no-input", "init", str(vault)], cwd=vault)
     run_checked(["iwe", "init"], cwd=vault)
     for relative_dir in VAULT_DIRECTORIES:
         (vault / relative_dir).mkdir(parents=True)
@@ -132,6 +135,7 @@ def init_vault(vault: Path) -> JsonObject:
     )
     write_section_indexes(vault / "global", GLOBAL_INDEX_DIRECTORIES)
     write_new_file(vault / "_meta" / "projects.toml", tomli_w.dumps({"projects": []}))
+    index_zk_notebook(vault)
     stage_vault_changes(vault)
     return {"vault": str(vault)}
 
@@ -175,6 +179,7 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
         vault / "_meta" / "projects.toml",
         {"project_id": project_id, "root": str(git_root), "remote": remote},
     )
+    index_zk_notebook(vault)
     stage_vault_changes(vault)
     return {
         "project_id": project_id,
@@ -201,6 +206,7 @@ def create_note(
     body = f"# {title}\n\n{content}\n"
     write_new_memory(path, metadata, body)
     append_index_link(directory / "index.md", title, path.name, description)
+    index_zk_notebook(config.vault)
     stage_vault_changes(config.vault)
     return {"key": key, "path": str(path)}
 
@@ -260,6 +266,59 @@ def search_context(
         ),
         sort_keys=True,
     )
+
+
+def search_index(scope: SearchScope, query: str, limit: int, cwd: Path) -> str:
+    assert limit > 0, f"zk indexed search limit must be positive: {limit}"
+    config = load_project_config(cwd)
+    roots = search_roots(config, scope)
+    results: list[JsonValue] = []
+    for root in roots:
+        results.extend(zk_search_root(vault=config.vault, root=root, query=query, limit=limit))
+    return json.dumps({"results": results[:limit]}, sort_keys=True)
+
+
+def zk_search_root(vault: Path, root: Path, query: str, limit: int) -> list[JsonObject]:
+    relative_root = root.relative_to(vault).as_posix()
+    result = run_checked(
+        [
+            "zk",
+            "--notebook-dir",
+            str(vault),
+            "--working-dir",
+            str(vault),
+            "list",
+            relative_root,
+            "--match",
+            query,
+            "--limit",
+            str(limit),
+            "--format",
+            "jsonl",
+            "--no-pager",
+            "--quiet",
+        ],
+        cwd=vault,
+    )
+    records: list[JsonObject] = []
+    for line in result.stdout.splitlines():
+        records.append(zk_result_record(json.loads(line), vault=vault, root=root))
+    return records
+
+
+def zk_result_record(raw_record: JsonValue, vault: Path, root: Path) -> JsonObject:
+    assert isinstance(raw_record, dict), "zk result must be a JSON object"
+    abs_path_value = raw_record["absPath"]
+    assert isinstance(abs_path_value, str), "zk result absPath must be a string"
+    abs_path = Path(abs_path_value).resolve()
+    abs_path.relative_to(root)
+    title_value = raw_record["title"]
+    assert isinstance(title_value, str), "zk result title must be a string"
+    return {
+        "key": memory_key(vault, abs_path),
+        "path": str(abs_path),
+        "title": title_value,
+    }
 
 
 def probe_search_root(
@@ -444,6 +503,7 @@ def promote_note(key: str, destination: str, cwd: Path) -> JsonObject:
     assert source_path.parent.is_dir(), "project memory parent must be a directory"
     write_new_memory(source_path, pointer_metadata, pointer_body)
     replace_index_link(source_path.parent / "index.md", title, source_path.name, pointer_description)
+    index_zk_notebook(config.vault)
     stage_vault_changes(config.vault)
     return {"key": destination_key, "path": str(destination_path)}
 
@@ -455,11 +515,14 @@ def doctor(cwd: Path) -> JsonObject:
     run_checked(["rg", "--version"], cwd=config.vault)
     run_checked(["npx", "--version"], cwd=config.vault)
     run_checked(["npx", "-y", "@probelabs/probe@latest", "search", "--help"], cwd=config.vault)
+    run_checked(["zk", "--help"], cwd=config.vault)
+    assert (config.vault / ".zk" / "config.toml").is_file(), "vault must be initialized with zk"
+    assert (config.vault / ".zk" / "templates" / "default.md").is_file(), "zk default template must exist"
     return {
         "vault": str(config.vault),
         "project_id": config.project_id,
         "project_root": str(git_root),
-        "tools": ["git", "iwe", "rg", "npx", "@probelabs/probe"],
+        "tools": ["git", "iwe", "rg", "npx", "@probelabs/probe", "zk"],
     }
 
 
@@ -469,6 +532,21 @@ def run_checked(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[s
 
 def stage_vault_changes(vault: Path) -> None:
     run_checked(["git", "add", "--all", "."], cwd=vault)
+
+
+def index_zk_notebook(vault: Path) -> None:
+    run_checked(
+        [
+            "zk",
+            "--notebook-dir",
+            str(vault),
+            "--working-dir",
+            str(vault),
+            "index",
+            "--quiet",
+        ],
+        cwd=vault,
+    )
 
 
 def write_new_file(path: Path, content: str) -> None:

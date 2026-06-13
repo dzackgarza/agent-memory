@@ -16,6 +16,7 @@ from iwe2.operations import (
     promote_note,
     retrieve_note,
     search_context,
+    search_index,
     search_notes,
     squash_note,
 )
@@ -80,6 +81,11 @@ def search_context_command(
         ),
         end="",
     )
+
+
+@app.command(name="search-index")
+def search_index_command(query: str, *, scope: SearchScope, limit: int) -> None:
+    print(search_index(scope=scope, query=query, limit=limit, cwd=Path.cwd()), end="")
 
 
 @app.command(name="retrieve")

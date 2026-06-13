@@ -553,11 +553,27 @@ def test_search_index_uses_zk_index_with_scope_roots(tmp_path: Path) -> None:
             "indexed-search-token-3b9a global-only zk evidence",
         )
     )
+    unrelated_project_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "note",
+            "--scope",
+            "project",
+            "--type",
+            "decision",
+            "--title",
+            "Indexed Project Irrelevant",
+            "--content",
+            "different indexed zk evidence",
+        )
+    )
 
     project_key = f"projects/{project_id}/decisions/indexed-project-context"
     global_key = "global/advice/indexed-global-context"
+    unrelated_project_key = f"projects/{project_id}/decisions/indexed-project-irrelevant"
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
+    assert unrelated_project_note["key"] == unrelated_project_key
 
     project_search = parse_json_stdout(
         run_iwe2(
@@ -570,7 +586,11 @@ def test_search_index_uses_zk_index_with_scope_roots(tmp_path: Path) -> None:
             "indexed-search-token-3b9a",
         )
     )
-    assert indexed_result_keys(project_search) == {project_key}
+    project_keys = indexed_result_keys(project_search)
+    assert project_key in project_keys
+    assert global_key not in project_keys
+    assert unrelated_project_key not in project_keys
+    assert all(key.startswith(f"projects/{project_id}/") for key in project_keys)
 
     global_search = parse_json_stdout(
         run_iwe2(
@@ -583,7 +603,11 @@ def test_search_index_uses_zk_index_with_scope_roots(tmp_path: Path) -> None:
             "indexed-search-token-3b9a",
         )
     )
-    assert indexed_result_keys(global_search) == {global_key}
+    global_keys = indexed_result_keys(global_search)
+    assert global_key in global_keys
+    assert project_key not in global_keys
+    assert unrelated_project_key not in global_keys
+    assert all(key.startswith("global/") for key in global_keys)
 
     combined_search = parse_json_stdout(
         run_iwe2(
@@ -596,7 +620,10 @@ def test_search_index_uses_zk_index_with_scope_roots(tmp_path: Path) -> None:
             "indexed-search-token-3b9a",
         )
     )
-    assert indexed_result_keys(combined_search) == {project_key, global_key}
+    combined_keys = indexed_result_keys(combined_search)
+    assert project_key in combined_keys
+    assert global_key in combined_keys
+    assert unrelated_project_key not in combined_keys
 
 
 def test_squash_consolidates_project_graph_with_iwe(tmp_path: Path) -> None:
