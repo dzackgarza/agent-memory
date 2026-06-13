@@ -47,6 +47,26 @@ def run_iwe2(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_iwe2_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "uv",
+            "run",
+            "--project",
+            str(PROJECT_ROOT),
+            "--directory",
+            str(cwd),
+            "python",
+            "-m",
+            "iwe2",
+            *args,
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
 def run_iwe(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["iwe", *args], cwd=cwd, check=True, text=True, capture_output=True)
 
@@ -109,6 +129,17 @@ def test_vault_init_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert (vault / "index.md").is_file()
     assert (vault / "global" / "index.md").is_file()
     assert (vault / "_meta" / "projects.toml").is_file()
+    assert_tree("global/index", GLOBAL_GRAPH_KEYS[1:], tree_keys(vault, "global/index"))
+
+
+def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
+    vault = tmp_path / "module-vault"
+
+    result = run_iwe2_module(tmp_path, "vault", "init", str(vault))
+    payload = parse_json_stdout(result)
+
+    assert Path(str(payload["vault"])) == vault
+    assert (vault / ".iwe" / "config.toml").is_file()
     assert_tree("global/index", GLOBAL_GRAPH_KEYS[1:], tree_keys(vault, "global/index"))
 
 
