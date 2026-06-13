@@ -448,11 +448,13 @@ def doctor(cwd: Path) -> JsonObject:
     git_root = git_root_for(cwd)
     run_checked(["iwe", "--help"], cwd=config.vault)
     run_checked(["rg", "--version"], cwd=config.vault)
+    run_checked(["npx", "--version"], cwd=config.vault)
+    run_checked(["npx", "-y", "@probelabs/probe@latest", "search", "--help"], cwd=config.vault)
     return {
         "vault": str(config.vault),
         "project_id": config.project_id,
         "project_root": str(git_root),
-        "tools": ["git", "iwe", "rg"],
+        "tools": ["git", "iwe", "rg", "npx", "@probelabs/probe"],
     }
 
 
