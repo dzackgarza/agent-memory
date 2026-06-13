@@ -4,15 +4,15 @@ Target reader: a future agent deciding whether the current tests prove the MVP
 implementation obligations.
 
 Reader task: determine whether the public CLI tests exclude plausible broken
-implementations for IOB-001 through IOB-009.
+implementations for IOB-001 through IOB-010.
 
 ## Adequacy Verdict
 
 The MVP tests are proof-bearing for the accepted happy-path workflow. They exercise the
 public `iwe2` CLI through real subprocesses, real temp vaults, real Git repositories,
-real Markdown files, real IWE commands, real IWE `find`, and real `rg` search. The
-suite does not use
-mocks, source-text policing, skipped tests, or helper-only branch tests.
+real Markdown files, real IWE commands, real IWE `find`, real `rg` search, and
+real Probe subprocesses through `npx`. The suite does not use mocks, source-text
+policing, skipped tests, or helper-only branch tests.
 
 ## Obligation Mapping
 
@@ -27,6 +27,7 @@ mocks, source-text policing, skipped tests, or helper-only branch tests.
 | IOB-007 doctor            | TEST-006 runs `iwe2 doctor` after real initialization and checks the exact vault path, project ID, project root, and required tools.                                                                                            | A hollow status command or a command that does not inspect the declared project contract fails.                                             |
 | IOB-008 module entrypoint | TEST-007 runs `python -m iwe2 vault init <vault>` through the project runner and checks the durable IWE vault graph state.                                                                                                      | A package without `iwe2.__main__` or a module entrypoint dispatching to a different surface fails.                                          |
 | IOB-009 squash            | TEST-008 creates dynamic project and global notes, then runs `iwe2 squash <project-index-key> --depth 3`.                                                                                                                       | A missing squash command, wrong vault cwd, placeholder output, or graph key rooted outside the project subtree fails.                       |
+| IOB-010 Probe context     | TEST-010 creates dynamic project and global notes, then runs `iwe2 search-context` in project, global, and both scopes through real Probe subprocesses.                                                                         | A missing Probe command, wrong scope root, first-root-only search, missing JSON merge, or placeholder output fails.                         |
 
 ## Residual Edges
 
@@ -35,11 +36,12 @@ mocks, source-text policing, skipped tests, or helper-only branch tests.
 | Missing Git remote negative path                               | Deferred  | The MVP happy path requires a real remote; failure propagates from Git and does not need speculative error-path code.               |
 | Missing `iwe`, `rg`, or `git` binaries                         | Deferred  | These are hard dependencies for this bespoke system. Setup failure should be loud, not tested through optional-dependency branches. |
 | IWE link rewriting across arbitrary backlinks during promotion | Delegated | The wrapper invokes IWE for graph-aware movement; the MVP verifies the wrapper-owned destination and pointer policy.                |
-| Probe and `zk` retrieval modes                                 | Deferred  | The design marks them optional complements. They are not part of the accepted MVP proof graph.                                      |
+| `zk` indexed search and note creation                          | Deferred  | The design marks `zk` as an optional complement; Probe ranked contextual search is now implemented and proof-backed.                |
 
 ## Conclusion
 
 The test plan excludes the main gaming paths for the MVP: no-op initialization,
 directory-only vault creation, missing module execution, hard-coded project identity,
 missing repo-local AGENTS bootstrap, unscoped body or title/key search, placeholder
-retrieval, hollow squash, lossy promotion, and hollow doctor output.
+retrieval, hollow squash, lossy promotion, first-root-only Probe context search,
+and hollow doctor output.
