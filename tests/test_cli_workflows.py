@@ -191,6 +191,10 @@ def test_project_note_search_and_retrieve_cross_real_scopes(tmp_path: Path) -> N
             "global/tools",
         ],
     }
+    agents_pointer = (repo / "AGENTS.md").read_text()
+    assert f"This repository uses the central agent memory vault at `{vault}`." in agents_pointer
+    assert f"Project memory key: `projects/{project_id}/index`." in agents_pointer
+    assert 'iwe2 search --scope both "<task or subsystem>"' in agents_pointer
     expected_project_tree = [
         f"projects/{project_id}/index",
         *[f"projects/{project_id}/{child}" for child in PROJECT_GRAPH_CHILDREN],
