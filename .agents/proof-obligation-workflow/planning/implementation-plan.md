@@ -8,8 +8,7 @@ Stack:
 - Cyclopts for CLI shape and help generation.
 - Pydantic v2 for strict command/config models.
 - Standard library `tomllib` plus `tomli-w` for TOML output.
-- Git, IWE, `rg`, `npx`, `@probelabs/probe`, and `zk` as required subprocess
-  dependencies.
+- Git, IWE, `rg`, `npx`, `@probelabs/probe`, and `zk` as required subprocess dependencies.
 
 Repository structure:
 
@@ -36,10 +35,8 @@ Public API:
 State model:
 
 - The central vault is the source of memory files.
-- The central vault is a Git repository whose wrapper-owned mutations are committed
-  automatically.
-- The repo-local `.agent-memory.toml` is a required machine-readable pointer for
-  project-scoped commands.
+- The central vault is a Git repository whose wrapper-owned mutations are committed automatically.
+- The repo-local `.agent-memory.toml` is a required machine-readable pointer for project-scoped commands.
 - The repo-local `AGENTS.md` memory section is a required human/agent bootstrap pointer.
 - Notes are Markdown files with strict frontmatter and body text.
 - Project IDs are derived from Git remotes using the transcript's `github.com__owner__repo` shape.
@@ -53,21 +50,20 @@ Configuration model:
 
 Error model:
 
-- Required binaries, paths, Git metadata, IWE commands, `rg` commands, Probe commands,
-  and `zk` commands fail loudly.
+- Required binaries, paths, Git metadata, IWE commands, `rg` commands, Probe commands, and `zk` commands fail loudly.
 - Runtime code does not substitute empty search results for command failure.
 - Invalid command data fails at Pydantic/Cyclopts boundaries.
 
 Code ownership budget:
 
-| Component                            | Planned owner | Local code allowed                              | Local code forbidden                                |
-| ------------------------------------ | ------------- | ----------------------------------------------- | --------------------------------------------------- |
-| CLI presentation                     | local         | Cyclopts command declarations and docstrings    | Business logic in callbacks                         |
-| Config/models                        | local         | Pydantic models, enums, path validation         | Loose dict/Any config plumbing                      |
-| Vault/project/note/search operations | local         | Thin filesystem and subprocess orchestration    | Custom graph parser, database, embeddings, reranker |
-| Graph retrieval/refactor             | IWE           | Subprocess invocation with checked failures     | Reimplementing backlink or context retrieval        |
-| Title/key graph search               | IWE           | Scope anchor selection and output formatting    | Custom fuzzy matcher or graph-query implementation  |
-| Body search                          | `rg`          | Scope root selection and output formatting      | Custom search index or fuzzy ranker                 |
-| Ranked contextual search             | Probe         | Scope root selection and JSON merge             | Custom ranking, parser, or embedding search         |
-| Indexed Markdown search              | `zk`          | Scope root selection and JSON result validation | Custom search index or fuzzy ranker                 |
-| Tests                                | local         | Real CLI integration tests                      | Mocks, source-text policy tests, helper-only tests  |
+| Component | Planned owner | Local code allowed | Local code forbidden |
+| --- | --- | --- | --- |
+| CLI presentation | local | Cyclopts command declarations and docstrings | Business logic in callbacks |
+| Config/models | local | Pydantic models, enums, path validation | Loose dict/Any config plumbing |
+| Vault/project/note/search operations | local | Thin filesystem and subprocess orchestration | Custom graph parser, database, embeddings, reranker |
+| Graph retrieval/refactor | IWE | Subprocess invocation with checked failures | Reimplementing backlink or context retrieval |
+| Title/key graph search | IWE | Scope anchor selection and output formatting | Custom fuzzy matcher or graph-query implementation |
+| Body search | `rg` | Scope root selection and output formatting | Custom search index or fuzzy ranker |
+| Ranked contextual search | Probe | Scope root selection and JSON merge | Custom ranking, parser, or embedding search |
+| Indexed Markdown search | `zk` | Scope root selection and JSON result validation | Custom search index or fuzzy ranker |
+| Tests | local | Real CLI integration tests | Mocks, source-text policy tests, helper-only tests |

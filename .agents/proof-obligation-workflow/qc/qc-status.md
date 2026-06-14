@@ -1,10 +1,8 @@
 # QC Status
 
-Target reader: a future agent deciding which QC facts are settled now and which findings
-belong to the post-goal cleanup pass.
+Target reader: a future agent deciding which QC facts are settled now and which findings belong to the post-goal cleanup pass.
 
-Reader task: preserve the exact delegated QC failure without letting it block the MVP
-proof closure.
+Reader task: preserve the exact delegated QC failure without letting it block the MVP proof closure.
 
 ## Current Delegated QC Run
 
@@ -42,19 +40,16 @@ Found 5 dependency issues.
 
 ## Deferral Classification
 
-The live objective explicitly permits deferring QC triage when remediation would derail
-completion of the viable tool and proof obligations. This deptry output is therefore
-preserved as deferred QC evidence for the post-goal cleanup pass.
+The live objective explicitly permits deferring QC triage when remediation would derail completion of the viable tool and proof obligations.
+This deptry output is therefore preserved as deferred QC evidence for the post-goal cleanup pass.
 
 This document does not classify the findings as false positives or true positives.
-That classification belongs to the later QC triage pass. The current implementation must
-not add local deptry configuration, local suppressions, dependency renames, or wrapper
-code only to satisfy this detector.
+That classification belongs to the later QC triage pass.
+The current implementation must not add local deptry configuration, local suppressions, dependency renames, or wrapper code only to satisfy this detector.
 
 ## Product Proof Route
 
-The product proof still rests on the public CLI integration tests in
-`tests/test_cli_workflows.py`.
+The product proof still rests on the public CLI integration tests in `tests/test_cli_workflows.py`.
 
 Direct product proof command:
 
@@ -68,6 +63,5 @@ Result:
 11 passed in 54.44s
 ```
 
-The delegated `just test` run did not reach pytest because deptry stopped the gate
-first. This QC document therefore records both the direct product-test result and the
-delegated gate status.
+The delegated `just test` run did not reach pytest because deptry stopped the gate first.
+This QC document therefore records both the direct product-test result and the delegated gate status.

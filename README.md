@@ -1,8 +1,7 @@
 # iwe2
 
 `iwe2` is a global and project-scoped Markdown memory database for agents.
-It stores memories as plain files in an IWE-backed vault and exposes a small CLI for normal agent work:
-create, retrieve, update, delete, and search memories.
+It stores memories as plain files in an IWE-backed vault and exposes a small CLI for normal agent work: create, retrieve, update, delete, and search memories.
 
 ## Install And Setup
 
