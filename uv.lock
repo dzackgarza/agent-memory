@@ -54,6 +54,10 @@ dependencies = [
     { name = "python-slugify" },
     { name = "pyyaml" },
     { name = "tomli-w" },
+]
+
+[package.dev-dependencies]
+dev = [
     { name = "types-pyyaml" },
 ]
 
@@ -64,8 +68,10 @@ requires-dist = [
     { name = "python-slugify", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "tomli-w", specifier = ">=1" },
-    { name = "types-pyyaml", specifier = ">=6" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "types-pyyaml", specifier = ">=6" }]
 
 [[package]]
 name = "markdown-it-py"

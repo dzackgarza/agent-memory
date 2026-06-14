@@ -14,6 +14,10 @@ dependencies = [
     "python-slugify>=8",
     "PyYAML>=6",
     "tomli-w>=1",
+]
+
+[dependency-groups]
+dev = [
     "types-PyYAML>=6",
 ]
 
