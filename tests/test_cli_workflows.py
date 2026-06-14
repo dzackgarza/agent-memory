@@ -55,6 +55,11 @@ PROJECT_GRAPH_CHILDREN = [
 ]
 
 
+type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
+type JsonArray = list[JsonValue]
+
+
 def run_iwe2(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -129,15 +134,12 @@ def tree_keys(cwd: Path, key: str) -> list[str]:
     return [line.lstrip("\t") for line in result.stdout.splitlines()]
 
 
-def inspect_tree_keys(node: dict[str, object]) -> set[str]:
-    key = node["key"]
-    assert isinstance(key, str)
-    children = node["children"]
-    assert isinstance(children, list)
+def inspect_tree_keys(node: JsonObject) -> set[str]:
+    key = json_string(node["key"])
+    children = json_array(node["children"])
     keys = {key}
     for child in children:
-        assert isinstance(child, dict)
-        keys.update(inspect_tree_keys(child))
+        keys.update(inspect_tree_keys(json_object(child)))
     return keys
 
 
@@ -194,33 +196,41 @@ def git_tracked_files(repo: Path) -> set[str]:
     return set(result.stdout.splitlines())
 
 
-def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
-    decoded = json.loads(result.stdout)
-    assert isinstance(decoded, dict)
-    return decoded
+def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> JsonObject:
+    decoded: JsonValue = json.loads(result.stdout)
+    return json_object(decoded)
 
 
-def probe_result_files(result: dict[str, object]) -> set[Path]:
-    records = result["results"]
-    assert isinstance(records, list)
+def json_object(value: JsonValue) -> JsonObject:
+    assert isinstance(value, dict)
+    return value
+
+
+def json_array(value: JsonValue) -> JsonArray:
+    assert isinstance(value, list)
+    return value
+
+
+def json_string(value: JsonValue) -> str:
+    assert isinstance(value, str)
+    return value
+
+
+def probe_result_files(result: JsonObject) -> set[Path]:
+    records = json_array(result["results"])
     files: set[Path] = set()
     for record in records:
-        assert isinstance(record, dict)
-        file_value = record["file"]
-        assert isinstance(file_value, str)
-        files.add(Path(file_value).resolve())
+        record_object = json_object(record)
+        files.add(Path(json_string(record_object["file"])).resolve())
     return files
 
 
-def result_keys(result: dict[str, object]) -> set[str]:
-    records = result["results"]
-    assert isinstance(records, list)
+def result_keys(result: JsonObject) -> set[str]:
+    records = json_array(result["results"])
     keys: set[str] = set()
     for record in records:
-        assert isinstance(record, dict)
-        key = record["key"]
-        assert isinstance(key, str)
-        keys.add(key)
+        record_object = json_object(record)
+        keys.add(json_string(record_object["key"]))
     return keys
 
 
@@ -1007,7 +1017,8 @@ def test_inspect_overview_schema_paths_and_tree_map_real_vault(tmp_path: Path) -
     assert overview["notes_by_type"] == {"advice": 1, "decision": 1}
 
     schema = parse_json_stdout(run_iwe2(repo, "inspect", "schema", "--format", "json"))
-    assert schema["commands"]["inspect"] == [
+    commands = json_object(schema["commands"])
+    assert commands["inspect"] == [
         "overview",
         "schema",
         "paths",
@@ -1065,10 +1076,10 @@ def test_inspect_overview_schema_paths_and_tree_map_real_vault(tmp_path: Path) -
             "json",
         )
     )
+    tree_roots = json_array(tree["roots"])
+    tree_root = json_object(tree_roots[0])
     assert tree["scope"] == "project"
-    assert tree["roots"][0]["key"] == f"projects/{project_id}/index"
-    tree_root = tree["roots"][0]
-    assert isinstance(tree_root, dict)
+    assert tree_root["key"] == f"projects/{project_id}/index"
     assert inspect_tree_keys(tree_root) == {
         f"projects/{project_id}/index",
         f"projects/{project_id}/advice/index",
@@ -1147,11 +1158,11 @@ def test_inspect_links_outline_recent_stats_and_export_real_vault(
     ]
 
     outline = parse_json_stdout(run_iwe2(repo, "inspect", "outline", project_key, "--format", "json"))
-    assert {heading["title"] for heading in outline["headings"]} == {
-        "Inspect Linked",
-        "Investigation",
-    }
-    assert {heading["level"] for heading in outline["headings"]} == {1, 2}
+    outline_headings = [json_object(heading) for heading in json_array(outline["headings"])]
+    assert [(json_string(heading["title"]), heading["level"]) for heading in outline_headings] == [
+        ("Inspect Linked", 1),
+        ("Investigation", 2),
+    ]
 
     recent = parse_json_stdout(
         run_iwe2(
@@ -1197,7 +1208,8 @@ def test_inspect_links_outline_recent_stats_and_export_real_vault(
         )
     )
     assert exported["profile"] == "map"
-    exported_nodes = {node["key"]: node for node in exported["nodes"]}
+    exported_nodes = {json_string(node["key"]): node for node in (json_object(node) for node in json_array(exported["nodes"]))}
     assert exported_nodes[project_key]["title"] == "Inspect Linked"
     assert "content" not in exported_nodes[project_key]
-    assert {(edge["source"], edge["target"]) for edge in exported["edges"]} >= {(f"projects/{project_id}/decisions/index", project_key)}
+    exported_edges = [json_object(edge) for edge in json_array(exported["edges"])]
+    assert {(json_string(edge["source"]), json_string(edge["target"])) for edge in exported_edges} >= {(f"projects/{project_id}/decisions/index", project_key)}
