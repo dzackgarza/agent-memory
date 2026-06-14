@@ -119,7 +119,9 @@ def run_iwe2_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def run_iwe(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["iwe", *args], cwd=cwd, check=True, text=True, capture_output=True)
+    return subprocess.run(
+        ["iwe", *args], cwd=cwd, check=True, text=True, capture_output=True
+    )
 
 
 def iwe2_env() -> dict[str, str]:
@@ -133,13 +135,17 @@ def tree_keys(cwd: Path, key: str) -> list[str]:
     return [line.lstrip("\t") for line in result.stdout.splitlines()]
 
 
-def assert_tree(root: str, expected_children: list[str], actual_keys: list[str]) -> None:
+def assert_tree(
+    root: str, expected_children: list[str], actual_keys: list[str]
+) -> None:
     assert actual_keys[0] == root
     assert set(actual_keys[1:]) == set(expected_children)
 
 
 def init_git_repo(repo: Path) -> str:
-    subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init"], cwd=repo, check=True, text=True, capture_output=True
+    )
     subprocess.run(
         [
             "git",
@@ -283,7 +289,10 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert (vault / "global" / "index.md").is_file()
     assert (vault / "_meta" / "projects.toml").is_file()
     assert frontmatter(vault / "index.md") == {"okf_version": "0.1"}
-    assert "* [Global](global/index.md) - Global memory shared across projects." in (vault / "index.md").read_text()
+    assert (
+        "* [Global](global/index.md) - Global memory shared across projects."
+        in (vault / "index.md").read_text()
+    )
     global_index = (vault / "global" / "index.md").read_text()
     assert not global_index.startswith("---\n")
     assert "* [Advice](advice/index.md) - Global advice memories." in global_index
@@ -325,7 +334,10 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         "search_max_tokens": 4000,
     }
     agents_pointer = (repo / "AGENTS.md").read_text()
-    assert f"This repository uses the central agent memory vault at `{vault}`." in agents_pointer
+    assert (
+        f"This repository uses the central agent memory vault at `{vault}`."
+        in agents_pointer
+    )
     assert f"Project memory key: `projects/{project_id}/index`." in agents_pointer
     assert 'iwe2 search --scope both "<task or subsystem>"' in agents_pointer
     expected_project_tree = [
@@ -339,8 +351,14 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     )
     project_index = (vault / "projects" / project_id / "index.md").read_text()
     assert not project_index.startswith("---\n")
-    assert "* [Decisions](decisions/index.md) - Project decision memories." in project_index
-    assert f"* [{project_id}](projects/{project_id}/index.md) - Project memory bundle." in (vault / "index.md").read_text()
+    assert (
+        "* [Decisions](decisions/index.md) - Project decision memories."
+        in project_index
+    )
+    assert (
+        f"* [{project_id}](projects/{project_id}/index.md) - Project memory bundle."
+        in (vault / "index.md").read_text()
+    )
 
     project_note = parse_json_stdout(
         run_iwe2(
@@ -373,7 +391,10 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
 
     project_path = Path(str(project_note["path"]))
     global_path = Path(str(global_note["path"]))
-    assert project_path == vault / "projects" / project_id / "decisions" / "project-alpha.md"
+    assert (
+        project_path
+        == vault / "projects" / project_id / "decisions" / "project-alpha.md"
+    )
     assert global_path == vault / "global" / "advice" / "global-beta.md"
     assert git_status_lines(vault) == set()
     assert git_commit_subjects(vault)[:4] == [
@@ -399,19 +420,31 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         tags=["global", "advice"],
     )
     assert frontmatter(global_path)["scope"] == "global"
-    assert "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d belongs only to this repository" in (project_path.parent / "index.md").read_text()
-    assert "* [Global Beta](global-beta.md) - global-signal-cde4b9f6 belongs to shared agent practice" in (global_path.parent / "index.md").read_text()
+    assert (
+        "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d belongs only to this repository"
+        in (project_path.parent / "index.md").read_text()
+    )
+    assert (
+        "* [Global Beta](global-beta.md) - global-signal-cde4b9f6 belongs to shared agent practice"
+        in (global_path.parent / "index.md").read_text()
+    )
 
     project_key = f"projects/{project_id}/decisions/project-alpha"
-    project_search = parse_json_stdout(run_iwe2(repo, "search", "--scope", "project", "signal"))
+    project_search = parse_json_stdout(
+        run_iwe2(repo, "search", "--scope", "project", "signal")
+    )
     assert project_key in result_keys(project_search)
     assert "global/advice/global-beta" not in result_keys(project_search)
 
-    global_search = parse_json_stdout(run_iwe2(repo, "search", "--scope", "global", "signal"))
+    global_search = parse_json_stdout(
+        run_iwe2(repo, "search", "--scope", "global", "signal")
+    )
     assert "global/advice/global-beta" in result_keys(global_search)
     assert project_key not in result_keys(global_search)
 
-    combined_search = parse_json_stdout(run_iwe2(repo, "search", "--scope", "both", "signal"))
+    combined_search = parse_json_stdout(
+        run_iwe2(repo, "search", "--scope", "both", "signal")
+    )
     assert project_key in result_keys(combined_search)
     assert "global/advice/global-beta" in result_keys(combined_search)
 
@@ -428,11 +461,16 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         )
     )
     assert updated["key"] == project_note["key"]
-    assert "durable next step" in run_iwe2(repo, "retrieve", str(project_note["key"])).stdout
+    assert (
+        "durable next step"
+        in run_iwe2(repo, "retrieve", str(project_note["key"])).stdout
+    )
 
     deleted = parse_json_stdout(run_iwe2(repo, "delete", str(global_note["key"])))
     assert deleted["deleted"] == global_note["key"]
-    after_delete = parse_json_stdout(run_iwe2(repo, "search", "--scope", "both", "global-signal-cde4b9f6"))
+    after_delete = parse_json_stdout(
+        run_iwe2(repo, "search", "--scope", "both", "global-signal-cde4b9f6")
+    )
     assert "global/advice/global-beta" not in result_keys(after_delete)
 
 
@@ -477,13 +515,19 @@ def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
     assert project_key == f"projects/{project_id}/decisions/project-graph-beacon"
     assert global_key == "global/advice/global-graph-beacon"
 
-    project_search = parse_json_stdout(run_iwe2(repo, "search", "keys", "--scope", "project", "GB"))
+    project_search = parse_json_stdout(
+        run_iwe2(repo, "search", "keys", "--scope", "project", "GB")
+    )
     assert result_keys(project_search) == {project_key}
 
-    global_search = parse_json_stdout(run_iwe2(repo, "search", "keys", "--scope", "global", "GB"))
+    global_search = parse_json_stdout(
+        run_iwe2(repo, "search", "keys", "--scope", "global", "GB")
+    )
     assert result_keys(global_search) == {global_key}
 
-    combined_search = parse_json_stdout(run_iwe2(repo, "search", "keys", "--scope", "both", "GB"))
+    combined_search = parse_json_stdout(
+        run_iwe2(repo, "search", "keys", "--scope", "both", "GB")
+    )
     assert result_keys(combined_search) == {project_key, global_key}
 
 
@@ -794,10 +838,15 @@ def test_maintain_squash_consolidates_project_graph_with_iwe(tmp_path: Path) -> 
         "squash-global-signal-88ec672b must stay outside project consolidation",
     )
 
-    squashed = run_iwe2(repo, "maintain", "squash", f"projects/{project_id}/index", "--depth", "3")
+    squashed = run_iwe2(
+        repo, "maintain", "squash", f"projects/{project_id}/index", "--depth", "3"
+    )
 
     assert "# Squash Project Signal" in squashed.stdout
-    assert "squash-project-signal-2d4f1c7a must appear in project consolidation" in squashed.stdout
+    assert (
+        "squash-project-signal-2d4f1c7a must appear in project consolidation"
+        in squashed.stdout
+    )
     assert "squash-global-signal-88ec672b" not in squashed.stdout
 
 
@@ -825,11 +874,16 @@ def test_init_project_replaces_existing_agents_memory_pointer(tmp_path: Path) ->
     assert "/tmp/not-the-current-vault" not in agents_pointer
     assert agents_pointer.count("<!-- iwe2:agent-memory:start -->") == 1
     assert agents_pointer.count("<!-- iwe2:agent-memory:end -->") == 1
-    assert f"This repository uses the central agent memory vault at `{vault}`." in agents_pointer
+    assert (
+        f"This repository uses the central agent memory vault at `{vault}`."
+        in agents_pointer
+    )
     assert f"Project memory key: `projects/{project_id}/index`." in agents_pointer
 
 
-def test_init_project_appends_agents_memory_pointer_to_unmarked_agents(tmp_path: Path) -> None:
+def test_init_project_appends_agents_memory_pointer_to_unmarked_agents(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     project_id = init_git_repo(repo)
@@ -846,7 +900,10 @@ def test_init_project_appends_agents_memory_pointer_to_unmarked_agents(tmp_path:
     assert "Preserve instructions that are not managed by iwe2." in agents_pointer
     assert agents_pointer.count("<!-- iwe2:agent-memory:start -->") == 1
     assert agents_pointer.count("<!-- iwe2:agent-memory:end -->") == 1
-    assert f"This repository uses the central agent memory vault at `{vault}`." in agents_pointer
+    assert (
+        f"This repository uses the central agent memory vault at `{vault}`."
+        in agents_pointer
+    )
     assert f"Project memory key: `projects/{project_id}/index`." in agents_pointer
 
 
@@ -874,13 +931,18 @@ def test_maintain_move_memory_to_global_leaves_project_pointer(
         )
     )
 
-    moved = parse_json_stdout(run_iwe2(repo, "maintain", "move", str(note["key"]), "--to", "global/traps"))
+    moved = parse_json_stdout(
+        run_iwe2(repo, "maintain", "move", str(note["key"]), "--to", "global/traps")
+    )
 
     destination = Path(str(moved["path"]))
     pointer = Path(str(note["path"]))
     assert destination == vault / "global" / "traps" / "promotion-trap.md"
     assert pointer == vault / "projects" / project_id / "traps" / "promotion-trap.md"
-    assert "promote-signal-f88f0a72 must become shared knowledge" in destination.read_text()
+    assert (
+        "promote-signal-f88f0a72 must become shared knowledge"
+        in destination.read_text()
+    )
     assert_okf_concept_metadata(
         frontmatter(destination),
         memory_type="trap",
@@ -899,11 +961,19 @@ def test_maintain_move_memory_to_global_leaves_project_pointer(
     )
     assert frontmatter(pointer)["scope"] == "project"
     assert "global/traps/promotion-trap" in pointer.read_text()
-    assert "* [Promotion Trap](promotion-trap.md) - promote-signal-f88f0a72 must become shared knowledge" in (destination.parent / "index.md").read_text()
-    assert "* [Promotion Trap](promotion-trap.md) - Promoted to global/traps/promotion-trap." in (pointer.parent / "index.md").read_text()
+    assert (
+        "* [Promotion Trap](promotion-trap.md) - promote-signal-f88f0a72 must become shared knowledge"
+        in (destination.parent / "index.md").read_text()
+    )
+    assert (
+        "* [Promotion Trap](promotion-trap.md) - Promoted to global/traps/promotion-trap."
+        in (pointer.parent / "index.md").read_text()
+    )
 
 
-def test_project_commands_without_config_fail_with_first_time_setup_guidance(tmp_path: Path) -> None:
+def test_project_commands_without_config_fail_with_first_time_setup_guidance(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     init_git_repo(repo)
@@ -941,3 +1011,256 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     assert doctor["project_id"] == project_id
     assert doctor["project_root"] == str(repo)
     assert doctor["tools"] == ["git", "iwe", "rg", "npx", "@probelabs/probe", "zk"]
+
+
+def test_inspect_overview_schema_paths_and_tree_map_real_vault(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_id = init_git_repo(repo)
+    vault = tmp_path / "vault"
+    run_iwe2(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    run_iwe2(repo, "init", "project", "--vault", str(vault))
+
+    project_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "add",
+            "--scope",
+            "project",
+            "--type",
+            "decision",
+            "--title",
+            "Inspect Project",
+            "--content",
+            "Project navigation memory.",
+        )
+    )
+    global_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "add",
+            "--scope",
+            "global",
+            "--type",
+            "advice",
+            "--title",
+            "Inspect Global",
+            "--content",
+            "Global navigation memory.",
+        )
+    )
+    project_key = f"projects/{project_id}/decisions/inspect-project"
+    global_key = "global/advice/inspect-global"
+    assert project_note["key"] == project_key
+    assert global_note["key"] == global_key
+
+    overview = parse_json_stdout(
+        run_iwe2(repo, "inspect", "overview", "--scope", "both", "--format", "json")
+    )
+    assert overview["vault"] == str(vault)
+    assert overview["project_id"] == project_id
+    assert overview["scope"] == "both"
+    assert overview["roots"] == ["global/index", f"projects/{project_id}/index"]
+    assert overview["totals"] == {"notes": 2, "indexes": 16}
+    assert overview["notes_by_scope"] == {"global": 1, "project": 1}
+    assert overview["notes_by_type"] == {"advice": 1, "decision": 1}
+
+    schema = parse_json_stdout(run_iwe2(repo, "inspect", "schema", "--format", "json"))
+    assert schema["commands"]["inspect"] == [
+        "overview",
+        "schema",
+        "paths",
+        "tree",
+        "links",
+        "outline",
+        "stats",
+        "recent",
+        "export",
+    ]
+    assert schema["scopes"] == ["project", "global", "both"]
+    assert schema["memory_types"] == [
+        "decision",
+        "trap",
+        "advice",
+        "context",
+        "reference",
+    ]
+
+    paths = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "inspect",
+            "paths",
+            "--scope",
+            "project",
+            "--kind",
+            "notes",
+            "--format",
+            "json",
+        )
+    )
+    assert paths["scope"] == "project"
+    assert paths["kind"] == "notes"
+    assert paths["paths"] == [
+        {
+            "key": project_key,
+            "path": str(
+                vault / "projects" / project_id / "decisions" / "inspect-project.md"
+            ),
+            "title": "Inspect Project",
+            "type": "decision",
+            "scope": "project",
+        }
+    ]
+
+    tree = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "inspect",
+            "tree",
+            "--scope",
+            "project",
+            "--depth",
+            "2",
+            "--format",
+            "json",
+        )
+    )
+    assert tree["scope"] == "project"
+    assert tree["roots"][0]["key"] == f"projects/{project_id}/index"
+    assert tree_keys(tree["roots"][0]) == {
+        f"projects/{project_id}/index",
+        f"projects/{project_id}/advice/index",
+        f"projects/{project_id}/context/index",
+        f"projects/{project_id}/decisions/index",
+        project_key,
+        f"projects/{project_id}/references/index",
+        f"projects/{project_id}/traps/index",
+    }
+
+
+def test_inspect_links_outline_recent_stats_and_export_real_vault(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_id = init_git_repo(repo)
+    vault = tmp_path / "vault"
+    run_iwe2(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    run_iwe2(repo, "init", "project", "--vault", str(vault))
+
+    project_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "add",
+            "--scope",
+            "project",
+            "--type",
+            "decision",
+            "--title",
+            "Inspect Linked",
+            "--content",
+            "## Investigation\nUse outline and graph inspection.",
+        )
+    )
+    global_note = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "add",
+            "--scope",
+            "global",
+            "--type",
+            "advice",
+            "--title",
+            "Inspect Advice",
+            "--content",
+            "Use read-only inspection before maintenance.",
+        )
+    )
+    project_key = f"projects/{project_id}/decisions/inspect-linked"
+    global_key = "global/advice/inspect-advice"
+    assert project_note["key"] == project_key
+    assert global_note["key"] == global_key
+
+    parents = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "inspect",
+            "links",
+            project_key,
+            "--direction",
+            "parents",
+            "--depth",
+            "1",
+            "--format",
+            "json",
+        )
+    )
+    assert parents["links"] == [
+        {
+            "key": f"projects/{project_id}/decisions/index",
+            "path": str(vault / "projects" / project_id / "decisions" / "index.md"),
+            "title": "Decisions",
+            "depth": 1,
+        }
+    ]
+
+    outline = parse_json_stdout(
+        run_iwe2(repo, "inspect", "outline", project_key, "--format", "json")
+    )
+    assert {heading["title"] for heading in outline["headings"]} == {
+        "Inspect Linked",
+        "Investigation",
+    }
+    assert {heading["level"] for heading in outline["headings"]} == {1, 2}
+
+    recent = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "inspect",
+            "recent",
+            "--scope",
+            "project",
+            "--since",
+            "1970-01-01T00:00:00+00:00",
+            "--format",
+            "json",
+        )
+    )
+    assert result_keys(recent) == {project_key}
+
+    stats = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "inspect",
+            "stats",
+            "--scope",
+            "both",
+            "--by",
+            "type",
+            "--format",
+            "json",
+        )
+    )
+    assert stats["counts"] == {"advice": 1, "decision": 1}
+
+    exported = parse_json_stdout(
+        run_iwe2(
+            repo,
+            "inspect",
+            "export",
+            "--scope",
+            "project",
+            "--profile",
+            "map",
+            "--format",
+            "graph-json",
+        )
+    )
+    assert exported["profile"] == "map"
+    exported_nodes = {node["key"]: node for node in exported["nodes"]}
+    assert exported_nodes[project_key]["title"] == "Inspect Linked"
+    assert "content" not in exported_nodes[project_key]
+    assert {(edge["source"], edge["target"]) for edge in exported["edges"]} >= {
+        (f"projects/{project_id}/decisions/index", project_key)
+    }
