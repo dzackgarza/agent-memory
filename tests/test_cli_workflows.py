@@ -8,7 +8,7 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
-import yaml
+from strictyaml import load as load_yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ZK_VERSION = "v0.15.5"
@@ -242,7 +242,7 @@ def frontmatter(markdown: Path) -> dict[str, object]:
     lines = markdown.read_text().splitlines()
     assert lines[0] == "---"
     closing = lines.index("---", 1)
-    parsed = yaml.safe_load("\n".join(lines[1:closing]))
+    parsed = load_yaml("\n".join(lines[1:closing])).data
     assert isinstance(parsed, dict)
     return parsed
 

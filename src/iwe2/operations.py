@@ -12,8 +12,9 @@ from importlib import resources
 from pathlib import Path
 
 import tomli_w
-import yaml
-from slugify import slugify
+from strictyaml import as_document
+from strictyaml import load as load_yaml
+from text_unidecode import unidecode
 
 from iwe2.models import (
     GlobalNoteMetadata,
@@ -231,6 +232,13 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
     }
 
 
+def memory_slug(title: str) -> str:
+    normalized = unidecode(title).lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+    assert slug, "title must produce a nonempty slug"
+    return slug
+
+
 def add_memory(
     scope: MemoryScope,
     memory_type: MemoryType,
@@ -239,8 +247,7 @@ def add_memory(
     cwd: Path,
 ) -> JsonObject:
     config = load_project_config(cwd)
-    slug = slugify(title)
-    assert slug, "title must produce a nonempty slug"
+    slug = memory_slug(title)
     directory = memory_directory(config, scope, memory_type)
     path = directory / f"{slug}.md"
     key = memory_key(config.vault, path)
@@ -277,8 +284,7 @@ def update_memory(
     if old_scope is MemoryScope.PROJECT:
         metadata["project_id"] = config.project_id
     destination_dir = memory_directory(config, old_scope, new_type)
-    slug = slugify(new_title)
-    assert slug, "title must produce a nonempty slug"
+    slug = memory_slug(new_title)
     destination_path = destination_dir / f"{slug}.md"
     new_key = memory_key(config.vault, destination_path)
     if new_key != key:
@@ -1153,7 +1159,7 @@ def write_memory(path: Path, metadata: dict[str, MetadataValue], body: str) -> N
 
 
 def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
-    frontmatter = yaml.safe_dump(metadata, sort_keys=False)
+    frontmatter = as_document(metadata).as_yaml()
     return f"---\n{frontmatter}---\n{body}"
 
 
@@ -1161,20 +1167,16 @@ def read_memory(path: Path) -> MemoryDocument:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     assert lines[0].strip() == "---", "memory must start with frontmatter"
     closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    parsed = yaml.safe_load("".join(lines[1:closing_index]))
+    parsed = load_yaml("".join(lines[1:closing_index])).data
     assert isinstance(parsed, dict), "frontmatter must be a mapping"
     metadata: dict[str, MetadataValue] = {}
     for key, value in parsed.items():
         assert isinstance(key, str), "frontmatter keys must be strings"
-        if isinstance(value, datetime):
-            assert key == "timestamp", "only timestamp may be parsed as a YAML datetime"
-            assert value.tzinfo is not None, "timestamp must include timezone information"
-            metadata[key] = value.isoformat().replace("+00:00", "Z")
-        elif isinstance(value, list):
+        if isinstance(value, list):
             assert all(isinstance(item, str) for item in value), "frontmatter lists must contain strings"
             metadata[key] = value
         else:
-            assert isinstance(value, str | bool), "frontmatter values must be strings, booleans, datetimes, or string lists"
+            assert isinstance(value, str | bool), "frontmatter values must be strings, booleans, or string lists"
             metadata[key] = value
     body = "".join(lines[closing_index + 1 :])
     return MemoryDocument(metadata=metadata, body=body)
