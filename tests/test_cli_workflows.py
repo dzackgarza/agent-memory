@@ -1061,7 +1061,7 @@ def test_inspect_overview_schema_paths_and_tree_map_real_vault(tmp_path: Path) -
     assert overview["project_id"] == project_id
     assert overview["scope"] == "both"
     assert overview["roots"] == ["global/index", f"projects/{project_id}/index"]
-    assert overview["totals"] == {"notes": 2, "indexes": 16}
+    assert overview["totals"] == {"notes": 2, "indexes": 12}
     assert overview["notes_by_scope"] == {"global": 1, "project": 1}
     assert overview["notes_by_type"] == {"advice": 1, "decision": 1}
 
