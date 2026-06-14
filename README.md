@@ -40,6 +40,8 @@ Create a memory:
 iwe2 add --scope project --type decision --title "Parser choice" --content "Use the existing parser boundary."
 ```
 
+Memory types are `decision`, `trap`, `advice`, `context`, and `reference`.
+
 Retrieve a memory:
 
 ```bash
@@ -83,6 +85,31 @@ iwe2 search content --scope both --mode fuzzy "approximate topic"
 iwe2 search content --scope both --mode ranked "semantic context"
 iwe2 search metadata --scope project --type decision --tag project --created-after 2026-06-13T00:00:00+00:00
 ```
+
+## Inspect
+
+Use `inspect` when an agent needs to understand a large vault without mutating it:
+
+```bash
+iwe2 inspect overview --scope both --format json
+iwe2 inspect schema --format json
+iwe2 inspect paths --scope project --kind notes --format json
+iwe2 inspect tree --scope project --depth 2 --format json
+```
+
+Use targeted inspect commands after a search result or known key:
+
+```bash
+iwe2 inspect links projects/<project-id>/decisions/parser-choice --direction parents --depth 1 --format json
+iwe2 inspect outline projects/<project-id>/decisions/parser-choice --format json
+iwe2 inspect recent --scope both --since 2026-06-13T00:00:00+00:00 --format json
+iwe2 inspect stats --scope both --by type --format json
+iwe2 inspect export --scope project --profile map --format graph-json
+```
+
+`inspect` is read-only.
+Use it for navigation, schema discovery, path enumeration, graph traversal, outline extraction, recency filtering, and graph export.
+Maintenance commands remain under `maintain`.
 
 ## Maintenance
 

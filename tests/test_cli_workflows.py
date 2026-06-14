@@ -40,22 +40,18 @@ subprocess.run(
 assert (ZK_BIN_DIR / "zk").is_file()
 GLOBAL_GRAPH_KEYS = [
     "global/index",
-    "global/advice/index",
+    "global/decisions/index",
     "global/traps/index",
-    "global/workflows/index",
-    "global/tools/index",
-    "global/style/index",
-    "global/facts/index",
-    "global/conventions/index",
+    "global/advice/index",
+    "global/context/index",
+    "global/references/index",
 ]
 PROJECT_GRAPH_CHILDREN = [
     "decisions/index",
     "traps/index",
-    "workflows/index",
-    "sessions/index",
-    "facts/index",
     "advice/index",
-    "conventions/index",
+    "context/index",
+    "references/index",
 ]
 
 
@@ -306,7 +302,7 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
         in (vault / "index.md").read_text()
     )
     global_index = (vault / "global" / "index.md").read_text()
-    assert not global_index.startswith("---\n")
+    assert frontmatter(vault / "global" / "index.md") == {"okf_version": "0.1"}
     assert "* [Advice](advice/index.md) - Global advice memories." in global_index
     assert "* [Traps](traps/index.md) - Global traps memories." in global_index
     assert_tree("global/index", GLOBAL_GRAPH_KEYS[1:], tree_keys(vault, "global/index"))
@@ -337,10 +333,11 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         "project_id": project_id,
         "project_root_strategy": "git-root",
         "global_scopes": [
-            "global/advice",
+            "global/decisions",
             "global/traps",
-            "global/workflows",
-            "global/tools",
+            "global/advice",
+            "global/context",
+            "global/references",
         ],
         "search_max_results": 10,
         "search_max_tokens": 4000,
@@ -362,7 +359,9 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         tree_keys(vault, f"projects/{project_id}/index"),
     )
     project_index = (vault / "projects" / project_id / "index.md").read_text()
-    assert not project_index.startswith("---\n")
+    assert frontmatter(vault / "projects" / project_id / "index.md") == {
+        "okf_version": "0.1"
+    }
     assert (
         "* [Decisions](decisions/index.md) - Project decision memories."
         in project_index

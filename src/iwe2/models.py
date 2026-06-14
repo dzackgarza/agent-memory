@@ -9,13 +9,6 @@ from pydantic import BaseModel, ConfigDict, field_validator
 ProjectRootStrategy = Literal["git-root"]
 MetadataValue = str | bool | list[str]
 
-GLOBAL_SCOPES: tuple[str, ...] = (
-    "global/advice",
-    "global/traps",
-    "global/workflows",
-    "global/tools",
-)
-
 
 class MemoryScope(StrEnum):
     PROJECT = "project"
@@ -37,10 +30,42 @@ class ContentSearchMode(StrEnum):
 class MemoryType(StrEnum):
     DECISION = "decision"
     TRAP = "trap"
-    WORKFLOW = "workflow"
-    FACT = "fact"
     ADVICE = "advice"
-    CONVENTION = "convention"
+    CONTEXT = "context"
+    REFERENCE = "reference"
+
+
+class InspectOutputFormat(StrEnum):
+    JSON = "json"
+
+
+class InspectPathKind(StrEnum):
+    ROOTS = "roots"
+    INDEXES = "indexes"
+    NOTES = "notes"
+    ALL = "all"
+
+
+class InspectLinkDirection(StrEnum):
+    CHILDREN = "children"
+    PARENTS = "parents"
+    BOTH = "both"
+
+
+class InspectStatsGroup(StrEnum):
+    TYPE = "type"
+    SCOPE = "scope"
+    DAY = "day"
+
+
+class InspectExportProfile(StrEnum):
+    MAP = "map"
+    CONTEXT = "context"
+    ARCHIVE = "archive"
+
+
+class InspectExportFormat(StrEnum):
+    GRAPH_JSON = "graph-json"
 
 
 class ProjectConfigFile(BaseModel):

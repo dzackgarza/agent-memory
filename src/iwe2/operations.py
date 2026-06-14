@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tomllib
 from collections.abc import Sequence
@@ -15,6 +16,12 @@ from slugify import slugify
 
 from iwe2.models import (
     GlobalNoteMetadata,
+    InspectExportFormat,
+    InspectExportProfile,
+    InspectLinkDirection,
+    InspectOutputFormat,
+    InspectPathKind,
+    InspectStatsGroup,
     MemoryScope,
     MemoryType,
     MetadataValue,
@@ -25,64 +32,60 @@ from iwe2.models import (
     SearchScope,
 )
 
-type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+type JsonValue = (
+    None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+)
 JsonObject = dict[str, JsonValue]
 IndexEntry = tuple[str, str, str]
 ProjectRecord = dict[str, str]
 
 OKF_VERSION = "0.1"
+MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 AGENTS_SECTION_START = "<!-- iwe2:agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- iwe2:agent-memory:end -->"
 ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
 VAULT_GIT_USER_NAME = "iwe2"
 VAULT_GIT_USER_EMAIL = "iwe2@localhost"
-ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
+ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (
+    ("Global", "global/index.md", "Global memory shared across projects."),
+)
 GLOBAL_INDEX_DESCRIPTIONS: dict[str, str] = {
-    "advice": "Global advice memories.",
+    "decisions": "Global decision memories.",
     "traps": "Global traps memories.",
-    "workflows": "Global workflow memories.",
-    "tools": "Global tool memories.",
-    "style": "Global style memories.",
-    "facts": "Global fact memories.",
-    "conventions": "Global convention memories.",
+    "advice": "Global advice memories.",
+    "context": "Global context memories.",
+    "references": "Global reference memories.",
 }
 PROJECT_INDEX_DESCRIPTIONS: dict[str, str] = {
     "decisions": "Project decision memories.",
     "traps": "Project trap memories.",
-    "workflows": "Project workflow memories.",
-    "sessions": "Project session memories.",
-    "facts": "Project fact memories.",
     "advice": "Project advice memories.",
-    "conventions": "Project convention memories.",
+    "context": "Project context memories.",
+    "references": "Project reference memories.",
 }
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.DECISION: "decisions",
     MemoryType.TRAP: "traps",
-    MemoryType.WORKFLOW: "workflows",
-    MemoryType.FACT: "facts",
     MemoryType.ADVICE: "advice",
-    MemoryType.CONVENTION: "conventions",
+    MemoryType.CONTEXT: "context",
+    MemoryType.REFERENCE: "references",
 }
 
 GLOBAL_INDEX_DIRECTORIES: tuple[str, ...] = (
-    "advice",
+    "decisions",
     "traps",
-    "workflows",
-    "tools",
-    "style",
-    "facts",
-    "conventions",
+    "advice",
+    "context",
+    "references",
 )
 
 VAULT_DIRECTORIES: tuple[Path, ...] = (
-    Path("global/advice"),
+    Path("global/decisions"),
     Path("global/traps"),
-    Path("global/workflows"),
-    Path("global/tools"),
-    Path("global/style"),
-    Path("global/facts"),
-    Path("global/conventions"),
+    Path("global/advice"),
+    Path("global/context"),
+    Path("global/references"),
     Path("projects"),
     Path("inbox/unsorted"),
     Path("inbox/project"),
@@ -94,11 +97,9 @@ VAULT_DIRECTORIES: tuple[Path, ...] = (
 PROJECT_DIRECTORIES: tuple[str, ...] = (
     "decisions",
     "traps",
-    "workflows",
-    "sessions",
-    "facts",
     "advice",
-    "conventions",
+    "context",
+    "references",
 )
 
 
@@ -115,16 +116,30 @@ class UsageError(RuntimeError):
 
 
 def starter_config() -> StarterConfig:
-    payload = tomllib.loads(resources.files("iwe2.defaults").joinpath("global.toml").read_text(encoding="utf-8"))
+    payload = tomllib.loads(
+        resources.files("iwe2.defaults")
+        .joinpath("global.toml")
+        .read_text(encoding="utf-8")
+    )
     default_vault = payload["default_vault"]
     global_scopes = payload["global_scopes"]
     search_max_results = payload["search_max_results"]
     search_max_tokens = payload["search_max_tokens"]
-    assert isinstance(default_vault, str), "starter config default_vault must be a string"
-    assert isinstance(global_scopes, list), "starter config global_scopes must be a list"
-    assert all(isinstance(scope, str) for scope in global_scopes), "starter config global_scopes entries must be strings"
-    assert isinstance(search_max_results, int), "starter config search_max_results must be an integer"
-    assert isinstance(search_max_tokens, int), "starter config search_max_tokens must be an integer"
+    assert isinstance(default_vault, str), (
+        "starter config default_vault must be a string"
+    )
+    assert isinstance(global_scopes, list), (
+        "starter config global_scopes must be a list"
+    )
+    assert all(isinstance(scope, str) for scope in global_scopes), (
+        "starter config global_scopes entries must be strings"
+    )
+    assert isinstance(search_max_results, int), (
+        "starter config search_max_results must be an integer"
+    )
+    assert isinstance(search_max_tokens, int), (
+        "starter config search_max_tokens must be an integer"
+    )
     assert search_max_results > 0, "starter config search_max_results must be positive"
     assert search_max_tokens > 0, "starter config search_max_tokens must be positive"
     return StarterConfig(
@@ -164,9 +179,14 @@ def init_global_vault(vault: Path) -> JsonObject:
     )
     write_new_file(
         vault / "global" / "index.md",
-        parent_index_body(
-            "Global Memory",
-            directory_index_entries(GLOBAL_INDEX_DIRECTORIES, GLOBAL_INDEX_DESCRIPTIONS),
+        render_memory(
+            {"okf_version": OKF_VERSION},
+            parent_index_body(
+                "Global Memory",
+                directory_index_entries(
+                    GLOBAL_INDEX_DIRECTORIES, GLOBAL_INDEX_DESCRIPTIONS
+                ),
+            ),
         ),
     )
     write_section_indexes(vault / "global", GLOBAL_INDEX_DIRECTORIES)
@@ -177,7 +197,9 @@ def init_global_vault(vault: Path) -> JsonObject:
 
 
 def init_project(vault: Path, cwd: Path) -> JsonObject:
-    assert (vault / ".iwe" / "config.toml").is_file(), "vault must be initialized with IWE"
+    assert (vault / ".iwe" / "config.toml").is_file(), (
+        "vault must be initialized with IWE"
+    )
     starter = starter_config()
     git_root = git_root_for(cwd)
     remote = git_remote(git_root)
@@ -186,11 +208,14 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
     project_dir.mkdir(parents=True)
     write_new_file(
         project_dir / "index.md",
-        parent_index_body(
-            project_id,
-            directory_index_entries(
-                PROJECT_DIRECTORIES,
-                PROJECT_INDEX_DESCRIPTIONS,
+        render_memory(
+            {"okf_version": OKF_VERSION},
+            parent_index_body(
+                project_id,
+                directory_index_entries(
+                    PROJECT_DIRECTORIES,
+                    PROJECT_INDEX_DESCRIPTIONS,
+                ),
             ),
         ),
     )
@@ -212,7 +237,9 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
         search_max_results=starter.search_max_results,
         search_max_tokens=starter.search_max_tokens,
     )
-    write_new_file(git_root / ".agent-memory.toml", tomli_w.dumps(config.to_toml_payload()))
+    write_new_file(
+        git_root / ".agent-memory.toml", tomli_w.dumps(config.to_toml_payload())
+    )
     write_agents_pointer(git_root, vault, project_id)
     append_project_record(
         vault / "_meta" / "projects.toml",
@@ -246,7 +273,9 @@ def add_memory(
     write_new_memory(path, metadata, body)
     append_index_link(directory / "index.md", title, path.name, description)
     index_zk_notebook(config.vault)
-    commit_vault_changes(config.vault, f"Record {scope.value} {memory_type.value} memory: {title}")
+    commit_vault_changes(
+        config.vault, f"Record {scope.value} {memory_type.value} memory: {title}"
+    )
     return {"key": key, "path": str(path)}
 
 
@@ -258,7 +287,9 @@ def update_memory(
     cwd: Path,
 ) -> JsonObject:
     if title is None and memory_type is None and content is None:
-        raise UsageError("Update requires at least one of --title, --type, or --content.")
+        raise UsageError(
+            "Update requires at least one of --title, --type, or --content."
+        )
     config = load_project_config(cwd)
     source_path = config.vault / f"{key}.md"
     document = read_memory(source_path)
@@ -281,12 +312,24 @@ def update_memory(
         run_checked(["iwe", "rename", key, new_key], cwd=config.vault)
     write_memory(destination_path, metadata, body)
     if destination_path.parent == source_path.parent:
-        replace_index_link(destination_path.parent / "index.md", new_title, destination_path.name, description)
+        replace_index_link(
+            destination_path.parent / "index.md",
+            new_title,
+            destination_path.name,
+            description,
+        )
     else:
         remove_index_link(source_path.parent / "index.md", source_path.name, old_title)
-        append_index_link(destination_path.parent / "index.md", new_title, destination_path.name, description)
+        append_index_link(
+            destination_path.parent / "index.md",
+            new_title,
+            destination_path.name,
+            description,
+        )
     index_zk_notebook(config.vault)
-    commit_vault_changes(config.vault, f"Update {old_scope.value} {new_type.value} memory: {new_title}")
+    commit_vault_changes(
+        config.vault, f"Update {old_scope.value} {new_type.value} memory: {new_title}"
+    )
     return {"key": new_key, "path": str(destination_path)}
 
 
@@ -307,7 +350,9 @@ def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     key_matches = key_search_records(config, scope, query)
     exact_matches = exact_content_records(config, scope, query)
     fuzzy_matches = fuzzy_content_records(config, scope, query)
-    results = dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[: config.search_max_results]
+    results = dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[
+        : config.search_max_results
+    ]
     ranked_matches = search_content_ranked(scope, query, cwd)
     ranked_results = ranked_matches["results"]
     assert isinstance(ranked_results, list), "ranked search results must be a JSON list"
@@ -360,11 +405,16 @@ def search_metadata(
             continue
         tags = document.metadata["tags"]
         assert isinstance(tags, list), "memory tags must be a list"
-        assert all(isinstance(tag_value, str) for tag_value in tags), "memory tags must contain strings"
+        assert all(isinstance(tag_value, str) for tag_value in tags), (
+            "memory tags must contain strings"
+        )
         if tag is not None and tag not in tags:
             continue
         timestamp = metadata_string(document.metadata, "timestamp")
-        if created_after_datetime is not None and parse_memory_timestamp(timestamp) <= created_after_datetime:
+        if (
+            created_after_datetime is not None
+            and parse_memory_timestamp(timestamp) <= created_after_datetime
+        ):
             continue
         title = metadata_string(document.metadata, "title")
         records.append(
@@ -377,10 +427,15 @@ def search_metadata(
                 "timestamp": timestamp,
             }
         )
-    return {"scope": scope.value, "results": json_record_list(records[: config.search_max_results])}
+    return {
+        "scope": scope.value,
+        "results": json_record_list(records[: config.search_max_results]),
+    }
 
 
-def key_search_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+def key_search_records(
+    config: ProjectConfig, scope: SearchScope, query: str
+) -> list[JsonObject]:
     records: list[JsonObject] = []
     for anchor in search_anchors(config, scope):
         output = run_checked(
@@ -393,7 +448,9 @@ def key_search_records(config: ProjectConfig, scope: SearchScope, query: str) ->
     return dedupe_records_by_key(records)[: config.search_max_results]
 
 
-def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+def exact_content_records(
+    config: ProjectConfig, scope: SearchScope, query: str
+) -> list[JsonObject]:
     output = run_ripgrep_search(
         [
             "rg",
@@ -421,7 +478,9 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
     return dedupe_records_by_key(records)[: config.search_max_results]
 
 
-def fuzzy_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+def fuzzy_content_records(
+    config: ProjectConfig, scope: SearchScope, query: str
+) -> list[JsonObject]:
     results: list[JsonObject] = []
     for root in search_roots(config, scope):
         results.extend(
@@ -459,7 +518,9 @@ def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObje
     config = load_project_config(cwd)
     roots = search_roots(config, scope)
     per_root_tokens = config.search_max_tokens // len(roots)
-    assert per_root_tokens > 0, "ranked content search token budget must cover every selected scope root"
+    assert per_root_tokens > 0, (
+        "ranked content search token budget must cover every selected scope root"
+    )
     payloads = [
         probe_search_root(
             root=root,
@@ -489,7 +550,11 @@ def search_content_fuzzy(scope: SearchScope, query: str, cwd: Path) -> JsonObjec
                 limit=config.search_max_results,
             )
         )
-    return {"query": query, "scope": scope.value, "results": results[: config.search_max_results]}
+    return {
+        "query": query,
+        "scope": scope.value,
+        "results": results[: config.search_max_results],
+    }
 
 
 def zk_search_root(vault: Path, root: Path, query: str, limit: int) -> list[JsonObject]:
@@ -584,7 +649,9 @@ def merge_probe_payloads(
         version = payload["version"]
         assert isinstance(version, str), "probe version must be a string"
         versions.add(version)
-    assert len(versions) == 1, "all probe payloads must come from the same Probe version"
+    assert len(versions) == 1, (
+        "all probe payloads must come from the same Probe version"
+    )
     ranked_results = sorted(results, key=probe_score, reverse=True)[:max_results]
     json_results: list[JsonValue] = []
     for result in ranked_results:
@@ -628,7 +695,9 @@ def probe_skipped_files(payload: JsonObject) -> list[JsonObject]:
     assert isinstance(raw_skipped, list), "probe skipped files must be a list"
     skipped_files: list[JsonObject] = []
     for skipped_file in raw_skipped:
-        assert isinstance(skipped_file, dict), "probe skipped-file entries must be JSON objects"
+        assert isinstance(skipped_file, dict), (
+            "probe skipped-file entries must be JSON objects"
+        )
         skipped_files.append(skipped_file)
     return skipped_files
 
@@ -662,13 +731,17 @@ def retrieve_memory(key: str, cwd: Path) -> str:
 def squash_memory(key: str, depth: int, cwd: Path) -> str:
     assert depth > 0, f"squash depth must be positive: {depth}"
     config = load_project_config(cwd)
-    result = run_checked(["iwe", "squash", key, "--depth", str(depth)], cwd=config.vault)
+    result = run_checked(
+        ["iwe", "squash", key, "--depth", str(depth)], cwd=config.vault
+    )
     return result.stdout
 
 
 def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    result = run_checked(["iwe", "extract", key, "--section", section, "-f", "keys"], cwd=config.vault)
+    result = run_checked(
+        ["iwe", "extract", key, "--section", section, "-f", "keys"], cwd=config.vault
+    )
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Split memory section: {section}")
     return {"key": key, "section": section, "output": result.stdout}
@@ -676,7 +749,9 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    result = run_checked(["iwe", "inline", key, "--reference", reference, "-f", "keys"], cwd=config.vault)
+    result = run_checked(
+        ["iwe", "inline", key, "--reference", reference, "-f", "keys"], cwd=config.vault
+    )
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Merge memory reference: {reference}")
     return {"key": key, "reference": reference, "output": result.stdout}
@@ -738,7 +813,9 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     pointer_body = f"# {title}\n\nPromoted to [[{destination_key}]].\n"
     assert source_path.parent.is_dir(), "project memory parent must be a directory"
     write_new_memory(source_path, pointer_metadata, pointer_body)
-    replace_index_link(source_path.parent / "index.md", title, source_path.name, pointer_description)
+    replace_index_link(
+        source_path.parent / "index.md", title, source_path.name, pointer_description
+    )
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Move memory {key} to {destination_key}")
     return {"key": destination_key, "path": str(destination_path)}
@@ -750,10 +827,16 @@ def doctor(cwd: Path) -> JsonObject:
     run_checked(["iwe", "--help"], cwd=config.vault)
     run_checked(["rg", "--version"], cwd=config.vault)
     run_checked(["npx", "--version"], cwd=config.vault)
-    run_checked(["npx", "-y", "@probelabs/probe@latest", "search", "--help"], cwd=config.vault)
+    run_checked(
+        ["npx", "-y", "@probelabs/probe@latest", "search", "--help"], cwd=config.vault
+    )
     run_checked(["zk", "--help"], cwd=config.vault)
-    assert (config.vault / ".zk" / "config.toml").is_file(), "vault must be initialized with zk"
-    assert (config.vault / ".zk" / "templates" / "default.md").is_file(), "zk default template must exist"
+    assert (config.vault / ".zk" / "config.toml").is_file(), (
+        "vault must be initialized with zk"
+    )
+    assert (config.vault / ".zk" / "templates" / "default.md").is_file(), (
+        "zk default template must exist"
+    )
     return {
         "vault": str(config.vault),
         "project_id": config.project_id,
@@ -844,7 +927,12 @@ def write_agents_pointer(project_root: Path, vault: Path, project_id: str) -> No
 
 def write_section_indexes(root: Path, sections: Sequence[str]) -> None:
     for section in sections:
-        write_new_file(root / section / "index.md", leaf_index_body(section_title(section)))
+        write_new_file(
+            root / section / "index.md",
+            render_memory(
+                {"okf_version": OKF_VERSION}, leaf_index_body(section_title(section))
+            ),
+        )
 
 
 def parent_index_body(title: str, entries: Sequence[IndexEntry]) -> str:
@@ -865,7 +953,10 @@ def directory_index_entries(
     children: Sequence[str],
     descriptions: dict[str, str],
 ) -> list[IndexEntry]:
-    return [(section_title(child), f"{child}/index.md", descriptions[child]) for child in children]
+    return [
+        (section_title(child), f"{child}/index.md", descriptions[child])
+        for child in children
+    ]
 
 
 def okf_index_entry(title: str, target: str, description: str) -> str:
@@ -892,23 +983,37 @@ def okf_tags(
     return [scope.value, memory_type.value, *extra_tags]
 
 
-def append_index_link(index_path: Path, title: str, target: str, description: str) -> None:
+def append_index_link(
+    index_path: Path, title: str, target: str, description: str
+) -> None:
     assert index_path.is_file(), "parent index must exist before linking"
     with index_path.open("a", encoding="utf-8") as index_file:
         index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
 
 
-def replace_index_link(index_path: Path, title: str, target: str, description: str) -> None:
+def replace_index_link(
+    index_path: Path, title: str, target: str, description: str
+) -> None:
     assert index_path.is_file(), "index must exist before replacing a link"
     # IWE rewrites the OKF bullet marker to "-" when it renames linked notes.
     link_prefixes = (f"* [{title}](", f"- [{title}](")
     lines = index_path.read_text(encoding="utf-8").splitlines()
-    matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
-    assert len(matching_indexes) == 1, "index must contain exactly one link for the title"
+    matching_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if any(line.startswith(prefix) for prefix in link_prefixes)
+    ]
+    assert len(matching_indexes) == 1, (
+        "index must contain exactly one link for the title"
+    )
     entry_start = matching_indexes[0]
     assert lines[entry_start + 1] == "", "index entry must separate OKF and IWE links"
-    assert lines[entry_start + 2].startswith(f"[{title}]("), "index entry must include an IWE graph link"
-    lines[entry_start : entry_start + 3] = okf_index_entry(title, target, description).splitlines()
+    assert lines[entry_start + 2].startswith(f"[{title}]("), (
+        "index entry must include an IWE graph link"
+    )
+    lines[entry_start : entry_start + 3] = okf_index_entry(
+        title, target, description
+    ).splitlines()
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -917,11 +1022,17 @@ def remove_index_link(index_path: Path, target: str, title: str) -> None:
     lines = index_path.read_text(encoding="utf-8").splitlines()
     okf_prefixes = (f"* [{title}]({target}) - ", f"- [{title}]({target}) - ")
     graph_link = f"[{title}]({target})"
-    matching_indexes = [index for index, line in enumerate(lines) if line.startswith(okf_prefixes)]
-    assert len(matching_indexes) == 1, "index must contain exactly one removable OKF link"
+    matching_indexes = [
+        index for index, line in enumerate(lines) if line.startswith(okf_prefixes)
+    ]
+    assert len(matching_indexes) == 1, (
+        "index must contain exactly one removable OKF link"
+    )
     entry_start = matching_indexes[0]
     assert lines[entry_start + 1] == "", "index entry must separate OKF and IWE links"
-    assert lines[entry_start + 2] == graph_link, "index entry must include the matching IWE graph link"
+    assert lines[entry_start + 2] == graph_link, (
+        "index entry must include the matching IWE graph link"
+    )
     del lines[entry_start : entry_start + 3]
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -981,7 +1092,9 @@ def load_project_config(cwd: Path) -> ProjectConfig:
             f"{starter.default_vault}` once if the global vault does not exist, then run "
             "`iwe2 init project --vault <path-to-global-vault>` from this repository."
         )
-    raw = ProjectConfigFile.model_validate(tomllib.loads(config_path.read_text(encoding="utf-8")))
+    raw = ProjectConfigFile.model_validate(
+        tomllib.loads(config_path.read_text(encoding="utf-8"))
+    )
     return ProjectConfig.from_file_payload(raw)
 
 
@@ -1008,7 +1121,9 @@ def load_project_records(projects_file: Path) -> list[ProjectRecord]:
     return records
 
 
-def memory_directory(config: ProjectConfig, scope: MemoryScope, memory_type: MemoryType) -> Path:
+def memory_directory(
+    config: ProjectConfig, scope: MemoryScope, memory_type: MemoryType
+) -> Path:
     directory_name = MEMORY_TYPE_DIRECTORIES[memory_type]
     if scope is MemoryScope.PROJECT:
         return config.vault / "projects" / config.project_id / directory_name
@@ -1116,7 +1231,9 @@ def parse_created_after(value: str | None) -> datetime | None:
 
 def parse_memory_timestamp(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    assert parsed.tzinfo is not None, "memory timestamp must include timezone information"
+    assert parsed.tzinfo is not None, (
+        "memory timestamp must include timezone information"
+    )
     return parsed
 
 
@@ -1136,7 +1253,9 @@ def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
 def read_memory(path: Path) -> MemoryDocument:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     assert lines[0].strip() == "---", "memory must start with frontmatter"
-    closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+    closing_index = next(
+        index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"
+    )
     parsed = yaml.safe_load("".join(lines[1:closing_index]))
     assert isinstance(parsed, dict), "frontmatter must be a mapping"
     metadata: dict[str, MetadataValue] = {}
@@ -1144,13 +1263,593 @@ def read_memory(path: Path) -> MemoryDocument:
         assert isinstance(key, str), "frontmatter keys must be strings"
         if isinstance(value, datetime):
             assert key == "timestamp", "only timestamp may be parsed as a YAML datetime"
-            assert value.tzinfo is not None, "timestamp must include timezone information"
+            assert value.tzinfo is not None, (
+                "timestamp must include timezone information"
+            )
             metadata[key] = value.isoformat().replace("+00:00", "Z")
         elif isinstance(value, list):
-            assert all(isinstance(item, str) for item in value), "frontmatter lists must contain strings"
+            assert all(isinstance(item, str) for item in value), (
+                "frontmatter lists must contain strings"
+            )
             metadata[key] = value
         else:
-            assert isinstance(value, str | bool), "frontmatter values must be strings, booleans, datetimes, or string lists"
+            assert isinstance(value, str | bool), (
+                "frontmatter values must be strings, booleans, datetimes, or string lists"
+            )
             metadata[key] = value
     body = "".join(lines[closing_index + 1 :])
     return MemoryDocument(metadata=metadata, body=body)
+
+
+def inspect_overview(
+    *,
+    scope: SearchScope,
+    output_format: InspectOutputFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, (
+        "inspect overview currently emits JSON"
+    )
+    config = load_project_config(cwd)
+    notes = inspect_note_records(config, scope)
+    indexes = inspect_index_records(config, scope)
+    return {
+        "vault": str(config.vault),
+        "project_id": config.project_id,
+        "scope": scope.value,
+        "roots": json_string_list(inspect_root_keys(config, scope)),
+        "totals": {
+            "notes": len(notes),
+            "indexes": len(indexes),
+        },
+        "notes_by_scope": inspect_counts(notes, "scope"),
+        "notes_by_type": inspect_counts(notes, "type"),
+    }
+
+
+def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, (
+        "inspect schema currently emits JSON"
+    )
+    return {
+        "commands": {
+            "inspect": [
+                "overview",
+                "schema",
+                "paths",
+                "tree",
+                "links",
+                "outline",
+                "stats",
+                "recent",
+                "export",
+            ]
+        },
+        "scopes": [scope.value for scope in SearchScope],
+        "memory_types": [memory_type.value for memory_type in MemoryType],
+        "path_kinds": [kind.value for kind in InspectPathKind],
+        "link_directions": [direction.value for direction in InspectLinkDirection],
+        "stats_groups": [group.value for group in InspectStatsGroup],
+        "export_profiles": [profile.value for profile in InspectExportProfile],
+        "formats": {
+            "inspect": [InspectOutputFormat.JSON.value],
+            "export": [InspectExportFormat.GRAPH_JSON.value],
+        },
+        "metadata_fields": [
+            "type",
+            "title",
+            "description",
+            "tags",
+            "timestamp",
+            "scope",
+            "source",
+            "confidence",
+            "promotable",
+            "project_id",
+        ],
+    }
+
+
+def inspect_paths(
+    *,
+    scope: SearchScope,
+    kind: InspectPathKind,
+    output_format: InspectOutputFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, (
+        "inspect paths currently emits JSON"
+    )
+    config = load_project_config(cwd)
+    records: list[JsonObject] = []
+    if kind is InspectPathKind.ROOTS:
+        records.extend(inspect_root_records(config, scope))
+    elif kind is InspectPathKind.INDEXES:
+        records.extend(inspect_index_records(config, scope))
+    elif kind is InspectPathKind.NOTES:
+        records.extend(inspect_path_note_records(config, scope))
+    elif kind is InspectPathKind.ALL:
+        records.extend(inspect_root_records(config, scope))
+        records.extend(inspect_index_records(config, scope))
+        records.extend(inspect_path_note_records(config, scope))
+    else:
+        raise AssertionError(f"unsupported inspect path kind: {kind}")
+    return {
+        "scope": scope.value,
+        "kind": kind.value,
+        "paths": json_record_list(records),
+    }
+
+
+def inspect_tree(
+    *,
+    scope: SearchScope,
+    depth: int,
+    output_format: InspectOutputFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, (
+        "inspect tree currently emits JSON"
+    )
+    assert depth >= 0, "inspect tree depth must be nonnegative"
+    config = load_project_config(cwd)
+    roots = [
+        inspect_tree_node(config, key, depth)
+        for key in inspect_root_keys(config, scope)
+    ]
+    return {"scope": scope.value, "depth": depth, "roots": json_record_list(roots)}
+
+
+def inspect_links(
+    *,
+    key: str,
+    direction: InspectLinkDirection,
+    depth: int,
+    output_format: InspectOutputFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, (
+        "inspect links currently emits JSON"
+    )
+    assert depth >= 0, "inspect links depth must be nonnegative"
+    config = load_project_config(cwd)
+    path = memory_path_for_key(config, key)
+    records: list[JsonObject] = []
+    if direction is InspectLinkDirection.CHILDREN:
+        records.extend(
+            link_records_for_direction(
+                config, path, depth, InspectLinkDirection.CHILDREN
+            )
+        )
+    elif direction is InspectLinkDirection.PARENTS:
+        records.extend(
+            link_records_for_direction(
+                config, path, depth, InspectLinkDirection.PARENTS
+            )
+        )
+    elif direction is InspectLinkDirection.BOTH:
+        records.extend(
+            link_records_for_direction(
+                config, path, depth, InspectLinkDirection.PARENTS
+            )
+        )
+        records.extend(
+            link_records_for_direction(
+                config, path, depth, InspectLinkDirection.CHILDREN
+            )
+        )
+        records = dedupe_link_records(records)
+    else:
+        raise AssertionError(f"unsupported inspect link direction: {direction}")
+    return {
+        "key": key,
+        "direction": direction.value,
+        "depth": depth,
+        "links": json_record_list(records),
+    }
+
+
+def inspect_outline(
+    *,
+    key: str,
+    output_format: InspectOutputFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, (
+        "inspect outline currently emits JSON"
+    )
+    config = load_project_config(cwd)
+    path = memory_path_for_key(config, key)
+    document = read_memory(path)
+    return {
+        "key": key,
+        "path": str(path),
+        "headings": json_record_list(markdown_headings(document.body)),
+    }
+
+
+def inspect_stats(
+    *,
+    scope: SearchScope,
+    group: InspectStatsGroup,
+    output_format: InspectOutputFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, (
+        "inspect stats currently emits JSON"
+    )
+    config = load_project_config(cwd)
+    notes = inspect_note_records(config, scope)
+    if group is InspectStatsGroup.TYPE:
+        counts = inspect_counts(notes, "type")
+    elif group is InspectStatsGroup.SCOPE:
+        counts = inspect_counts(notes, "scope")
+    elif group is InspectStatsGroup.DAY:
+        counts = inspect_day_counts(notes)
+    else:
+        raise AssertionError(f"unsupported inspect stats group: {group}")
+    return {"scope": scope.value, "by": group.value, "counts": counts}
+
+
+def inspect_recent(
+    *,
+    scope: SearchScope,
+    since: str,
+    output_format: InspectOutputFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, (
+        "inspect recent currently emits JSON"
+    )
+    since_datetime = parse_memory_timestamp(since)
+    config = load_project_config(cwd)
+    records = [
+        record
+        for record in inspect_note_records(config, scope)
+        if parse_memory_timestamp(json_string(record, "timestamp")) > since_datetime
+    ]
+    records.sort(key=lambda record: json_string(record, "timestamp"), reverse=True)
+    return {"scope": scope.value, "since": since, "results": json_record_list(records)}
+
+
+def inspect_export(
+    *,
+    scope: SearchScope,
+    profile: InspectExportProfile,
+    output_format: InspectExportFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectExportFormat.GRAPH_JSON, (
+        "inspect export currently emits graph-json"
+    )
+    config = load_project_config(cwd)
+    paths = inspect_markdown_paths(config, scope)
+    path_by_key = {memory_key(config.vault, path): path for path in paths}
+    nodes = [
+        inspect_export_node(config, key, path, profile)
+        for key, path in sorted(path_by_key.items())
+    ]
+    edges: list[JsonObject] = []
+    for key, path in sorted(path_by_key.items()):
+        for target in outgoing_link_keys(config, path):
+            if target in path_by_key:
+                edges.append({"source": key, "target": target})
+    return {
+        "scope": scope.value,
+        "profile": profile.value,
+        "format": output_format.value,
+        "nodes": json_record_list(nodes),
+        "edges": json_record_list(edges),
+    }
+
+
+def inspect_root_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
+    global_root = config.vault / "global"
+    project_root = config.vault / "projects" / config.project_id
+    if scope is SearchScope.PROJECT:
+        return (project_root,)
+    if scope is SearchScope.GLOBAL:
+        return (global_root,)
+    if scope is SearchScope.BOTH:
+        return (global_root, project_root)
+    raise AssertionError(f"unsupported inspect scope: {scope}")
+
+
+def inspect_root_keys(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
+    return tuple(
+        memory_key(config.vault, root / "index.md")
+        for root in inspect_root_paths(config, scope)
+    )
+
+
+def inspect_root_records(
+    config: ProjectConfig, scope: SearchScope
+) -> tuple[JsonObject, ...]:
+    return tuple(
+        {
+            "key": memory_key(config.vault, root / "index.md"),
+            "path": str(root / "index.md"),
+            "scope": inspect_scope_for_path(config, root / "index.md"),
+        }
+        for root in inspect_root_paths(config, scope)
+    )
+
+
+def inspect_markdown_paths(
+    config: ProjectConfig, scope: SearchScope
+) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for root in inspect_root_paths(config, scope):
+        for path in sorted(root.rglob("*.md")):
+            paths.append(path)
+    return tuple(paths)
+
+
+def inspect_index_records(
+    config: ProjectConfig, scope: SearchScope
+) -> tuple[JsonObject, ...]:
+    records: list[JsonObject] = []
+    for path in inspect_markdown_paths(config, scope):
+        if path.name != "index.md":
+            continue
+        document = read_memory(path)
+        records.append(
+            {
+                "key": memory_key(config.vault, path),
+                "path": str(path),
+                "title": first_heading_title(document.body),
+                "scope": inspect_scope_for_path(config, path),
+            }
+        )
+    return tuple(records)
+
+
+def inspect_path_note_records(
+    config: ProjectConfig, scope: SearchScope
+) -> tuple[JsonObject, ...]:
+    return tuple(
+        {
+            "key": json_string(record, "key"),
+            "path": json_string(record, "path"),
+            "title": json_string(record, "title"),
+            "type": json_string(record, "type"),
+            "scope": json_string(record, "scope"),
+        }
+        for record in inspect_note_records(config, scope)
+    )
+
+
+def inspect_note_records(
+    config: ProjectConfig, scope: SearchScope
+) -> tuple[JsonObject, ...]:
+    records: list[JsonObject] = []
+    required_fields = {"type", "title", "tags", "timestamp", "scope"}
+    for path in inspect_markdown_paths(config, scope):
+        document = read_memory(path)
+        if not required_fields.issubset(document.metadata.keys()):
+            continue
+        stored_type = metadata_string(document.metadata, "type")
+        MemoryType(stored_type)
+        stored_scope = metadata_string(document.metadata, "scope")
+        MemoryScope(stored_scope)
+        tags = document.metadata["tags"]
+        assert isinstance(tags, list), "memory tags must be a list"
+        assert all(isinstance(tag_value, str) for tag_value in tags), (
+            "memory tags must contain strings"
+        )
+        records.append(
+            {
+                "key": memory_key(config.vault, path),
+                "path": str(path),
+                "title": metadata_string(document.metadata, "title"),
+                "type": stored_type,
+                "scope": stored_scope,
+                "tags": json_string_list(tags),
+                "timestamp": metadata_string(document.metadata, "timestamp"),
+            }
+        )
+    return tuple(records)
+
+
+def inspect_counts(records: Sequence[JsonObject], field: str) -> JsonObject:
+    counts: dict[str, int] = {}
+    for record in records:
+        value = json_string(record, field)
+        counts[value] = counts.get(value, 0) + 1
+    return {key: counts[key] for key in sorted(counts)}
+
+
+def inspect_day_counts(records: Sequence[JsonObject]) -> JsonObject:
+    counts: dict[str, int] = {}
+    for record in records:
+        timestamp = json_string(record, "timestamp")
+        day = parse_memory_timestamp(timestamp).date().isoformat()
+        counts[day] = counts.get(day, 0) + 1
+    return {key: counts[key] for key in sorted(counts)}
+
+
+def inspect_scope_for_path(config: ProjectConfig, path: Path) -> str:
+    relative = path.relative_to(config.vault)
+    root = relative.parts[0]
+    if root == "global":
+        return MemoryScope.GLOBAL.value
+    if root == "projects":
+        return MemoryScope.PROJECT.value
+    raise AssertionError(f"path is outside inspectable scopes: {path}")
+
+
+def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
+    path = config.vault / f"{key}.md"
+    assert path.is_file(), f"memory key does not exist: {key}"
+    return path
+
+
+def first_heading_title(markdown: str) -> str:
+    for line in markdown.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+            assert title, "heading title must be nonempty"
+            return title
+    raise AssertionError("markdown document must contain a top-level heading")
+
+
+def markdown_headings(markdown: str) -> tuple[JsonObject, ...]:
+    headings: list[JsonObject] = []
+    for line_number, line in enumerate(markdown.splitlines(), start=1):
+        stripped = line.lstrip()
+        marker_length = len(stripped) - len(stripped.lstrip("#"))
+        if marker_length == 0:
+            continue
+        assert marker_length <= 6, "markdown heading level must be between 1 and 6"
+        assert stripped[marker_length : marker_length + 1] == " ", (
+            "markdown heading marker must be followed by a space"
+        )
+        title = stripped[marker_length + 1 :].strip()
+        assert title, "markdown heading title must be nonempty"
+        headings.append({"level": marker_length, "title": title, "line": line_number})
+    return tuple(headings)
+
+
+def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
+    text = path.read_text(encoding="utf-8")
+    keys: list[str] = []
+    for match in MARKDOWN_LINK_PATTERN.finditer(text):
+        target = match.group(1).split("#", 1)[0]
+        if target == "":
+            continue
+        assert target.endswith(".md"), (
+            f"markdown link target must point to a Markdown file: {target}"
+        )
+        target_path = (path.parent / target).resolve()
+        vault = config.vault.resolve()
+        assert target_path.is_relative_to(vault), (
+            f"markdown link leaves memory vault: {target}"
+        )
+        keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
+    return tuple(keys)
+
+
+def incoming_link_keys(config: ProjectConfig, target_key: str) -> tuple[str, ...]:
+    keys: list[str] = []
+    for path in inspect_markdown_paths(config, SearchScope.BOTH):
+        source_key = memory_key(config.vault, path)
+        if source_key == target_key:
+            continue
+        if target_key in outgoing_link_keys(config, path):
+            keys.append(source_key)
+    return tuple(sorted(keys))
+
+
+def inspect_tree_node(config: ProjectConfig, key: str, depth: int) -> JsonObject:
+    path = memory_path_for_key(config, key)
+    document = read_memory(path)
+    children: list[JsonObject] = []
+    if depth > 0:
+        for child_key in outgoing_link_keys(config, path):
+            children.append(inspect_tree_node(config, child_key, depth - 1))
+    return {
+        "key": key,
+        "path": str(path),
+        "title": inspect_title_for_document(document),
+        "children": json_record_list(children),
+    }
+
+
+def inspect_title_for_document(document: MemoryDocument) -> str:
+    if "title" in document.metadata:
+        return metadata_string(document.metadata, "title")
+    return first_heading_title(document.body)
+
+
+def link_records_for_direction(
+    config: ProjectConfig,
+    path: Path,
+    depth: int,
+    direction: InspectLinkDirection,
+) -> tuple[JsonObject, ...]:
+    if depth == 0:
+        return ()
+    start_key = memory_key(config.vault, path)
+    records: list[JsonObject] = []
+    frontier = [(start_key, 0)]
+    seen = {start_key}
+    while frontier:
+        current_key, current_depth = frontier.pop(0)
+        if current_depth == depth:
+            continue
+        if direction is InspectLinkDirection.CHILDREN:
+            related_keys = outgoing_link_keys(
+                config, memory_path_for_key(config, current_key)
+            )
+        elif direction is InspectLinkDirection.PARENTS:
+            related_keys = incoming_link_keys(config, current_key)
+        else:
+            raise AssertionError(f"unsupported link traversal direction: {direction}")
+        for related_key in related_keys:
+            if related_key in seen:
+                continue
+            seen.add(related_key)
+            related_path = memory_path_for_key(config, related_key)
+            related_document = read_memory(related_path)
+            record_depth = current_depth + 1
+            records.append(
+                {
+                    "key": related_key,
+                    "path": str(related_path),
+                    "title": inspect_title_for_document(related_document),
+                    "depth": record_depth,
+                }
+            )
+            frontier.append((related_key, record_depth))
+    return tuple(records)
+
+
+def dedupe_link_records(records: Sequence[JsonObject]) -> list[JsonObject]:
+    deduped: dict[str, JsonObject] = {}
+    for record in records:
+        key = json_string(record, "key")
+        if key not in deduped:
+            deduped[key] = record
+    return [deduped[key] for key in sorted(deduped)]
+
+
+def inspect_export_node(
+    config: ProjectConfig,
+    key: str,
+    path: Path,
+    profile: InspectExportProfile,
+) -> JsonObject:
+    document = read_memory(path)
+    node: JsonObject = {
+        "key": key,
+        "path": str(path),
+        "title": inspect_title_for_document(document),
+        "scope": inspect_scope_for_path(config, path),
+    }
+    if "type" in document.metadata:
+        node["type"] = metadata_string(document.metadata, "type")
+    if profile is InspectExportProfile.MAP:
+        return node
+    if profile is InspectExportProfile.CONTEXT:
+        node["content"] = document.body
+        return node
+    if profile is InspectExportProfile.ARCHIVE:
+        node["metadata"] = {
+            key: json_metadata_value(value)
+            for key, value in sorted(document.metadata.items())
+        }
+        node["content"] = document.body
+        return node
+    raise AssertionError(f"unsupported inspect export profile: {profile}")
+
+
+def json_metadata_value(value: MetadataValue) -> JsonValue:
+    if isinstance(value, str | bool):
+        return value
+    return json_string_list(value)
+
+
+def json_string(payload: JsonObject, key: str) -> str:
+    value = payload[key]
+    assert isinstance(value, str), f"JSON field {key} must be a string"
+    return value

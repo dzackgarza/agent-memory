@@ -1,9 +1,10 @@
 default_vault = "~/.agent-memory-vault"
 global_scopes = [
-  "global/advice",
+  "global/decisions",
   "global/traps",
-  "global/workflows",
-  "global/tools",
+  "global/advice",
+  "global/context",
+  "global/references",
 ]
 search_max_results = 10
 search_max_tokens = 4000
