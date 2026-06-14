@@ -135,6 +135,18 @@ def tree_keys(cwd: Path, key: str) -> list[str]:
     return [line.lstrip("\t") for line in result.stdout.splitlines()]
 
 
+def inspect_tree_keys(node: dict[str, object]) -> set[str]:
+    key = node["key"]
+    assert isinstance(key, str)
+    children = node["children"]
+    assert isinstance(children, list)
+    keys = {key}
+    for child in children:
+        assert isinstance(child, dict)
+        keys.update(inspect_tree_keys(child))
+    return keys
+
+
 def assert_tree(
     root: str, expected_children: list[str], actual_keys: list[str]
 ) -> None:
@@ -1128,7 +1140,9 @@ def test_inspect_overview_schema_paths_and_tree_map_real_vault(tmp_path: Path) -
     )
     assert tree["scope"] == "project"
     assert tree["roots"][0]["key"] == f"projects/{project_id}/index"
-    assert tree_keys(tree["roots"][0]) == {
+    tree_root = tree["roots"][0]
+    assert isinstance(tree_root, dict)
+    assert inspect_tree_keys(tree_root) == {
         f"projects/{project_id}/index",
         f"projects/{project_id}/advice/index",
         f"projects/{project_id}/context/index",
