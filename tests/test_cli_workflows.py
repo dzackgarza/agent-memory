@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -11,6 +12,8 @@ from pathlib import Path
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+UV_EXECUTABLE = shutil.which("uv")
+assert UV_EXECUTABLE is not None, "uv executable is required to run iwe2 integration tests"
 
 
 def just_value(name: str) -> str:
@@ -961,6 +964,44 @@ def test_project_commands_without_config_fail_with_first_time_setup_guidance(
     assert "Traceback" not in result.stderr
 
 
+def test_startup_doctor_gate_reports_missing_dependency_before_command_logic(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    empty_path = tmp_path / "empty-bin"
+    empty_path.mkdir()
+    env = os.environ.copy()
+    env["PATH"] = str(empty_path)
+    env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+
+    result = subprocess.run(
+        [
+            UV_EXECUTABLE,
+            "run",
+            "--project",
+            str(PROJECT_ROOT),
+            "--directory",
+            str(repo),
+            "python",
+            "-m",
+            "iwe2",
+            "doctor",
+        ],
+        cwd=repo,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert result.stderr == (
+        "Missing required dependency: git.\nInstall instructions: run `just setup` from the iwe2 checkout; manual install: install Git from your OS package manager.\n"
+    )
+
+
 def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1100,6 +1141,13 @@ def test_inspect_overview_schema_paths_and_tree_map_real_vault(tmp_path: Path) -
         f"projects/{project_id}/references/index",
         f"projects/{project_id}/traps/index",
     }
+    tree_decisions: list[JsonObject] = []
+    for raw_child in json_array(tree_root["children"]):
+        child = json_object(raw_child)
+        if child["key"] == f"projects/{project_id}/decisions/index":
+            tree_decisions.append(child)
+    decision_children = json_array(tree_decisions[0]["children"])
+    assert [json_string(json_object(child)["key"]) for child in decision_children] == [project_key]
 
 
 def test_inspect_links_outline_recent_stats_and_export_real_vault(
@@ -1223,4 +1271,4 @@ def test_inspect_links_outline_recent_stats_and_export_real_vault(
     assert exported_nodes[project_key]["title"] == "Inspect Linked"
     assert "content" not in exported_nodes[project_key]
     exported_edges = [json_object(edge) for edge in json_array(exported["edges"])]
-    assert {(json_string(edge["source"]), json_string(edge["target"])) for edge in exported_edges} >= {(f"projects/{project_id}/decisions/index", project_key)}
+    assert [(json_string(edge["source"]), json_string(edge["target"])) for edge in exported_edges].count((f"projects/{project_id}/decisions/index", project_key)) == 1
