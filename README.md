@@ -11,13 +11,20 @@ Install the CLI globally from this checkout:
 just install
 ```
 
+This installs `iwe2` as an editable global `uv` tool and provisions the command-line tools that the app invokes:
+
+- `iwe` through the documented Cargo installer when absent
+- `rg` through Cargo when absent
+- `zk` `v0.15.5` into `~/.local/bin`
+- Probe through `npx -y @probelabs/probe@latest`
+
 Run the first-time setup prompt for the global vault:
 
 ```bash
 just setup
 ```
 
-`just setup` installs the editable tool, prompts for the global vault path with `gum`, and runs:
+`just setup` runs `just install`, prompts for the global vault path with `gum`, and runs:
 
 ```bash
 iwe2 maintain init-global --vault <vault>
@@ -134,8 +141,13 @@ Runtime tools:
 - `@probelabs/probe`
 - `zk`
 
-Setup prompt dependency:
+Setup and installation tools:
 
+- `uv`
+- `cargo`
+- `gh`
 - `gum`
+- `tar`
+- `trash`
 
 Python dependencies are declared in `pyproject.toml`.

@@ -11,8 +11,19 @@ from pathlib import Path
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ZK_VERSION = "v0.15.5"
-ZK_ASSET = "zk-v0.15.5-linux-amd64.tar.gz"
+
+
+def just_value(name: str) -> str:
+    return subprocess.run(
+        ["just", "--justfile", str(PROJECT_ROOT / "justfile"), "--evaluate", name],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+
+ZK_VERSION = just_value("ZK_VERSION")
+ZK_ASSET = just_value("ZK_ASSET")
 ZK_BIN_DIR = Path(tempfile.mkdtemp(prefix="iwe2-zk-"))
 subprocess.run(
     [
