@@ -13,7 +13,8 @@ from importlib import resources
 from pathlib import Path
 
 import tomli_w
-from iwe2.frontmatter import dump_frontmatter, load_frontmatter
+import yaml
+
 from iwe2.models import (
     GlobalNoteMetadata,
     InspectExportFormat,
@@ -1212,7 +1213,7 @@ def write_memory(path: Path, metadata: dict[str, MetadataValue], body: str) -> N
 
 
 def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
-    frontmatter = dump_frontmatter(metadata)
+    frontmatter = yaml.safe_dump(metadata, sort_keys=False)
     return f"---\n{frontmatter}---\n{body}"
 
 
@@ -1220,7 +1221,21 @@ def read_memory(path: Path) -> MemoryDocument:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     assert lines[0].strip() == "---", "memory must start with frontmatter"
     closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    metadata = load_frontmatter("".join(lines[1:closing_index]))
+    parsed = yaml.safe_load("".join(lines[1:closing_index]))
+    assert isinstance(parsed, dict), "frontmatter must be a mapping"
+    metadata: dict[str, MetadataValue] = {}
+    for key, value in parsed.items():
+        assert isinstance(key, str), "frontmatter keys must be strings"
+        if isinstance(value, datetime):
+            assert key == "timestamp", "only timestamp may be parsed as a YAML datetime"
+            assert value.tzinfo is not None, "timestamp must include timezone information"
+            metadata[key] = value.isoformat().replace("+00:00", "Z")
+        elif isinstance(value, list):
+            assert all(isinstance(item, str) for item in value), "frontmatter lists must contain strings"
+            metadata[key] = value
+        else:
+            assert isinstance(value, str | bool), "frontmatter values must be strings, booleans, datetimes, or string lists"
+            metadata[key] = value
     body = "".join(lines[closing_index + 1 :])
     return MemoryDocument(metadata=metadata, body=body)
 

@@ -9,6 +9,8 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
+import yaml
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UV_EXECUTABLE_LOOKUP = shutil.which("uv")
 assert UV_EXECUTABLE_LOOKUP is not None, "uv executable is required to run iwe2 integration tests"
@@ -255,37 +257,9 @@ def frontmatter(markdown: Path) -> dict[str, object]:
     lines = markdown.read_text().splitlines()
     assert lines[0] == "---"
     closing = lines.index("---", 1)
-    metadata: dict[str, object] = {}
-    index = 1
-    while index < closing:
-        key, separator, raw_value = lines[index].partition(":")
-        assert separator == ":"
-        stripped_value = raw_value.strip()
-        if stripped_value == "":
-            items: list[str] = []
-            index += 1
-            while index < closing and lines[index].startswith("- "):
-                items.append(frontmatter_scalar(lines[index][2:].strip()))
-                index += 1
-            metadata[key] = items
-        else:
-            metadata[key] = frontmatter_value(stripped_value)
-            index += 1
-    return metadata
-
-
-def frontmatter_value(raw_value: str) -> object:
-    if raw_value == "true":
-        return True
-    if raw_value == "false":
-        return False
-    return frontmatter_scalar(raw_value)
-
-
-def frontmatter_scalar(raw_value: str) -> str:
-    if raw_value.startswith("'") and raw_value.endswith("'"):
-        return raw_value[1:-1].replace("''", "'")
-    return raw_value
+    parsed = yaml.safe_load("\n".join(lines[1:closing]))
+    assert isinstance(parsed, dict)
+    return parsed
 
 
 def assert_okf_timestamp(value: object) -> None:
@@ -1043,6 +1017,14 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     assert doctor["project_id"] == project_id
     assert doctor["project_root"] == str(repo)
     assert doctor["tools"] == ["git", "iwe", "rg", "npx", "@probelabs/probe", "zk"]
+    assert doctor["dependencies"] == [
+        {"name": "git", "command": ["git", "--version"], "status": "ok"},
+        {"name": "iwe", "command": ["iwe", "--version"], "status": "ok"},
+        {"name": "rg", "command": ["rg", "--version"], "status": "ok"},
+        {"name": "npx", "command": ["npx", "--version"], "status": "ok"},
+        {"name": "@probelabs/probe", "command": ["npx", "-y", "@probelabs/probe@latest", "--version"], "status": "ok"},
+        {"name": "zk", "command": ["zk", "--version"], "status": "ok"},
+    ]
 
 
 def test_inspect_overview_schema_paths_and_tree_map_real_vault(tmp_path: Path) -> None:
