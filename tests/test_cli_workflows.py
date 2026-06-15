@@ -9,11 +9,10 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
-import yaml
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-UV_EXECUTABLE = shutil.which("uv")
-assert UV_EXECUTABLE is not None, "uv executable is required to run iwe2 integration tests"
+UV_EXECUTABLE_LOOKUP = shutil.which("uv")
+assert UV_EXECUTABLE_LOOKUP is not None, "uv executable is required to run iwe2 integration tests"
+UV_EXECUTABLE: str = UV_EXECUTABLE_LOOKUP
 
 
 def just_value(name: str) -> str:
@@ -256,9 +255,37 @@ def frontmatter(markdown: Path) -> dict[str, object]:
     lines = markdown.read_text().splitlines()
     assert lines[0] == "---"
     closing = lines.index("---", 1)
-    parsed = yaml.safe_load("\n".join(lines[1:closing]))
-    assert isinstance(parsed, dict)
-    return parsed
+    metadata: dict[str, object] = {}
+    index = 1
+    while index < closing:
+        key, separator, raw_value = lines[index].partition(":")
+        assert separator == ":"
+        stripped_value = raw_value.strip()
+        if stripped_value == "":
+            items: list[str] = []
+            index += 1
+            while index < closing and lines[index].startswith("- "):
+                items.append(frontmatter_scalar(lines[index][2:].strip()))
+                index += 1
+            metadata[key] = items
+        else:
+            metadata[key] = frontmatter_value(stripped_value)
+            index += 1
+    return metadata
+
+
+def frontmatter_value(raw_value: str) -> object:
+    if raw_value == "true":
+        return True
+    if raw_value == "false":
+        return False
+    return frontmatter_scalar(raw_value)
+
+
+def frontmatter_scalar(raw_value: str) -> str:
+    if raw_value.startswith("'") and raw_value.endswith("'"):
+        return raw_value[1:-1].replace("''", "'")
+    return raw_value
 
 
 def assert_okf_timestamp(value: object) -> None:

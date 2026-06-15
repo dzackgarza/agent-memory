@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import tomllib
 from collections import Counter
@@ -12,9 +13,7 @@ from importlib import resources
 from pathlib import Path
 
 import tomli_w
-import yaml
-from slugify import slugify
-
+from iwe2.frontmatter import dump_frontmatter, load_frontmatter
 from iwe2.models import (
     GlobalNoteMetadata,
     InspectExportFormat,
@@ -32,11 +31,20 @@ from iwe2.models import (
     PromotedNoteMetadata,
     SearchScope,
 )
+from slugify import slugify
 
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 JsonObject = dict[str, JsonValue]
 IndexEntry = tuple[str, str, str]
 ProjectRecord = dict[str, str]
+
+
+@dataclass(frozen=True)
+class DependencyCheck:
+    name: str
+    command: tuple[str, ...]
+    install_instructions: str
+
 
 OKF_VERSION = "0.1"
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
@@ -97,6 +105,38 @@ PROJECT_DIRECTORIES: tuple[str, ...] = (
     "advice",
     "context",
     "references",
+)
+BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
+    DependencyCheck(
+        "git",
+        ("git", "--version"),
+        "run `just setup` from the iwe2 checkout; manual install: install Git from your OS package manager.",
+    ),
+    DependencyCheck(
+        "iwe",
+        ("iwe", "--version"),
+        "run `just setup` from the iwe2 checkout; manual install: run `cargo install iwe iwes iwec`.",
+    ),
+    DependencyCheck(
+        "rg",
+        ("rg", "--version"),
+        "run `just setup` from the iwe2 checkout; manual install: run `cargo install ripgrep`.",
+    ),
+    DependencyCheck(
+        "npx",
+        ("npx", "--version"),
+        "run `just setup` from the iwe2 checkout; manual install: install Node.js with npm/npx.",
+    ),
+    DependencyCheck(
+        "@probelabs/probe",
+        ("npx", "-y", "@probelabs/probe@latest", "--version"),
+        "run `just setup` from the iwe2 checkout; manual install: run `npx -y @probelabs/probe@latest --version`.",
+    ),
+    DependencyCheck(
+        "zk",
+        ("zk", "--version"),
+        "run `just setup` from the iwe2 checkout; manual install: install zk v0.15.5 to a directory on PATH.",
+    ),
 )
 
 
@@ -765,21 +805,46 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     return {"key": destination_key, "path": str(destination_path)}
 
 
+def check_dependency(dependency: DependencyCheck, cwd: Path) -> JsonObject:
+    if shutil.which(dependency.command[0]) is None:
+        raise UsageError(f"Missing required dependency: {dependency.name}.\nInstall instructions: {dependency.install_instructions}")
+    result = subprocess.run(dependency.command, cwd=cwd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        message_parts = [
+            f"Dependency check failed: {dependency.name}.",
+            f"Command: {' '.join(dependency.command)}",
+            f"Install instructions: {dependency.install_instructions}",
+        ]
+        if stdout:
+            message_parts.append(f"stdout: {stdout}")
+        if stderr:
+            message_parts.append(f"stderr: {stderr}")
+        raise UsageError("\n".join(message_parts))
+    return {"name": dependency.name, "command": list(dependency.command), "status": "ok"}
+
+
+def basic_doctor(cwd: Path) -> JsonObject:
+    dependencies = [check_dependency(dependency, cwd) for dependency in BASIC_DEPENDENCIES]
+    return {
+        "dependencies": json_record_list(dependencies),
+        "tools": [dependency.name for dependency in BASIC_DEPENDENCIES],
+    }
+
+
 def doctor(cwd: Path) -> JsonObject:
+    basic = basic_doctor(cwd)
     config = load_project_config(cwd)
     git_root = git_root_for(cwd)
-    run_checked(["iwe", "--help"], cwd=config.vault)
-    run_checked(["rg", "--version"], cwd=config.vault)
-    run_checked(["npx", "--version"], cwd=config.vault)
-    run_checked(["npx", "-y", "@probelabs/probe@latest", "search", "--help"], cwd=config.vault)
-    run_checked(["zk", "--help"], cwd=config.vault)
     assert (config.vault / ".zk" / "config.toml").is_file(), "vault must be initialized with zk"
     assert (config.vault / ".zk" / "templates" / "default.md").is_file(), "zk default template must exist"
     return {
         "vault": str(config.vault),
         "project_id": config.project_id,
         "project_root": str(git_root),
-        "tools": ["git", "iwe", "rg", "npx", "@probelabs/probe", "zk"],
+        "tools": basic["tools"],
+        "dependencies": basic["dependencies"],
     }
 
 
@@ -894,8 +959,7 @@ def directory_index_entries(
 
 def okf_index_entry(title: str, target: str, description: str) -> str:
     assert target.endswith(".md"), "OKF index links must target markdown files"
-    # IWE follows paragraph links, while OKF index listings are bullets.
-    return f"* [{title}]({target}) - {description}\n\n[{title}]({target})"
+    return f"* [{title}]({target}) - {description}"
 
 
 def okf_timestamp() -> str:
@@ -930,9 +994,7 @@ def replace_index_link(index_path: Path, title: str, target: str, description: s
     matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
     assert len(matching_indexes) == 1, "index must contain exactly one link for the title"
     entry_start = matching_indexes[0]
-    assert lines[entry_start + 1] == "", "index entry must separate OKF and IWE links"
-    assert lines[entry_start + 2].startswith(f"[{title}]("), "index entry must include an IWE graph link"
-    lines[entry_start : entry_start + 3] = okf_index_entry(title, target, description).splitlines()
+    lines[entry_start] = okf_index_entry(title, target, description)
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -940,13 +1002,10 @@ def remove_index_link(index_path: Path, target: str, title: str) -> None:
     assert index_path.is_file(), "index must exist before removing a link"
     lines = index_path.read_text(encoding="utf-8").splitlines()
     okf_prefixes = (f"* [{title}]({target}) - ", f"- [{title}]({target}) - ")
-    graph_link = f"[{title}]({target})"
     matching_indexes = [index for index, line in enumerate(lines) if line.startswith(okf_prefixes)]
     assert len(matching_indexes) == 1, "index must contain exactly one removable OKF link"
     entry_start = matching_indexes[0]
-    assert lines[entry_start + 1] == "", "index entry must separate OKF and IWE links"
-    assert lines[entry_start + 2] == graph_link, "index entry must include the matching IWE graph link"
-    del lines[entry_start : entry_start + 3]
+    del lines[entry_start]
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -1153,7 +1212,7 @@ def write_memory(path: Path, metadata: dict[str, MetadataValue], body: str) -> N
 
 
 def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
-    frontmatter = yaml.safe_dump(metadata, sort_keys=False)
+    frontmatter = dump_frontmatter(metadata)
     return f"---\n{frontmatter}---\n{body}"
 
 
@@ -1161,21 +1220,7 @@ def read_memory(path: Path) -> MemoryDocument:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     assert lines[0].strip() == "---", "memory must start with frontmatter"
     closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    parsed = yaml.safe_load("".join(lines[1:closing_index]))
-    assert isinstance(parsed, dict), "frontmatter must be a mapping"
-    metadata: dict[str, MetadataValue] = {}
-    for key, value in parsed.items():
-        assert isinstance(key, str), "frontmatter keys must be strings"
-        if isinstance(value, datetime):
-            assert key == "timestamp", "only timestamp may be parsed as a YAML datetime"
-            assert value.tzinfo is not None, "timestamp must include timezone information"
-            metadata[key] = value.isoformat().replace("+00:00", "Z")
-        elif isinstance(value, list):
-            assert all(isinstance(item, str) for item in value), "frontmatter lists must contain strings"
-            metadata[key] = value
-        else:
-            assert isinstance(value, str | bool), "frontmatter values must be strings, booleans, datetimes, or string lists"
-            metadata[key] = value
+    metadata = load_frontmatter("".join(lines[1:closing_index]))
     body = "".join(lines[closing_index + 1 :])
     return MemoryDocument(metadata=metadata, body=body)
 
