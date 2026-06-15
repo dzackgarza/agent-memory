@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tomllib
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from importlib import resources
@@ -185,6 +185,44 @@ class MemoryDocument:
         return value
 
 
+@dataclass(frozen=True)
+class NoteRecord:
+    key: str
+    path: Path
+    title: str
+    memory_type: MemoryType
+    scope: MemoryScope
+    tags: tuple[str, ...]
+    timestamp: str
+    document: MemoryDocument
+
+
+@dataclass(frozen=True)
+class MemoryTransition:
+    old_key: str
+    new_key: str
+    old_title: str
+    new_title: str
+    scope: MemoryScope
+    memory_type: MemoryType
+    source_path: Path
+    destination_path: Path
+    metadata: dict[str, MetadataValue]
+    body: str
+    description: str
+
+
+@dataclass(frozen=True)
+class LinkRecord:
+    key: str
+    path: Path
+    title: str
+    depth: int
+
+
+LinkNeighborProvider = Callable[[ProjectConfig, str], tuple[str, ...]]
+
+
 def init_global_vault(vault: Path) -> JsonObject:
     vault.mkdir(parents=True)
     run_checked(["git", "init"], cwd=vault)
@@ -280,8 +318,7 @@ def add_memory(
     cwd: Path,
 ) -> JsonObject:
     config = load_project_config(cwd)
-    slug = slugify(title)
-    assert slug, "title must produce a nonempty slug"
+    slug = memory_slug(title)
     directory = memory_directory(config, scope, memory_type)
     path = directory / f"{slug}.md"
     key = memory_key(config.vault, path)
@@ -295,6 +332,63 @@ def add_memory(
     return {"key": key, "path": str(path)}
 
 
+def memory_transition(
+    config: ProjectConfig,
+    key: str,
+    title: str | None,
+    memory_type: MemoryType | None,
+    content: str | None,
+) -> MemoryTransition:
+    source_path = config.vault / f"{key}.md"
+    document = read_memory(source_path)
+    old_title = metadata_string(document.metadata, "title")
+    scope = MemoryScope(metadata_string(document.metadata, "scope"))
+    old_type = MemoryType(metadata_string(document.metadata, "type"))
+    new_title = title if title is not None else old_title
+    new_type = memory_type if memory_type is not None else old_type
+    body = updated_memory_body(document.body, new_title, content)
+    description = okf_description(content if content is not None else body)
+    metadata = note_metadata(config, scope, new_type, new_title, description)
+    destination_path = memory_directory(config, scope, new_type) / f"{memory_slug(new_title)}.md"
+    return MemoryTransition(
+        old_key=key,
+        new_key=memory_key(config.vault, destination_path),
+        old_title=old_title,
+        new_title=new_title,
+        scope=scope,
+        memory_type=new_type,
+        source_path=source_path,
+        destination_path=destination_path,
+        metadata=metadata,
+        body=body,
+        description=description,
+    )
+
+
+def memory_slug(title: str) -> str:
+    slug = slugify(title)
+    assert slug, "title must produce a nonempty slug"
+    return slug
+
+
+def sync_memory_transition_indexes(transition: MemoryTransition) -> None:
+    if transition.destination_path.parent == transition.source_path.parent:
+        replace_index_link(
+            transition.destination_path.parent / "index.md",
+            transition.new_title,
+            transition.destination_path.name,
+            transition.description,
+        )
+        return
+    remove_index_link(transition.source_path.parent / "index.md", transition.source_path.name, transition.old_title)
+    append_index_link(
+        transition.destination_path.parent / "index.md",
+        transition.new_title,
+        transition.destination_path.name,
+        transition.description,
+    )
+
+
 def update_memory(
     key: str,
     title: str | None,
@@ -305,44 +399,17 @@ def update_memory(
     if title is None and memory_type is None and content is None:
         raise UsageError("Update requires at least one of --title, --type, or --content.")
     config = load_project_config(cwd)
-    source_path = config.vault / f"{key}.md"
-    document = read_memory(source_path)
-    old_title = metadata_string(document.metadata, "title")
-    old_scope = MemoryScope(metadata_string(document.metadata, "scope"))
-    old_type = MemoryType(metadata_string(document.metadata, "type"))
-    new_title = title if title is not None else old_title
-    new_type = memory_type if memory_type is not None else old_type
-    body = updated_memory_body(document.body, new_title, content)
-    description = okf_description(content if content is not None else body)
-    metadata = note_metadata(config, old_scope, new_type, new_title, description)
-    if old_scope is MemoryScope.PROJECT:
-        metadata["project_id"] = config.project_id
-    destination_dir = memory_directory(config, old_scope, new_type)
-    slug = slugify(new_title)
-    assert slug, "title must produce a nonempty slug"
-    destination_path = destination_dir / f"{slug}.md"
-    new_key = memory_key(config.vault, destination_path)
-    if new_key != key:
-        run_checked(["iwe", "rename", key, new_key], cwd=config.vault)
-    write_memory(destination_path, metadata, body)
-    if destination_path.parent == source_path.parent:
-        replace_index_link(
-            destination_path.parent / "index.md",
-            new_title,
-            destination_path.name,
-            description,
-        )
-    else:
-        remove_index_link(source_path.parent / "index.md", source_path.name, old_title)
-        append_index_link(
-            destination_path.parent / "index.md",
-            new_title,
-            destination_path.name,
-            description,
-        )
+    transition = memory_transition(config, key, title, memory_type, content)
+    if transition.new_key != transition.old_key:
+        run_checked(["iwe", "rename", transition.old_key, transition.new_key], cwd=config.vault)
+    write_memory(transition.destination_path, transition.metadata, transition.body)
+    sync_memory_transition_indexes(transition)
     index_zk_notebook(config.vault)
-    commit_vault_changes(config.vault, f"Update {old_scope.value} {new_type.value} memory: {new_title}")
-    return {"key": new_key, "path": str(destination_path)}
+    commit_vault_changes(
+        config.vault,
+        f"Update {transition.scope.value} {transition.memory_type.value} memory: {transition.new_title}",
+    )
+    return {"key": transition.new_key, "path": str(transition.destination_path)}
 
 
 def delete_memory(key: str, cwd: Path) -> JsonObject:
@@ -404,34 +471,9 @@ def search_metadata(
 ) -> JsonObject:
     config = load_project_config(cwd)
     created_after_datetime = parse_created_after(created_after)
-    records: list[JsonObject] = []
-    required_fields = {"type", "title", "tags", "timestamp"}
-    for path in memory_files(config, scope):
-        document = read_memory(path)
-        if not required_fields.issubset(document.metadata.keys()):
-            continue
-        stored_type = metadata_string(document.metadata, "type")
-        if memory_type is not None and stored_type != memory_type.value:
-            continue
-        tags = document.metadata["tags"]
-        assert isinstance(tags, list), "memory tags must be a list"
-        assert all(isinstance(tag_value, str) for tag_value in tags), "memory tags must contain strings"
-        if tag is not None and tag not in tags:
-            continue
-        timestamp = metadata_string(document.metadata, "timestamp")
-        if created_after_datetime is not None and parse_memory_timestamp(timestamp) <= created_after_datetime:
-            continue
-        title = metadata_string(document.metadata, "title")
-        records.append(
-            {
-                "key": memory_key(config.vault, path),
-                "path": str(path),
-                "title": title,
-                "type": stored_type,
-                "tags": json_string_list(tags),
-                "timestamp": timestamp,
-            }
-        )
+    records = [
+        metadata_search_record_json(record) for record in inspect_note_records(config, scope) if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)
+    ]
     return {
         "scope": scope.value,
         "results": json_record_list(records[: config.search_max_results]),
@@ -1182,12 +1224,86 @@ def memory_key(vault: Path, path: Path) -> str:
 
 
 def memory_files(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    paths: list[Path] = []
-    for root in search_roots(config, scope):
-        for path in sorted(root.rglob("*.md")):
-            if path.read_text(encoding="utf-8").startswith("---\n"):
-                paths.append(path)
-    return tuple(paths)
+    return tuple(path for directory in memory_note_directories(config, scope) for path in sorted(directory.glob("*.md")) if path.name != "index.md")
+
+
+def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
+    scope_order = {
+        SearchScope.PROJECT: (MemoryScope.PROJECT,),
+        SearchScope.GLOBAL: (MemoryScope.GLOBAL,),
+        SearchScope.BOTH: (MemoryScope.PROJECT, MemoryScope.GLOBAL),
+    }[scope]
+    return tuple(memory_directory(config, memory_scope, memory_type) for memory_scope in scope_order for memory_type in MemoryType)
+
+
+def inspect_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[NoteRecord, ...]:
+    return tuple(note_record_for_path(config, path) for path in memory_files(config, scope))
+
+
+def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
+    document = read_memory(path)
+    stored_scope = MemoryScope(metadata_string(document.metadata, "scope"))
+    layout_scope = MemoryScope(inspect_scope_for_path(config, path))
+    assert stored_scope is layout_scope, "memory note metadata scope must match vault layout"
+    tags = document.metadata["tags"]
+    assert isinstance(tags, list), "memory tags must be a list"
+    assert all(isinstance(tag_value, str) for tag_value in tags), "memory tags must contain strings"
+    return NoteRecord(
+        key=memory_key(config.vault, path),
+        path=path,
+        title=metadata_string(document.metadata, "title"),
+        memory_type=MemoryType(metadata_string(document.metadata, "type")),
+        scope=stored_scope,
+        tags=tuple(tags),
+        timestamp=metadata_string(document.metadata, "timestamp"),
+        document=document,
+    )
+
+
+def note_record_matches_metadata(
+    record: NoteRecord,
+    memory_type: MemoryType | None,
+    tag: str | None,
+    created_after: datetime | None,
+) -> bool:
+    return (
+        (memory_type is None or record.memory_type is memory_type)
+        and (tag is None or tag in record.tags)
+        and (created_after is None or parse_memory_timestamp(record.timestamp) > created_after)
+    )
+
+
+def note_record_json(record: NoteRecord) -> JsonObject:
+    return {
+        "key": record.key,
+        "path": str(record.path),
+        "title": record.title,
+        "type": record.memory_type.value,
+        "scope": record.scope.value,
+        "tags": json_string_list(record.tags),
+        "timestamp": record.timestamp,
+    }
+
+
+def metadata_search_record_json(record: NoteRecord) -> JsonObject:
+    return {
+        "key": record.key,
+        "path": str(record.path),
+        "title": record.title,
+        "type": record.memory_type.value,
+        "tags": json_string_list(record.tags),
+        "timestamp": record.timestamp,
+    }
+
+
+def note_path_record_json(record: NoteRecord) -> JsonObject:
+    return {
+        "key": record.key,
+        "path": str(record.path),
+        "title": record.title,
+        "type": record.memory_type.value,
+        "scope": record.scope.value,
+    }
 
 
 def parse_created_after(value: str | None) -> datetime | None:
@@ -1259,8 +1375,8 @@ def inspect_overview(
             "notes": len(notes),
             "indexes": len(indexes),
         },
-        "notes_by_scope": inspect_counts(notes, "scope"),
-        "notes_by_type": inspect_counts(notes, "type"),
+        "notes_by_scope": inspect_counts([note.scope.value for note in notes]),
+        "notes_by_type": inspect_counts([note.memory_type.value for note in notes]),
     }
 
 
@@ -1360,22 +1476,12 @@ def inspect_links(
     assert depth >= 0, "inspect links depth must be nonnegative"
     config = load_project_config(cwd)
     path = memory_path_for_key(config, key)
-    records: list[JsonObject] = []
-    if direction is InspectLinkDirection.CHILDREN:
-        records.extend(link_records_for_direction(config, path, depth, InspectLinkDirection.CHILDREN))
-    elif direction is InspectLinkDirection.PARENTS:
-        records.extend(link_records_for_direction(config, path, depth, InspectLinkDirection.PARENTS))
-    elif direction is InspectLinkDirection.BOTH:
-        records.extend(link_records_for_direction(config, path, depth, InspectLinkDirection.PARENTS))
-        records.extend(link_records_for_direction(config, path, depth, InspectLinkDirection.CHILDREN))
-        records = dedupe_link_records(records)
-    else:
-        raise AssertionError(f"unsupported inspect link direction: {direction}")
+    records = link_records_for_direction(config, path, depth, direction)
     return {
         "key": key,
         "direction": direction.value,
         "depth": depth,
-        "links": json_record_list(records),
+        "links": json_record_list([link_record_json(record) for record in records]),
     }
 
 
@@ -1407,9 +1513,9 @@ def inspect_stats(
     config = load_project_config(cwd)
     notes = inspect_note_records(config, scope)
     if group is InspectStatsGroup.TYPE:
-        counts = inspect_counts(notes, "type")
+        counts = inspect_counts([note.memory_type.value for note in notes])
     elif group is InspectStatsGroup.SCOPE:
-        counts = inspect_counts(notes, "scope")
+        counts = inspect_counts([note.scope.value for note in notes])
     elif group is InspectStatsGroup.DAY:
         counts = inspect_day_counts(notes)
     else:
@@ -1427,9 +1533,9 @@ def inspect_recent(
     assert output_format is InspectOutputFormat.JSON, "inspect recent currently emits JSON"
     since_datetime = parse_memory_timestamp(since)
     config = load_project_config(cwd)
-    records = [record for record in inspect_note_records(config, scope) if parse_memory_timestamp(json_string(record, "timestamp")) > since_datetime]
-    records.sort(key=lambda record: json_string(record, "timestamp"), reverse=True)
-    return {"scope": scope.value, "since": since, "results": json_record_list(records)}
+    records = [record for record in inspect_note_records(config, scope) if parse_memory_timestamp(record.timestamp) > since_datetime]
+    records.sort(key=lambda record: record.timestamp, reverse=True)
+    return {"scope": scope.value, "since": since, "results": json_record_list([note_record_json(record) for record in records])}
 
 
 def inspect_export(
@@ -1511,53 +1617,16 @@ def inspect_index_records(config: ProjectConfig, scope: SearchScope) -> tuple[Js
 
 
 def inspect_path_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[JsonObject, ...]:
-    return tuple(
-        {
-            "key": json_string(record, "key"),
-            "path": json_string(record, "path"),
-            "title": json_string(record, "title"),
-            "type": json_string(record, "type"),
-            "scope": json_string(record, "scope"),
-        }
-        for record in inspect_note_records(config, scope)
-    )
+    return tuple(note_path_record_json(record) for record in inspect_note_records(config, scope))
 
 
-def inspect_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[JsonObject, ...]:
-    records: list[JsonObject] = []
-    required_fields = {"type", "title", "tags", "timestamp", "scope"}
-    for path in inspect_markdown_paths(config, scope):
-        document = read_memory(path)
-        if not required_fields.issubset(document.metadata.keys()):
-            continue
-        stored_type = metadata_string(document.metadata, "type")
-        MemoryType(stored_type)
-        stored_scope = metadata_string(document.metadata, "scope")
-        MemoryScope(stored_scope)
-        tags = document.metadata["tags"]
-        assert isinstance(tags, list), "memory tags must be a list"
-        assert all(isinstance(tag_value, str) for tag_value in tags), "memory tags must contain strings"
-        records.append(
-            {
-                "key": memory_key(config.vault, path),
-                "path": str(path),
-                "title": metadata_string(document.metadata, "title"),
-                "type": stored_type,
-                "scope": stored_scope,
-                "tags": json_string_list(tags),
-                "timestamp": metadata_string(document.metadata, "timestamp"),
-            }
-        )
-    return tuple(records)
-
-
-def inspect_counts(records: Sequence[JsonObject], field: str) -> JsonObject:
-    counts = Counter(json_string(record, field) for record in records)
+def inspect_counts(values: Sequence[str]) -> JsonObject:
+    counts = Counter(values)
     return {key: counts[key] for key in sorted(counts)}
 
 
-def inspect_day_counts(records: Sequence[JsonObject]) -> JsonObject:
-    counts = Counter(parse_memory_timestamp(json_string(record, "timestamp")).date().isoformat() for record in records)
+def inspect_day_counts(records: Sequence[NoteRecord]) -> JsonObject:
+    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records)
     return {key: counts[key] for key in sorted(counts)}
 
 
@@ -1653,49 +1722,75 @@ def link_records_for_direction(
     path: Path,
     depth: int,
     direction: InspectLinkDirection,
-) -> tuple[JsonObject, ...]:
+) -> tuple[LinkRecord, ...]:
+    if direction is InspectLinkDirection.CHILDREN:
+        return child_link_records(config, path, depth)
+    if direction is InspectLinkDirection.PARENTS:
+        return parent_link_records(config, path, depth)
+    if direction is InspectLinkDirection.BOTH:
+        return tuple(dedupe_link_records((*parent_link_records(config, path, depth), *child_link_records(config, path, depth))))
+    raise AssertionError(f"unsupported link traversal direction: {direction}")
+
+
+def child_link_records(config: ProjectConfig, path: Path, depth: int) -> tuple[LinkRecord, ...]:
+    return traverse_link_records(config, path, depth, child_link_keys)
+
+
+def parent_link_records(config: ProjectConfig, path: Path, depth: int) -> tuple[LinkRecord, ...]:
+    return traverse_link_records(config, path, depth, parent_link_keys)
+
+
+def child_link_keys(config: ProjectConfig, current_key: str) -> tuple[str, ...]:
+    return outgoing_link_keys(config, memory_path_for_key(config, current_key))
+
+
+def parent_link_keys(config: ProjectConfig, current_key: str) -> tuple[str, ...]:
+    return incoming_link_keys(config, current_key)
+
+
+def traverse_link_records(
+    config: ProjectConfig,
+    path: Path,
+    depth: int,
+    neighbor_provider: LinkNeighborProvider,
+) -> tuple[LinkRecord, ...]:
     if depth == 0:
         return ()
     start_key = memory_key(config.vault, path)
-    records: list[JsonObject] = []
+    records: list[LinkRecord] = []
     frontier = [(start_key, 0)]
     seen = {start_key}
     while frontier:
         current_key, current_depth = frontier.pop(0)
         if current_depth == depth:
             continue
-        if direction is InspectLinkDirection.CHILDREN:
-            related_keys = outgoing_link_keys(config, memory_path_for_key(config, current_key))
-        elif direction is InspectLinkDirection.PARENTS:
-            related_keys = incoming_link_keys(config, current_key)
-        else:
-            raise AssertionError(f"unsupported link traversal direction: {direction}")
-        for related_key in related_keys:
+        for related_key in neighbor_provider(config, current_key):
             if related_key in seen:
                 continue
             seen.add(related_key)
             related_path = memory_path_for_key(config, related_key)
             related_document = read_memory(related_path)
             record_depth = current_depth + 1
-            records.append(
-                {
-                    "key": related_key,
-                    "path": str(related_path),
-                    "title": inspect_title_for_document(related_document),
-                    "depth": record_depth,
-                }
-            )
+            records.append(LinkRecord(related_key, related_path, inspect_title_for_document(related_document), record_depth))
             frontier.append((related_key, record_depth))
     return tuple(records)
 
 
-def dedupe_link_records(records: Sequence[JsonObject]) -> list[JsonObject]:
-    deduped: dict[str, JsonObject] = {}
+def dedupe_link_records(records: Sequence[LinkRecord]) -> list[LinkRecord]:
+    deduped: dict[str, LinkRecord] = {}
     for record in records:
-        key = json_string(record, "key")
-        if key not in deduped:
-            deduped[key] = record
+        if record.key not in deduped:
+            deduped[record.key] = record
     return [deduped[key] for key in sorted(deduped)]
+
+
+def link_record_json(record: LinkRecord) -> JsonObject:
+    return {
+        "key": record.key,
+        "path": str(record.path),
+        "title": record.title,
+        "depth": record.depth,
+    }
 
 
 def inspect_export_node(

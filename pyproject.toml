@@ -12,7 +12,13 @@ dependencies = [
     "cyclopts>=3",
     "pydantic>=2",
     "python-slugify>=8.0.4",
+    "pyyaml>=6.0.3",
     "tomli-w>=1",
+]
+
+[dependency-groups]
+dev = [
+    "types-PyYAML>=6",
 ]
 
 [project.scripts]

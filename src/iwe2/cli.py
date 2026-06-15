@@ -371,7 +371,7 @@ def maintain_validate_command() -> None:
 
 @app.command(name="doctor")
 def doctor_command() -> None:
-    """Validate the current repository memory setup."""
+    """Validate dependencies and the current repository memory setup."""
     emit(run_doctor(cwd=Path.cwd()))
 
 
