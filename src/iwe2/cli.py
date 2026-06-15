@@ -70,7 +70,6 @@ inspect_app = app.command(App(name="inspect", help="Read-only vault navigation a
 maintain_app = app.command(App(name="maintain", help="Vault setup and maintenance workflows."))
 
 
-@maintain_app.command(name="init-global")
 def maintain_init_global(
     vault: Annotated[Path, Parameter(help="Path to the global memory vault to initialize.")],
 ) -> None:
@@ -78,7 +77,6 @@ def maintain_init_global(
     emit(init_global_vault(vault))
 
 
-@init_app.command(name="project")
 def init_project_command(
     *,
     vault: Annotated[Path, Parameter(help="Existing global memory vault for this repository.")],
@@ -87,7 +85,6 @@ def init_project_command(
     emit(init_project(vault=vault, cwd=Path.cwd()))
 
 
-@app.command(name="add")
 def add_command(
     *,
     scope: Annotated[MemoryScope, Parameter(help="Memory scope: project or global.")],
@@ -107,7 +104,6 @@ def add_command(
     )
 
 
-@app.command(name="update")
 def update_command(
     key: Annotated[str, Parameter(help="Memory key to update.")],
     *,
@@ -127,7 +123,6 @@ def update_command(
     )
 
 
-@app.command(name="delete")
 def delete_command(
     key: Annotated[str, Parameter(help="Memory key to delete.")],
 ) -> None:
@@ -135,7 +130,6 @@ def delete_command(
     emit(delete_memory(key=key, cwd=Path.cwd()))
 
 
-@search_app.default
 def search_default(
     query: Annotated[str, Parameter(help="Query text.")],
     *,
@@ -145,7 +139,6 @@ def search_default(
     emit(search_memories(scope=scope, query=query, cwd=Path.cwd()))
 
 
-@search_app.command(name="content")
 def search_content_command(
     query: Annotated[str, Parameter(help="Content query text.")],
     *,
@@ -166,7 +159,6 @@ def search_content_command(
         raise AssertionError(f"unsupported content search mode: {mode}")
 
 
-@search_app.command(name="metadata")
 def search_metadata_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both.")],
@@ -189,7 +181,6 @@ def search_metadata_command(
     )
 
 
-@search_app.command(name="keys")
 def search_keys_command(
     query: Annotated[str, Parameter(help="Query text for memory keys and titles.")],
     *,
@@ -199,7 +190,6 @@ def search_keys_command(
     emit(search_keys(scope=scope, query=query, cwd=Path.cwd()))
 
 
-@inspect_app.command(name="overview")
 def inspect_overview_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
@@ -209,7 +199,6 @@ def inspect_overview_command(
     emit(inspect_overview(scope=scope, output_format=output_format, cwd=Path.cwd()))
 
 
-@inspect_app.command(name="schema")
 def inspect_schema_command(
     *,
     output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
@@ -218,7 +207,6 @@ def inspect_schema_command(
     emit(inspect_schema(output_format=output_format))
 
 
-@inspect_app.command(name="paths")
 def inspect_paths_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
@@ -229,7 +217,6 @@ def inspect_paths_command(
     emit(inspect_paths(scope=scope, kind=kind, output_format=output_format, cwd=Path.cwd()))
 
 
-@inspect_app.command(name="tree")
 def inspect_tree_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
@@ -243,7 +230,6 @@ def inspect_tree_command(
     emit(inspect_tree(scope=scope, depth=depth, output_format=output_format, cwd=Path.cwd()))
 
 
-@inspect_app.command(name="links")
 def inspect_links_command(
     key: Annotated[str, Parameter(help="Memory key to inspect.")],
     *,
@@ -266,7 +252,6 @@ def inspect_links_command(
     )
 
 
-@inspect_app.command(name="outline")
 def inspect_outline_command(
     key: Annotated[str, Parameter(help="Memory key to outline.")],
     *,
@@ -276,7 +261,6 @@ def inspect_outline_command(
     emit(inspect_outline(key=key, output_format=output_format, cwd=Path.cwd()))
 
 
-@inspect_app.command(name="stats")
 def inspect_stats_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
@@ -287,7 +271,6 @@ def inspect_stats_command(
     emit(inspect_stats(scope=scope, group=group, output_format=output_format, cwd=Path.cwd()))
 
 
-@inspect_app.command(name="recent")
 def inspect_recent_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
@@ -301,7 +284,6 @@ def inspect_recent_command(
     emit(inspect_recent(scope=scope, since=since, output_format=output_format, cwd=Path.cwd()))
 
 
-@inspect_app.command(name="export")
 def inspect_export_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to export: project, global, or both.")],
@@ -315,7 +297,6 @@ def inspect_export_command(
     emit(inspect_export(scope=scope, profile=profile, output_format=output_format, cwd=Path.cwd()))
 
 
-@app.command(name="retrieve")
 def retrieve_command(
     key: Annotated[str, Parameter(help="Memory key to retrieve.")],
 ) -> None:
@@ -323,7 +304,6 @@ def retrieve_command(
     print(retrieve_memory(key=key, cwd=Path.cwd()), end="")
 
 
-@maintain_app.command(name="squash")
 def maintain_squash_command(
     key: Annotated[str, Parameter(help="Root memory key to squash.")],
     *,
@@ -333,7 +313,6 @@ def maintain_squash_command(
     print(squash_memory(key=key, depth=depth, cwd=Path.cwd()), end="")
 
 
-@maintain_app.command(name="move")
 def maintain_move_command(
     key: Annotated[str, Parameter(help="Memory key to move.")],
     *,
@@ -343,7 +322,6 @@ def maintain_move_command(
     emit(move_memory(key=key, destination=destination, cwd=Path.cwd()))
 
 
-@maintain_app.command(name="split")
 def maintain_split_command(
     key: Annotated[str, Parameter(help="Memory key containing the section.")],
     *,
@@ -353,7 +331,6 @@ def maintain_split_command(
     emit(split_memory(key=key, section=section, cwd=Path.cwd()))
 
 
-@maintain_app.command(name="merge")
 def maintain_merge_command(
     key: Annotated[str, Parameter(help="Memory key receiving the referenced content.")],
     *,
@@ -363,16 +340,45 @@ def maintain_merge_command(
     emit(merge_memory(key=key, reference=reference, cwd=Path.cwd()))
 
 
-@maintain_app.command(name="validate")
 def maintain_validate_command() -> None:
     """Validate the current repository memory setup."""
     emit(validate_memory_vault(cwd=Path.cwd()))
 
 
-@app.command(name="doctor")
 def doctor_command() -> None:
     """Validate dependencies and the current repository memory setup."""
     emit(run_doctor(cwd=Path.cwd()))
+
+
+def register_commands() -> None:
+    maintain_app.command(maintain_init_global, name="init-global")
+    init_app.command(init_project_command, name="project")
+    app.command(add_command, name="add")
+    app.command(update_command, name="update")
+    app.command(delete_command, name="delete")
+    search_app.default(search_default)
+    search_app.command(search_content_command, name="content")
+    search_app.command(search_metadata_command, name="metadata")
+    search_app.command(search_keys_command, name="keys")
+    inspect_app.command(inspect_overview_command, name="overview")
+    inspect_app.command(inspect_schema_command, name="schema")
+    inspect_app.command(inspect_paths_command, name="paths")
+    inspect_app.command(inspect_tree_command, name="tree")
+    inspect_app.command(inspect_links_command, name="links")
+    inspect_app.command(inspect_outline_command, name="outline")
+    inspect_app.command(inspect_stats_command, name="stats")
+    inspect_app.command(inspect_recent_command, name="recent")
+    inspect_app.command(inspect_export_command, name="export")
+    app.command(retrieve_command, name="retrieve")
+    maintain_app.command(maintain_squash_command, name="squash")
+    maintain_app.command(maintain_move_command, name="move")
+    maintain_app.command(maintain_split_command, name="split")
+    maintain_app.command(maintain_merge_command, name="merge")
+    maintain_app.command(maintain_validate_command, name="validate")
+    app.command(doctor_command, name="doctor")
+
+
+register_commands()
 
 
 def emit(payload: Mapping[str, JsonValue]) -> None:

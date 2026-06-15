@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
+from pydantic.functional_validators import AfterValidator
 
 ProjectRootStrategy = Literal["git-root"]
 MetadataValue = str | bool | list[str]
@@ -68,27 +69,29 @@ class InspectExportFormat(StrEnum):
     GRAPH_JSON = "graph-json"
 
 
+def require_nonempty(value: str) -> str:
+    assert value.strip(), "configuration strings must be nonempty"
+    return value
+
+
+def require_positive_integer(value: int) -> int:
+    assert value > 0, "search bounds must be positive"
+    return value
+
+
+NonemptyConfigString = Annotated[str, AfterValidator(require_nonempty)]
+PositiveConfigInteger = Annotated[int, AfterValidator(require_positive_integer)]
+
+
 class ProjectConfigFile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    vault: str
-    project_id: str
+    vault: NonemptyConfigString
+    project_id: NonemptyConfigString
     project_root_strategy: ProjectRootStrategy
     global_scopes: list[str]
-    search_max_results: int
-    search_max_tokens: int
-
-    @field_validator("vault", "project_id")
-    @classmethod
-    def require_nonempty(cls, value: str) -> str:
-        assert value.strip(), "configuration strings must be nonempty"
-        return value
-
-    @field_validator("search_max_results", "search_max_tokens")
-    @classmethod
-    def require_positive_integer(cls, value: int) -> int:
-        assert value > 0, "search bounds must be positive"
-        return value
+    search_max_results: PositiveConfigInteger
+    search_max_tokens: PositiveConfigInteger
 
 
 class ProjectConfig(BaseModel):
