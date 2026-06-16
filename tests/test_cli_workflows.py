@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -18,6 +19,7 @@ import yaml
 
 from iwe2.cli import app as iwe2_app
 from iwe2.cli import main as cli_main
+from iwe2.models import MemoryType
 from iwe2.operations import (
     DependencyCheck,
     DependencyError,
@@ -428,6 +430,9 @@ def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path
     assert f"This repository uses the central agent memory vault at `{workspace.vault}`." in agents_pointer
     assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
     assert 'iwe2 search --scope both "<task or subsystem>"' in agents_pointer
+    pointer_add_types = re.findall(r"iwe2 add --scope project --type (\S+) ", agents_pointer)
+    assert pointer_add_types, "agent pointer must demonstrate iwe2 add invocations"
+    assert [MemoryType(token) for token in pointer_add_types] == list(MemoryType)
 
     project_index_path = workspace.vault / "projects" / workspace.project_id / "index.md"
     project_index = project_index_path.read_text()

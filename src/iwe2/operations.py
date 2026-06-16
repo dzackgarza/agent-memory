@@ -982,6 +982,9 @@ def write_new_file(path: Path, content: str) -> None:
 
 
 def agents_pointer_section(vault: Path, project_id: str) -> str:
+    add_examples = "".join(
+        f"iwe2 add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in MemoryType
+    )
     return (
         f"{AGENTS_SECTION_START}\n"
         "# Agent memory\n\n"
@@ -993,9 +996,7 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         "```\n\n"
         "Record durable repo-specific lessons with:\n\n"
         "```bash\n"
-        "iwe2 add --scope project --type decision --title <title> --content <content>\n"
-        "iwe2 add --scope project --type trap --title <title> --content <content>\n"
-        "iwe2 add --scope project --type workflow --title <title> --content <content>\n"
+        f"{add_examples}"
         "```\n\n"
         "Use `iwe2 retrieve <key>`, `iwe2 update <key>`, and `iwe2 delete <key>` for memory CRUD.\n\n"
         "Move reusable lessons during maintenance with:\n\n"
