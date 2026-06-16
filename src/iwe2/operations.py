@@ -83,6 +83,7 @@ INSPECT_COMMAND_NAMES: tuple[str, ...] = (
     "export",
 )
 
+
 def index_descriptions(scope: MemoryScope) -> dict[str, str]:
     scope_word = scope.value.capitalize()
     return {MEMORY_TYPE_DIRECTORIES[memory_type]: f"{scope_word} {memory_type.value} memories." for memory_type in MemoryType}
