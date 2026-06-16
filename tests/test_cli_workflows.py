@@ -1218,6 +1218,52 @@ def test_inspect_links_real_vault(tmp_path: Path) -> None:
     assert both_keys == {f"projects/{workspace.project_id}/decisions/index", global_key}
 
 
+def test_inspect_links_dedupes_reciprocal_index_links(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    project_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Inspect Cycle",
+        content="See [Decision Index](index.md) before traversing children.",
+    )
+    project_key = project_memory_key(workspace, "decisions", "inspect-cycle")
+    decision_index_key = f"projects/{workspace.project_id}/decisions/index"
+    decision_index_record = {
+        "key": decision_index_key,
+        "path": str(workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"),
+        "title": "Decisions",
+        "depth": 1,
+    }
+    assert project_note["key"] == project_key
+
+    children = inspect_json(
+        workspace,
+        "links",
+        project_key,
+        "--direction",
+        "children",
+        "--depth",
+        "2",
+        "--format",
+        "json",
+    )
+    assert children["links"] == [decision_index_record]
+
+    both = inspect_json(
+        workspace,
+        "links",
+        project_key,
+        "--direction",
+        "both",
+        "--depth",
+        "1",
+        "--format",
+        "json",
+    )
+    assert both["links"] == [decision_index_record]
+
+
 def test_inspect_outline_and_recent_real_vault(tmp_path: Path) -> None:
     workspace, project_key, _global_key = linked_inspect_workspace(tmp_path)
     outline = inspect_json(workspace, "outline", project_key, "--format", "json")

@@ -870,17 +870,13 @@ def check_dependency(dependency: DependencyCheck, cwd: Path) -> JsonObject:
         raise UsageError(f"Missing required dependency: {dependency.name}.\nInstall instructions: {dependency.install_instructions}")
     result = subprocess.run(dependency.command, cwd=cwd, check=False, text=True, capture_output=True)
     if result.returncode != 0:
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
         message_parts = [
             f"Dependency check failed: {dependency.name}.",
             f"Command: {' '.join(dependency.command)}",
             f"Install instructions: {dependency.install_instructions}",
+            f"stdout: {result.stdout.strip()}",
+            f"stderr: {result.stderr.strip()}",
         ]
-        if stdout:
-            message_parts.append(f"stdout: {stdout}")
-        if stderr:
-            message_parts.append(f"stderr: {stderr}")
         raise UsageError("\n".join(message_parts))
     return {"name": dependency.name, "command": list(dependency.command), "status": "ok"}
 
