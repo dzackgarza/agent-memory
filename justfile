@@ -12,16 +12,20 @@ setup: install
     iwe2 maintain init-global --vault "$vault"
 
 test:
-    @just -f ~/ai-review-ci/justfiles/python.just -d . test
+    #!/usr/bin/env bash
+    set -euo pipefail
+    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test
 
 test-ci:
-    @just -f ~/ai-review-ci/justfiles/python.just -d . test-ci
+    #!/usr/bin/env bash
+    set -euo pipefail
+    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test-ci
 
 [private]
 _install-iwe2:
     #!/usr/bin/env bash
     set -euo pipefail
-    uv tool install --force --editable "{{justfile_directory()}}"
+    uv tool install --force --editable "{{ justfile_directory() }}"
     bin_dir="$(uv tool dir --bin)"
     test -x "$bin_dir/iwe2"
     case ":$PATH:" in
@@ -54,7 +58,7 @@ _install-ripgrep:
 _install-zk:
     #!/usr/bin/env bash
     set -euo pipefail
-    install_dir="{{LOCAL_BIN}}"
+    install_dir="{{ LOCAL_BIN }}"
     mkdir -p "$install_dir"
     case ":$PATH:" in
         *":$install_dir:"*) ;;
@@ -69,8 +73,8 @@ _install-zk:
     trash --version
     temp_dir="$(mktemp -d)"
     trap 'trash "$temp_dir"' EXIT
-    gh release download "{{ZK_VERSION}}" --repo zk-org/zk --pattern "{{ZK_ASSET}}" --dir "$temp_dir"
-    tar -xzf "$temp_dir/{{ZK_ASSET}}" -C "$temp_dir"
+    gh release download "{{ ZK_VERSION }}" --repo zk-org/zk --pattern "{{ ZK_ASSET }}" --dir "$temp_dir"
+    tar -xzf "$temp_dir/{{ ZK_ASSET }}" -C "$temp_dir"
     install -m 0755 "$temp_dir/zk" "$install_dir/zk"
     "$install_dir/zk" --version
 
@@ -86,13 +90,13 @@ _verify-toolchain:
     #!/usr/bin/env bash
     set -euo pipefail
     test -x "$(uv tool dir --bin)/iwe2"
-    test -x "{{LOCAL_BIN}}/zk"
+    test -x "{{ LOCAL_BIN }}/zk"
     uv --version
     git --version
     gum --version
     iwe --version
     rg --version
     npx --version
-    "{{LOCAL_BIN}}/zk" --version
+    "{{ LOCAL_BIN }}/zk" --version
     npx -y @probelabs/probe@latest --version
     "$(uv tool dir --bin)/iwe2" --help >/dev/null
