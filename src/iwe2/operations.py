@@ -472,10 +472,10 @@ def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_record_list(results),
-        "key_matches": json_record_list(key_matches),
-        "exact_content_matches": json_record_list(exact_matches),
-        "fuzzy_content_matches": json_record_list(fuzzy_matches),
+        "results": json_list(results),
+        "key_matches": json_list(key_matches),
+        "exact_content_matches": json_list(exact_matches),
+        "fuzzy_content_matches": json_list(fuzzy_matches),
         "ranked_content_matches": ranked_results,
     }
 
@@ -485,7 +485,7 @@ def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_record_list(key_search_records(config, scope, query)),
+        "results": json_list(key_search_records(config, scope, query)),
     }
 
 
@@ -494,7 +494,7 @@ def search_content_exact(scope: SearchScope, query: str, cwd: Path) -> JsonObjec
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_record_list(exact_content_records(config, scope, query)),
+        "results": json_list(exact_content_records(config, scope, query)),
     }
 
 
@@ -512,7 +512,7 @@ def search_metadata(
     ]
     return {
         "scope": scope.value,
-        "results": json_record_list(records[: config.search_max_results]),
+        "results": json_list(records[: config.search_max_results]),
     }
 
 
@@ -557,7 +557,7 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
     return dedupe_records_by_key(records)[: config.search_max_results]
 
 
-def fuzzy_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+def zk_search_scope(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
     results: list[JsonObject] = []
     for root in search_roots(config, scope):
         results.extend(
@@ -568,7 +568,11 @@ def fuzzy_content_records(config: ProjectConfig, scope: SearchScope, query: str)
                 limit=config.search_max_results,
             )
         )
-    return dedupe_records_by_key(results)[: config.search_max_results]
+    return results
+
+
+def fuzzy_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    return dedupe_records_by_key(zk_search_scope(config, scope, query))[: config.search_max_results]
 
 
 def dedupe_records_by_key(records: Sequence[JsonObject]) -> list[JsonObject]:
@@ -583,12 +587,11 @@ def dedupe_records_by_key(records: Sequence[JsonObject]) -> list[JsonObject]:
     return deduped
 
 
-def json_record_list(records: Sequence[JsonObject]) -> list[JsonValue]:
-    return [record for record in records]
-
-
-def json_string_list(values: Sequence[str]) -> list[JsonValue]:
-    return [value for value in values]
+def json_list(values: Sequence[JsonValue]) -> list[JsonValue]:
+    # Widen a homogeneous JSON-value sequence to the list[JsonValue] shape required by
+    # JsonObject slots. Sequence is covariant, so list[JsonObject] and list[str] inputs
+    # satisfy Sequence[JsonValue]; the copy decouples the emitted payload from callers.
+    return list(values)
 
 
 def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
@@ -615,20 +618,11 @@ def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObje
 
 def search_content_fuzzy(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    results: list[JsonValue] = []
-    for root in search_roots(config, scope):
-        results.extend(
-            zk_search_root(
-                vault=config.vault,
-                root=root,
-                query=query,
-                limit=config.search_max_results,
-            )
-        )
+    records = zk_search_scope(config, scope, query)
     return {
         "query": query,
         "scope": scope.value,
-        "results": results[: config.search_max_results],
+        "results": json_list(records[: config.search_max_results]),
     }
 
 
@@ -832,7 +826,7 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     assert extracted_keys, "split must create at least one extracted memory"
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Split memory section: {section}")
-    return {"key": key, "section": section, "output": result.stdout, "extracted": json_string_list(extracted_keys)}
+    return {"key": key, "section": section, "output": result.stdout, "extracted": json_list(extracted_keys)}
 
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
@@ -929,7 +923,7 @@ def check_dependency(dependency: DependencyCheck, cwd: Path) -> JsonObject:
 def basic_doctor(cwd: Path) -> JsonObject:
     dependencies = [check_dependency(dependency, cwd) for dependency in BASIC_DEPENDENCIES]
     return {
-        "dependencies": json_record_list(dependencies),
+        "dependencies": json_list(dependencies),
         "tools": [dependency.name for dependency in BASIC_DEPENDENCIES],
     }
 
@@ -1321,7 +1315,7 @@ def note_record_json(record: NoteRecord) -> JsonObject:
         "title": record.title,
         "type": record.memory_type.value,
         "scope": record.scope.value,
-        "tags": json_string_list(record.tags),
+        "tags": json_list(record.tags),
         "timestamp": record.timestamp,
     }
 
@@ -1332,7 +1326,7 @@ def metadata_search_record_json(record: NoteRecord) -> JsonObject:
         "path": str(record.path),
         "title": record.title,
         "type": record.memory_type.value,
-        "tags": json_string_list(record.tags),
+        "tags": json_list(record.tags),
         "timestamp": record.timestamp,
     }
 
@@ -1411,7 +1405,7 @@ def inspect_overview(
         "vault": str(config.vault),
         "project_id": config.project_id,
         "scope": scope.value,
-        "roots": json_string_list(inspect_root_keys(config, scope)),
+        "roots": json_list(inspect_root_keys(config, scope)),
         "totals": {
             "notes": len(notes),
             "indexes": len(indexes),
@@ -1483,7 +1477,7 @@ def inspect_paths(
     return {
         "scope": scope.value,
         "kind": kind.value,
-        "paths": json_record_list(records_by_kind[kind]),
+        "paths": json_list(records_by_kind[kind]),
     }
 
 
@@ -1498,7 +1492,7 @@ def inspect_tree(
     assert depth >= 0, "inspect tree depth must be nonnegative"
     config = load_project_config(cwd)
     roots = [inspect_tree_node(config, key, depth) for key in inspect_root_keys(config, scope)]
-    return {"scope": scope.value, "depth": depth, "roots": json_record_list(roots)}
+    return {"scope": scope.value, "depth": depth, "roots": json_list(roots)}
 
 
 def inspect_links(
@@ -1518,7 +1512,7 @@ def inspect_links(
         "key": key,
         "direction": direction.value,
         "depth": depth,
-        "links": json_record_list([link_record_json(record) for record in records]),
+        "links": json_list([link_record_json(record) for record in records]),
     }
 
 
@@ -1535,7 +1529,7 @@ def inspect_outline(
     return {
         "key": key,
         "path": str(path),
-        "headings": json_record_list(markdown_headings(document.body)),
+        "headings": json_list(markdown_headings(document.body)),
     }
 
 
@@ -1569,7 +1563,7 @@ def inspect_recent(
     config = load_project_config(cwd)
     records = [record for record in inspect_note_records(config, scope) if parse_memory_timestamp(record.timestamp) > since_datetime]
     records.sort(key=lambda record: record.timestamp, reverse=True)
-    return {"scope": scope.value, "since": since, "results": json_record_list([note_record_json(record) for record in records])}
+    return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records])}
 
 
 def inspect_export(
@@ -1593,8 +1587,8 @@ def inspect_export(
         "scope": scope.value,
         "profile": profile.value,
         "format": output_format.value,
-        "nodes": json_record_list(nodes),
-        "edges": json_record_list(edges),
+        "nodes": json_list(nodes),
+        "edges": json_list(edges),
     }
 
 
@@ -1729,7 +1723,7 @@ def inspect_tree_node(config: ProjectConfig, key: str, depth: int) -> JsonObject
         "key": key,
         "path": str(path),
         "title": inspect_title_for_document(document),
-        "children": json_record_list(children),
+        "children": json_list(children),
     }
 
 
@@ -1842,4 +1836,4 @@ def inspect_export_node(
 def json_metadata_value(value: MetadataValue) -> JsonValue:
     if isinstance(value, str | bool):
         return value
-    return json_string_list(value)
+    return json_list(value)
