@@ -2,8 +2,10 @@ Is there something like iwe that can be repurposed for an LLM agent memory syste
 One would want a centralized store instead of per-project stores, where one can initialize it in a project to set up a subfolder in the centralized "vault" and easily scope their queries to either the project or global memories.
 This allows agents in a project to record repo-specific decisions, traps, workflows, etc, as well as fluidly move more general items "up" into memories, advice, etc that span all projects on a machine.
 Thus one can version control the entire vault and have a transferable set of memories.
-One COULD build this from the ground up, but one should also consider either repurposing a tool with nearby functionalities, forking such a tool, composing several tools into a thin wrapper CLI, etc. The goal is to minimize owned code surface while getting the actual needed functionality.
- most tools advertised as "LLM memory tools" are the wrong paradigm here: they hide memories in databases so that e.g. they can use reranking and embedding techniques, when there are CLI tools that can do this more easily on-the-fly (e.g. semgrep, probe, etc), meaning that one really wants a simple organized managed markdown hierarchy, where the tool has some basic searching/aggregation/filtering capabilities but ultimately allows manual management with standard file system tools and searching with standard CLI tools (e.g. clever greps).
+One COULD build this from the ground up.
+First consider repurposing a nearby tool, forking one, or composing several tools into a thin wrapper CLI. The goal is to minimize owned code surface while getting the needed functionality.
+Most tools advertised as "LLM memory tools" hide memories in databases for reranking and embeddings.
+This project needs a managed Markdown hierarchy with basic searching, aggregation, and filtering while preserving manual file-system management and standard CLI search tools such as semgrep and probe.
 One mostly wants a convenience layer on top of what is the agent equivalent of a headless Obsidian vault.
 Survey, analysis, recommendations?
 
@@ -83,8 +85,9 @@ It is a CLI tool for a plain-text Zettelkasten/personal wiki, supports Markdown 
 ([GitHub](https://github.com/zk-org/zk "GitHub - zk-org/zk: A plain text note-taking assistant · GitHub")) Its filtering model is very useful here: it supports path filtering, full-text search, exact/regex search, tags, link queries, recursive link exploration, sorting, limits, and interactive `fzf` selection.
 ([ZK Org](https://zk-org.github.io/zk/notes/note-filtering.html "Searching and filtering notes - zk : a plain text note-taking assistant"))
 
-The tradeoff is that `zk` maintains a SQLite search database inside the notebook metadata directory.
-The source of truth is still the Markdown notebook, but there is an index.
+`zk` maintains a SQLite search database inside the notebook metadata directory.
+The Markdown notebook remains the source of truth.
+The index is rebuildable and noncanonical.
 ([ZK Org](https://zk-org.github.io/zk/notes/notebook.html "Notebook - zk : a plain text note-taking assistant")) That may be acceptable because the database is rebuildable and not the canonical memory store.
 It is different from vector-memory products where the operational memory is effectively hidden in a service database.
 
