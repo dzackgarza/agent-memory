@@ -1185,13 +1185,34 @@ def load_project_records(projects_file: Path) -> list[ProjectRecord]:
     return records
 
 
-def memory_directory(config: ProjectConfig, scope: MemoryScope, memory_type: MemoryType) -> Path:
-    directory_name = MEMORY_TYPE_DIRECTORIES[memory_type]
-    directories = {
-        MemoryScope.PROJECT: config.vault / "projects" / config.project_id / directory_name,
-        MemoryScope.GLOBAL: config.vault / "global" / directory_name,
+def scope_root(config: ProjectConfig, scope: MemoryScope) -> Path:
+    roots = {
+        MemoryScope.PROJECT: config.vault / "projects" / config.project_id,
+        MemoryScope.GLOBAL: config.vault / "global",
     }
-    return directories[scope]
+    return roots[scope]
+
+
+# Search scopes resolve to one or both memory scopes. The order for BOTH is a contract:
+# content search (search_roots) walks project-then-global, while inspection
+# (inspect_root_paths) reports global-then-project so that overview/tree roots list the
+# shared global vault first. Parameterizing the order keeps that difference explicit
+# instead of forking the dispatch table four ways.
+def search_scope_memory_scopes(scope: SearchScope, *, both_order: tuple[MemoryScope, MemoryScope]) -> tuple[MemoryScope, ...]:
+    scopes = {
+        SearchScope.PROJECT: (MemoryScope.PROJECT,),
+        SearchScope.GLOBAL: (MemoryScope.GLOBAL,),
+        SearchScope.BOTH: both_order,
+    }
+    return scopes[scope]
+
+
+CONTENT_SCOPE_ORDER: tuple[MemoryScope, MemoryScope] = (MemoryScope.PROJECT, MemoryScope.GLOBAL)
+INSPECT_SCOPE_ORDER: tuple[MemoryScope, MemoryScope] = (MemoryScope.GLOBAL, MemoryScope.PROJECT)
+
+
+def memory_directory(config: ProjectConfig, scope: MemoryScope, memory_type: MemoryType) -> Path:
+    return scope_root(config, scope) / MEMORY_TYPE_DIRECTORIES[memory_type]
 
 
 def note_metadata(
@@ -1240,14 +1261,7 @@ def run_ripgrep_search(args: Sequence[str], cwd: Path) -> str:
 
 
 def search_roots(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    project_root = config.vault / "projects" / config.project_id
-    global_root = config.vault / "global"
-    roots = {
-        SearchScope.PROJECT: (project_root,),
-        SearchScope.GLOBAL: (global_root,),
-        SearchScope.BOTH: (project_root, global_root),
-    }
-    return roots[scope]
+    return tuple(scope_root(config, memory_scope) for memory_scope in search_scope_memory_scopes(scope, both_order=CONTENT_SCOPE_ORDER))
 
 
 def memory_key(vault: Path, path: Path) -> str:
@@ -1259,11 +1273,7 @@ def memory_files(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
 
 
 def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    scope_order = {
-        SearchScope.PROJECT: (MemoryScope.PROJECT,),
-        SearchScope.GLOBAL: (MemoryScope.GLOBAL,),
-        SearchScope.BOTH: (MemoryScope.PROJECT, MemoryScope.GLOBAL),
-    }[scope]
+    scope_order = search_scope_memory_scopes(scope, both_order=CONTENT_SCOPE_ORDER)
     return tuple(memory_directory(config, memory_scope, memory_type) for memory_scope in scope_order for memory_type in MemoryType)
 
 
@@ -1589,14 +1599,7 @@ def inspect_export(
 
 
 def inspect_root_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    global_root = config.vault / "global"
-    project_root = config.vault / "projects" / config.project_id
-    roots = {
-        SearchScope.PROJECT: (project_root,),
-        SearchScope.GLOBAL: (global_root,),
-        SearchScope.BOTH: (global_root, project_root),
-    }
-    return roots[scope]
+    return tuple(scope_root(config, memory_scope) for memory_scope in search_scope_memory_scopes(scope, both_order=INSPECT_SCOPE_ORDER))
 
 
 def inspect_root_keys(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
