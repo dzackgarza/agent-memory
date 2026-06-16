@@ -862,9 +862,6 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
         tags=okf_tags(MemoryScope.GLOBAL, memory_type, ("promoted",)),
         timestamp=okf_timestamp(),
         scope=MemoryScope.GLOBAL,
-        source="agent",
-        confidence="high",
-        promotable=False,
         origin_project_id=config.project_id,
     ).to_yaml_payload()
     write_memory(destination_path, moved_metadata, moved_document.body)
@@ -883,9 +880,6 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
         tags=okf_tags(MemoryScope.PROJECT, memory_type, ("promotion-pointer",)),
         timestamp=okf_timestamp(),
         scope=MemoryScope.PROJECT,
-        source="agent",
-        confidence="high",
-        promotable=False,
         project_id=config.project_id,
     ).to_yaml_payload()
     pointer_body = f"# {title}\n\nPromoted to [[{destination_key}]].\n"
@@ -1222,9 +1216,6 @@ def note_metadata(
             tags=okf_tags(scope, memory_type, ()),
             timestamp=timestamp,
             scope=MemoryScope.PROJECT,
-            source="agent",
-            confidence="high",
-            promotable=False,
             project_id=config.project_id,
         ).to_yaml_payload()
     assert scope is MemoryScope.GLOBAL, f"unsupported note scope: {scope}"
@@ -1235,9 +1226,6 @@ def note_metadata(
         tags=okf_tags(scope, memory_type, ()),
         timestamp=timestamp,
         scope=MemoryScope.GLOBAL,
-        source="agent",
-        confidence="high",
-        promotable=False,
     ).to_yaml_payload()
 
 

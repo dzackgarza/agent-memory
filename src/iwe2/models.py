@@ -135,9 +135,13 @@ class BaseNoteMetadata(BaseModel):
     tags: list[str]
     timestamp: str
     scope: MemoryScope
-    source: Literal["agent"]
-    confidence: Literal["high"]
-    promotable: bool
+    # Single source of truth for the agent-authored note contract: every note this
+    # system writes is sourced from the agent at high confidence and is not eligible
+    # for further promotion. These are fixed defaults, so construction sites must not
+    # re-spell them; changing the contract happens here, in one place.
+    source: Literal["agent"] = "agent"
+    confidence: Literal["high"] = "high"
+    promotable: bool = False
 
     def base_yaml_payload(self) -> dict[str, MetadataValue]:
         return {
