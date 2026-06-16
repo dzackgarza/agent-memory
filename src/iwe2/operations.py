@@ -83,27 +83,9 @@ INSPECT_COMMAND_NAMES: tuple[str, ...] = (
     "export",
 )
 
-# Index descriptions read "{Scope} {word} memories." The project word is always the
-# MemoryType value (decision, trap, advice, context, reference). The global word matches
-# except for TRAP, whose global index has historically read "Global traps memories."
-# (the directory name) rather than "Global trap memories." That divergence is a frozen
-# observable contract (test_maintain_init_global_creates_iwe_backed_layout), so it is
-# encoded explicitly here rather than restated across two parallel maps.
-GLOBAL_INDEX_DESCRIPTION_WORDS: dict[MemoryType, str] = {
-    **{memory_type: memory_type.value for memory_type in MemoryType},
-    MemoryType.TRAP: MEMORY_TYPE_DIRECTORIES[MemoryType.TRAP],
-}
-
-
 def index_descriptions(scope: MemoryScope) -> dict[str, str]:
     scope_word = scope.value.capitalize()
-    return {MEMORY_TYPE_DIRECTORIES[memory_type]: f"{scope_word} {_index_description_word(scope, memory_type)} memories." for memory_type in MemoryType}
-
-
-def _index_description_word(scope: MemoryScope, memory_type: MemoryType) -> str:
-    if scope is MemoryScope.GLOBAL:
-        return GLOBAL_INDEX_DESCRIPTION_WORDS[memory_type]
-    return memory_type.value
+    return {MEMORY_TYPE_DIRECTORIES[memory_type]: f"{scope_word} {memory_type.value} memories." for memory_type in MemoryType}
 
 
 VAULT_DIRECTORIES: tuple[Path, ...] = (

@@ -405,7 +405,7 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
     global_index = (vault / "global" / "index.md").read_text()
     assert frontmatter(vault / "global" / "index.md") == {"okf_version": OKF_VERSION}
     assert "* [Decisions](decisions/index.md) - Global decision memories." in global_index
-    assert "* [Traps](traps/index.md) - Global traps memories." in global_index
+    assert "* [Traps](traps/index.md) - Global trap memories." in global_index
     assert "* [Advice](advice/index.md) - Global advice memories." in global_index
     assert "* [Context](context/index.md) - Global context memories." in global_index
     assert "* [References](references/index.md) - Global reference memories." in global_index
