@@ -976,9 +976,7 @@ def write_new_file(path: Path, content: str) -> None:
 
 
 def agents_pointer_section(vault: Path, project_id: str) -> str:
-    add_examples = "".join(
-        f"iwe2 add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in MemoryType
-    )
+    add_examples = "".join(f"iwe2 add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in MemoryType)
     return (
         f"{AGENTS_SECTION_START}\n"
         "# Agent memory\n\n"
