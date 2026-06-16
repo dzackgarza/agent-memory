@@ -381,7 +381,7 @@ def sync_memory_transition_indexes(transition: MemoryTransition) -> None:
             transition.description,
         )
         return
-    remove_index_link(transition.source_path.parent / "index.md", transition.source_path.name, transition.old_title)
+    remove_index_link(transition.source_path.parent / "index.md", transition.old_title)
     append_index_link(
         transition.destination_path.parent / "index.md",
         transition.new_title,
@@ -418,7 +418,7 @@ def delete_memory(key: str, cwd: Path) -> JsonObject:
     path = config.vault / f"{key}.md"
     document = read_memory(path)
     title = metadata_string(document.metadata, "title")
-    remove_index_link(path.parent / "index.md", path.name, title)
+    remove_index_link(path.parent / "index.md", title)
     run_checked(["iwe", "delete", key, "-f", "keys"], cwd=config.vault)
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Delete memory: {title}")
@@ -1058,12 +1058,12 @@ def replace_index_link(index_path: Path, existing_title: str, new_title: str, ta
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def remove_index_link(index_path: Path, target: str, title: str) -> None:
+def remove_index_link(index_path: Path, title: str) -> None:
     assert index_path.is_file(), "index must exist before removing a link"
+    link_prefixes = (f"* [{title}](", f"- [{title}](")
     lines = index_path.read_text(encoding="utf-8").splitlines()
-    okf_prefixes = (f"* [{title}]({target}) - ", f"- [{title}]({target}) - ")
-    matching_indexes = [index for index, line in enumerate(lines) if line.startswith(okf_prefixes)]
-    assert len(matching_indexes) == 1, "index must contain exactly one removable OKF link"
+    matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
+    assert len(matching_indexes) == 1, "index must contain exactly one removable link for the title"
     entry_start = matching_indexes[0]
     del lines[entry_start]
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
