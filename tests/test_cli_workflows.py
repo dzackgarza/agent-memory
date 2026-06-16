@@ -49,13 +49,15 @@ ZK_ASSET = just_value("ZK_ASSET")
 ZK_BIN_DIR = Path(tempfile.mkdtemp(prefix="iwe2-zk-"))
 
 
-@pytest.fixture(scope="session", autouse=True)
-def zk_binary() -> None:
-    # The integration tests need the real zk binary on PATH (see iwe2_env). Fetching it
-    # is a session-scoped setup concern, not an import-time one: keeping the gh release
-    # download out of module collection means a zk-org/zk release-asset change or a
-    # GitHub outage breaks test setup loudly instead of breaking collection of every
-    # test in the suite. check=True keeps the failure fail-loud.
+def ensure_zk_binary() -> Path:
+    # Fetch the real zk binary the integration tests put on PATH. This runs lazily on
+    # first use (from iwe2_env), not at module import: keeping the gh release download
+    # out of collection means a zk-org/zk release-asset change or a GitHub outage breaks
+    # the runs that actually need zk, fail-loud via check=True, instead of breaking
+    # collection of the whole module. Idempotent: a present binary is reused.
+    zk_path = ZK_BIN_DIR / "zk"
+    if zk_path.is_file():
+        return zk_path
     subprocess.run(
         [
             "gh",
@@ -79,7 +81,10 @@ def zk_binary() -> None:
         text=True,
         capture_output=True,
     )
-    assert (ZK_BIN_DIR / "zk").is_file()
+    assert zk_path.is_file()
+    return zk_path
+
+
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
 type JsonArray = list[JsonValue]
@@ -150,6 +155,7 @@ def run_iwe2_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def iwe2_env() -> dict[str, str]:
+    ensure_zk_binary()
     env = os.environ.copy()
     env["PATH"] = f"{ZK_BIN_DIR}:{env['PATH']}"
     return env
