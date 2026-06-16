@@ -22,7 +22,6 @@ from iwe2.models import (
 )
 from iwe2.operations import (
     JsonValue,
-    UsageError,
     add_memory,
     basic_doctor,
     delete_memory,
@@ -386,9 +385,5 @@ def emit(payload: Mapping[str, JsonValue]) -> None:
 
 
 def main() -> None:
-    try:
-        basic_doctor(Path.cwd())
-        app(sys.argv[1:])
-    except UsageError as error:
-        print(str(error), file=sys.stderr)
-        raise SystemExit(2) from error
+    basic_doctor(Path.cwd())
+    app(sys.argv[1:])

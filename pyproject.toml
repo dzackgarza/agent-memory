@@ -18,6 +18,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pytest>=8",
     "types-PyYAML>=6",
 ]
 

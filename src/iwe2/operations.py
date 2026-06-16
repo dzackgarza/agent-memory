@@ -149,8 +149,49 @@ class StarterConfig:
     search_max_tokens: int
 
 
-class UsageError(RuntimeError):
-    """Raised for invalid user setup state at the CLI boundary."""
+class ProjectNotInitializedError(RuntimeError):
+    """Raised when a project command runs before project memory setup is done."""
+
+    GUIDANCE = (
+        "No project memory config found. Run `iwe2 maintain init-global --vault "
+        "{default_vault}` once if the global vault does not exist, then run "
+        "`iwe2 init project --vault <path-to-global-vault>` from this repository."
+    )
+
+    def __init__(self, default_vault: Path) -> None:
+        super().__init__(self.GUIDANCE.format(default_vault=default_vault))
+
+
+class DependencyError(RuntimeError):
+    """Raised when a required external dependency is missing or failing."""
+
+    def __init__(
+        self,
+        name: str,
+        command: tuple[str, ...],
+        install_instructions: str,
+        stdout: str | None,
+        stderr: str | None,
+    ) -> None:
+        self.name = name
+        self.command = command
+        self.install_instructions = install_instructions
+        self.stdout = stdout
+        self.stderr = stderr
+        if stdout is None and stderr is None:
+            message = f"Missing required dependency: {name}.\nInstall instructions: {install_instructions}"
+        else:
+            assert stdout is not None and stderr is not None, "dependency failure carries both stdout and stderr"
+            message = "\n".join(
+                [
+                    f"Dependency check failed: {name}.",
+                    f"Command: {' '.join(command)}",
+                    f"Install instructions: {install_instructions}",
+                    f"stdout: {stdout.strip()}",
+                    f"stderr: {stderr.strip()}",
+                ]
+            )
+        super().__init__(message)
 
 
 def starter_config() -> StarterConfig:
@@ -397,8 +438,7 @@ def update_memory(
     content: str | None,
     cwd: Path,
 ) -> JsonObject:
-    if title is None and memory_type is None and content is None:
-        raise UsageError("Update requires at least one of --title, --type, or --content.")
+    assert title is not None or memory_type is not None or content is not None, "update requires at least one of --title, --type, or --content"
     config = load_project_config(cwd)
     transition = memory_transition(config, key, title, memory_type, content)
     if transition.new_key != transition.old_key:
@@ -867,17 +907,22 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
 
 def check_dependency(dependency: DependencyCheck, cwd: Path) -> JsonObject:
     if shutil.which(dependency.command[0]) is None:
-        raise UsageError(f"Missing required dependency: {dependency.name}.\nInstall instructions: {dependency.install_instructions}")
+        raise DependencyError(
+            dependency.name,
+            dependency.command,
+            dependency.install_instructions,
+            None,
+            None,
+        )
     result = subprocess.run(dependency.command, cwd=cwd, check=False, text=True, capture_output=True)
     if result.returncode != 0:
-        message_parts = [
-            f"Dependency check failed: {dependency.name}.",
-            f"Command: {' '.join(dependency.command)}",
-            f"Install instructions: {dependency.install_instructions}",
-            f"stdout: {result.stdout.strip()}",
-            f"stderr: {result.stderr.strip()}",
-        ]
-        raise UsageError("\n".join(message_parts))
+        raise DependencyError(
+            dependency.name,
+            dependency.command,
+            dependency.install_instructions,
+            result.stdout,
+            result.stderr,
+        )
     return {"name": dependency.name, "command": list(dependency.command), "status": "ok"}
 
 
@@ -1112,12 +1157,7 @@ def load_project_config(cwd: Path) -> ProjectConfig:
     git_root = git_root_for(cwd)
     config_path = git_root / ".agent-memory.toml"
     if not config_path.is_file():
-        starter = starter_config()
-        raise UsageError(
-            "No project memory config found. Run `iwe2 maintain init-global --vault "
-            f"{starter.default_vault}` once if the global vault does not exist, then run "
-            "`iwe2 init project --vault <path-to-global-vault>` from this repository."
-        )
+        raise ProjectNotInitializedError(starter_config().default_vault)
     raw = ProjectConfigFile.model_validate(tomllib.loads(config_path.read_text(encoding="utf-8")))
     return ProjectConfig.from_file_payload(raw)
 

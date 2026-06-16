@@ -7,16 +7,26 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 
+import pytest
 import yaml
 
-from iwe2.cli import main as iwe2_main
+from iwe2.cli import app as iwe2_app
+from iwe2.cli import main as cli_main
+from iwe2.operations import (
+    DependencyCheck,
+    DependencyError,
+    ProjectNotInitializedError,
+    basic_doctor,
+    check_dependency,
+    update_memory,
+)
+from iwe2.operations import load_project_config as operations_load_project_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -75,35 +85,29 @@ class GitRepo:
     project_id: str
 
 
-def run_python_entrypoint(cwd: Path, command: list[str], entrypoint: Callable[[], None]) -> subprocess.CompletedProcess[str]:
+def run_iwe2_process(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    command = ["iwe2", *args]
     command_env = iwe2_env()
     original_cwd = Path.cwd()
     original_argv = sys.argv.copy()
     original_env = os.environ.copy()
     stdout = StringIO()
     stderr = StringIO()
-    returncode = 0
     try:
         os.chdir(cwd)
         os.environ.clear()
         os.environ.update(command_env)
         sys.argv = command
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            try:
-                entrypoint()
-            except SystemExit as error:
-                assert isinstance(error.code, int), "iwe2 SystemExit code must be an integer"
-                returncode = error.code
+            basic_doctor(cwd)
+            returncode = iwe2_app(list(args), exit_on_error=False, result_action="return_int_as_exit_code_else_zero")
     finally:
         os.chdir(original_cwd)
         sys.argv = original_argv
         os.environ.clear()
         os.environ.update(original_env)
+    assert isinstance(returncode, int), "cyclopts return_int_as_exit_code_else_zero must yield an int"
     return subprocess.CompletedProcess(command, returncode, stdout.getvalue(), stderr.getvalue())
-
-
-def run_iwe2_process(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return run_python_entrypoint(cwd, ["iwe2", *args], iwe2_main)
 
 
 def run_iwe2(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -111,10 +115,6 @@ def run_iwe2(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     if result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
     return result
-
-
-def run_iwe2_unchecked(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return run_iwe2_process(cwd, *args)
 
 
 def run_iwe2_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -129,12 +129,8 @@ def run_iwe2_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None
     )
 
 
-def run_iwe2_module_entrypoint() -> None:
-    runpy.run_module("iwe2.__main__", run_name="__main__")
-
-
 def run_iwe2_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    result = run_python_entrypoint(cwd, ["iwe2", *args], run_iwe2_module_entrypoint)
+    result = run_iwe2_subprocess(cwd, *args)
     if result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
     return result
@@ -997,6 +993,74 @@ def test_startup_doctor_gate_reports_failed_dependency_output(tmp_path: Path) ->
     assert "Traceback" in result.stderr
 
 
+def test_load_project_config_raises_project_not_initialized(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    with pytest.raises(ProjectNotInitializedError) as excinfo:
+        operations_load_project_config(repo)
+    message = str(excinfo.value)
+    assert "No project memory config found" in message
+    assert "iwe2 init project --vault" in message
+
+
+def test_check_dependency_raises_for_missing_binary(tmp_path: Path) -> None:
+    empty_path = tmp_path / "empty-bin"
+    empty_path.mkdir()
+    dependency = DependencyCheck("absent-tool", ("absent-tool", "--version"), "install absent-tool from somewhere")
+    original_env = os.environ.copy()
+    try:
+        os.environ.clear()
+        os.environ.update({"PATH": str(empty_path)})
+        with pytest.raises(DependencyError) as excinfo:
+            check_dependency(dependency, tmp_path)
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+    error = excinfo.value
+    assert error.name == "absent-tool"
+    assert error.stdout is None
+    assert error.stderr is None
+    assert "Missing required dependency: absent-tool" in str(error)
+    assert "install absent-tool from somewhere" in str(error)
+
+
+def test_check_dependency_raises_for_failed_command(tmp_path: Path) -> None:
+    broken_bin = tmp_path / "broken-bin"
+    broken_bin.mkdir()
+    broken_tool = broken_bin / "broken-tool"
+    broken_tool.write_text(
+        "#!/bin/sh\nprintf 'broken stdout\\n'\nprintf 'broken stderr\\n' >&2\nexit 3\n",
+        encoding="utf-8",
+    )
+    broken_tool.chmod(0o755)
+    dependency = DependencyCheck("broken-tool", ("broken-tool", "check"), "reinstall broken-tool")
+    env = iwe2_env()
+    env["PATH"] = f"{broken_bin}:{env['PATH']}"
+    original_env = os.environ.copy()
+    try:
+        os.environ.clear()
+        os.environ.update(env)
+        with pytest.raises(DependencyError) as excinfo:
+            check_dependency(dependency, tmp_path)
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+    error = excinfo.value
+    assert error.name == "broken-tool"
+    assert error.stdout is not None and "broken stdout" in error.stdout
+    assert error.stderr is not None and "broken stderr" in error.stderr
+    assert "Dependency check failed: broken-tool" in str(error)
+    assert "Command: broken-tool check" in str(error)
+
+
+def test_update_memory_requires_at_least_one_field(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    with pytest.raises(AssertionError) as excinfo:
+        update_memory("nonexistent-key", None, None, None, workspace.repo)
+    assert "update requires at least one of --title, --type, or --content" in str(excinfo.value)
+
+
 def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
@@ -1014,6 +1078,54 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
         {"name": "@probelabs/probe", "command": ["npx", "-y", "@probelabs/probe@latest", "--version"], "status": "ok"},
         {"name": "zk", "command": ["zk", "--version"], "status": "ok"},
     ]
+
+
+def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    command_env = iwe2_env()
+    original_cwd = Path.cwd()
+    original_argv = sys.argv.copy()
+    original_env = os.environ.copy()
+    stdout = StringIO()
+    try:
+        os.chdir(workspace.repo)
+        os.environ.clear()
+        os.environ.update(command_env)
+        sys.argv = ["iwe2", "doctor"]
+        with redirect_stdout(stdout), pytest.raises(SystemExit) as excinfo:
+            cli_main()
+    finally:
+        os.chdir(original_cwd)
+        sys.argv = original_argv
+        os.environ.clear()
+        os.environ.update(original_env)
+    assert excinfo.value.code == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["project_root"] == str(workspace.repo)
+
+
+def test_python_dash_m_iwe2_module_entrypoint_runs_doctor(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    command_env = iwe2_env()
+    original_cwd = Path.cwd()
+    original_argv = sys.argv.copy()
+    original_env = os.environ.copy()
+    stdout = StringIO()
+    try:
+        os.chdir(workspace.repo)
+        os.environ.clear()
+        os.environ.update(command_env)
+        sys.argv = ["iwe2", "doctor"]
+        with redirect_stdout(stdout), pytest.raises(SystemExit) as excinfo:
+            runpy.run_module("iwe2.__main__", run_name="__main__")
+    finally:
+        os.chdir(original_cwd)
+        sys.argv = original_argv
+        os.environ.clear()
+        os.environ.update(original_env)
+    assert excinfo.value.code == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["project_root"] == str(workspace.repo)
 
 
 def test_inspect_overview_schema_and_paths_map_real_vault(tmp_path: Path) -> None:
