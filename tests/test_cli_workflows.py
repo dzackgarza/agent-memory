@@ -21,6 +21,7 @@ from iwe2.cli import app as iwe2_app
 from iwe2.cli import main as cli_main
 from iwe2.models import MemoryType
 from iwe2.operations import (
+    OKF_VERSION,
     DependencyCheck,
     DependencyError,
     ProjectNotInitializedError,
@@ -384,10 +385,10 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert (vault / "index.md").is_file()
     assert (vault / "global" / "index.md").is_file()
     assert (vault / "_meta" / "projects.toml").is_file()
-    assert frontmatter(vault / "index.md") == {"okf_version": "0.1"}
+    assert frontmatter(vault / "index.md") == {"okf_version": OKF_VERSION}
     assert "* [Global](global/index.md) - Global memory shared across projects." in (vault / "index.md").read_text()
     global_index = (vault / "global" / "index.md").read_text()
-    assert frontmatter(vault / "global" / "index.md") == {"okf_version": "0.1"}
+    assert frontmatter(vault / "global" / "index.md") == {"okf_version": OKF_VERSION}
     assert "* [Decisions](decisions/index.md) - Global decision memories." in global_index
     assert "* [Traps](traps/index.md) - Global traps memories." in global_index
     assert "* [Advice](advice/index.md) - Global advice memories." in global_index
@@ -404,7 +405,7 @@ def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
 
     assert Path(str(payload["vault"])) == vault
     assert (vault / ".iwe" / "config.toml").is_file()
-    assert frontmatter(vault / "global" / "index.md") == {"okf_version": "0.1"}
+    assert frontmatter(vault / "global" / "index.md") == {"okf_version": OKF_VERSION}
     assert "* [Decisions](decisions/index.md) - Global decision memories." in global_index
     assert "* [References](references/index.md) - Global reference memories." in global_index
 
@@ -436,7 +437,7 @@ def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path
 
     project_index_path = workspace.vault / "projects" / workspace.project_id / "index.md"
     project_index = project_index_path.read_text()
-    assert frontmatter(project_index_path) == {"okf_version": "0.1"}
+    assert frontmatter(project_index_path) == {"okf_version": OKF_VERSION}
     assert "* [Decisions](decisions/index.md) - Project decision memories." in project_index
     assert "* [Traps](traps/index.md) - Project trap memories." in project_index
     assert "* [Advice](advice/index.md) - Project advice memories." in project_index
