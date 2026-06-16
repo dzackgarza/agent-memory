@@ -24,6 +24,7 @@ from iwe2.operations import (
     ProjectNotInitializedError,
     basic_doctor,
     check_dependency,
+    merge_probe_payloads,
     update_memory,
 )
 from iwe2.operations import load_project_config as operations_load_project_config
@@ -1425,3 +1426,32 @@ def test_inspect_export_profiles_real_vault(tmp_path: Path) -> None:
     archive_metadata = json_object(archive_nodes[global_key]["metadata"])
     assert archive_metadata["promotable"] is False
     assert archive_metadata["tags"] == ["global", "advice"]
+
+
+def test_merge_probe_payloads_treats_absent_skipped_files_as_no_skips() -> None:
+    # Probe 0.6.0's --format json contract emits "skipped_files" only when it skips
+    # files under the token budget; when nothing is skipped it omits the key entirely.
+    # iwe2 must interpret that omission as the documented "no files skipped" outcome and
+    # produce an empty skipped-files section, not raise.
+    payload_no_skips: JsonObject = {
+        "limits": {"total_bytes": 685, "total_tokens": 201},
+        "results": [{"file": "/vault/note.md", "score": 0.42}],
+        "version": "0.6.0",
+    }
+    merged = merge_probe_payloads([payload_no_skips], max_results=5, max_tokens=500)
+    assert merged["skipped_files"] == []
+    assert merged["results"] == [{"file": "/vault/note.md", "score": 0.42}]
+
+
+def test_merge_probe_payloads_rejects_null_skipped_files() -> None:
+    # When the key is present it must carry a real list. A null or non-list value is a
+    # malformed/incompatible Probe payload, not a "no skips" outcome, and must fail
+    # loudly instead of being silently coerced to an empty section.
+    payload_null_skips: JsonObject = {
+        "limits": {"total_bytes": 685, "total_tokens": 201},
+        "results": [{"file": "/vault/note.md", "score": 0.42}],
+        "skipped_files": None,
+        "version": "0.6.0",
+    }
+    with pytest.raises(AssertionError):
+        merge_probe_payloads([payload_null_skips], max_results=5, max_tokens=500)

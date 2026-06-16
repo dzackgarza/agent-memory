@@ -767,9 +767,14 @@ def probe_results(payload: JsonObject) -> list[JsonObject]:
 
 
 def probe_skipped_files(payload: JsonObject) -> list[JsonObject]:
-    if "skipped_files" not in payload:
+    # Probe's JSON contract emits "skipped_files" only when it skips files under the
+    # token budget; when nothing is skipped the key is omitted entirely. Absence is the
+    # documented "no files skipped" outcome. A present key must be a real list of objects
+    # or the payload is malformed and must fail loudly.
+    raw_skipped = payload.get("skipped_files")
+    if raw_skipped is None:
+        assert "skipped_files" not in payload, "probe skipped_files must be a list, not null"
         return []
-    raw_skipped = payload["skipped_files"]
     assert isinstance(raw_skipped, list), "probe skipped files must be a list"
     skipped_files: list[JsonObject] = []
     for skipped_file in raw_skipped:
