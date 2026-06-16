@@ -55,20 +55,6 @@ ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
 VAULT_GIT_USER_NAME = "iwe2"
 VAULT_GIT_USER_EMAIL = "iwe2@localhost"
 ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
-GLOBAL_INDEX_DESCRIPTIONS: dict[str, str] = {
-    "decisions": "Global decision memories.",
-    "traps": "Global traps memories.",
-    "advice": "Global advice memories.",
-    "context": "Global context memories.",
-    "references": "Global reference memories.",
-}
-PROJECT_INDEX_DESCRIPTIONS: dict[str, str] = {
-    "decisions": "Project decision memories.",
-    "traps": "Project trap memories.",
-    "advice": "Project advice memories.",
-    "context": "Project context memories.",
-    "references": "Project reference memories.",
-}
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.DECISION: "decisions",
@@ -78,34 +64,43 @@ MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.REFERENCE: "references",
 }
 
-GLOBAL_INDEX_DIRECTORIES: tuple[str, ...] = (
-    "decisions",
-    "traps",
-    "advice",
-    "context",
-    "references",
-)
+# The directory names for every memory type, in MemoryType enum order. This is the
+# single source for both the global vault layout and the per-project layout.
+MEMORY_TYPE_DIRECTORY_NAMES: tuple[str, ...] = tuple(MEMORY_TYPE_DIRECTORIES[memory_type] for memory_type in MemoryType)
+
+# Index descriptions read "{Scope} {word} memories." The project word is always the
+# MemoryType value (decision, trap, advice, context, reference). The global word matches
+# except for TRAP, whose global index has historically read "Global traps memories."
+# (the directory name) rather than "Global trap memories." That divergence is a frozen
+# observable contract (test_maintain_init_global_creates_iwe_backed_layout), so it is
+# encoded explicitly here rather than restated across two parallel maps.
+GLOBAL_INDEX_DESCRIPTION_WORDS: dict[MemoryType, str] = {
+    **{memory_type: memory_type.value for memory_type in MemoryType},
+    MemoryType.TRAP: MEMORY_TYPE_DIRECTORIES[MemoryType.TRAP],
+}
+
+
+def index_descriptions(scope: MemoryScope) -> dict[str, str]:
+    scope_word = scope.value.capitalize()
+    return {
+        MEMORY_TYPE_DIRECTORIES[memory_type]: f"{scope_word} {_index_description_word(scope, memory_type)} memories." for memory_type in MemoryType
+    }
+
+
+def _index_description_word(scope: MemoryScope, memory_type: MemoryType) -> str:
+    if scope is MemoryScope.GLOBAL:
+        return GLOBAL_INDEX_DESCRIPTION_WORDS[memory_type]
+    return memory_type.value
+
 
 VAULT_DIRECTORIES: tuple[Path, ...] = (
-    Path("global/decisions"),
-    Path("global/traps"),
-    Path("global/advice"),
-    Path("global/context"),
-    Path("global/references"),
+    *(Path("global") / name for name in MEMORY_TYPE_DIRECTORY_NAMES),
     Path("projects"),
     Path("inbox/unsorted"),
     Path("inbox/project"),
     Path("inbox/global"),
     Path("templates"),
     Path("_meta"),
-)
-
-PROJECT_DIRECTORIES: tuple[str, ...] = (
-    "decisions",
-    "traps",
-    "advice",
-    "context",
-    "references",
 )
 BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
     DependencyCheck(
@@ -286,11 +281,11 @@ def init_global_vault(vault: Path) -> JsonObject:
             {"okf_version": OKF_VERSION},
             parent_index_body(
                 "Global Memory",
-                directory_index_entries(GLOBAL_INDEX_DIRECTORIES, GLOBAL_INDEX_DESCRIPTIONS),
+                directory_index_entries(MEMORY_TYPE_DIRECTORY_NAMES, index_descriptions(MemoryScope.GLOBAL)),
             ),
         ),
     )
-    write_section_indexes(vault / "global", GLOBAL_INDEX_DIRECTORIES)
+    write_section_indexes(vault / "global", MEMORY_TYPE_DIRECTORY_NAMES)
     write_new_file(vault / "_meta" / "projects.toml", tomli_w.dumps({"projects": []}))
     index_zk_notebook(vault)
     commit_vault_changes(vault, "Initialize iwe2 vault")
@@ -312,15 +307,15 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
             parent_index_body(
                 project_id,
                 directory_index_entries(
-                    PROJECT_DIRECTORIES,
-                    PROJECT_INDEX_DESCRIPTIONS,
+                    MEMORY_TYPE_DIRECTORY_NAMES,
+                    index_descriptions(MemoryScope.PROJECT),
                 ),
             ),
         ),
     )
-    for directory in PROJECT_DIRECTORIES:
+    for directory in MEMORY_TYPE_DIRECTORY_NAMES:
         (project_dir / directory).mkdir()
-    write_section_indexes(project_dir, PROJECT_DIRECTORIES)
+    write_section_indexes(project_dir, MEMORY_TYPE_DIRECTORY_NAMES)
     append_index_link(
         vault / "index.md",
         project_id,
