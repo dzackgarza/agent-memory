@@ -2,20 +2,23 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import runpy
 import subprocess
+import sys
 import tempfile
 import tomllib
+from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from io import StringIO
 from pathlib import Path
 
 import yaml
 
+from iwe2.cli import main as iwe2_main
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-UV_EXECUTABLE_LOOKUP = shutil.which("uv")
-assert UV_EXECUTABLE_LOOKUP is not None, "uv executable is required to run iwe2 integration tests"
-UV_EXECUTABLE: str = UV_EXECUTABLE_LOOKUP
 
 
 def just_value(name: str) -> str:
@@ -72,64 +75,57 @@ class GitRepo:
     project_id: str
 
 
-def iwe2_command(cwd: Path, *args: str) -> list[str]:
-    return [
-        "uv",
-        "run",
-        "--project",
-        str(PROJECT_ROOT),
-        "--directory",
-        str(cwd),
-        "iwe2",
-        *args,
-    ]
+def run_python_entrypoint(cwd: Path, command: list[str], entrypoint: Callable[[], None]) -> subprocess.CompletedProcess[str]:
+    command_env = iwe2_env()
+    original_cwd = Path.cwd()
+    original_argv = sys.argv.copy()
+    original_env = os.environ.copy()
+    stdout = StringIO()
+    stderr = StringIO()
+    returncode = 0
+    try:
+        os.chdir(cwd)
+        os.environ.clear()
+        os.environ.update(command_env)
+        sys.argv = command
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            try:
+                entrypoint()
+            except SystemExit as error:
+                assert isinstance(error.code, int), "iwe2 SystemExit code must be an integer"
+                returncode = error.code
+    finally:
+        os.chdir(original_cwd)
+        sys.argv = original_argv
+        os.environ.clear()
+        os.environ.update(original_env)
+    return subprocess.CompletedProcess(command, returncode, stdout.getvalue(), stderr.getvalue())
 
 
-def iwe2_module_command(cwd: Path, *args: str) -> list[str]:
-    return [
-        "uv",
-        "run",
-        "--project",
-        str(PROJECT_ROOT),
-        "--directory",
-        str(cwd),
-        "python",
-        "-m",
-        "iwe2",
-        *args,
-    ]
-
-
-def run_checked_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        check=True,
-        text=True,
-        capture_output=True,
-        env=iwe2_env(),
-    )
-
-
-def run_unchecked_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        check=False,
-        text=True,
-        capture_output=True,
-        env=iwe2_env(),
-    )
+def run_iwe2_process(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return run_python_entrypoint(cwd, ["iwe2", *args], iwe2_main)
 
 
 def run_iwe2(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return run_checked_command(iwe2_command(cwd, *args))
+    result = run_iwe2_process(cwd, *args)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+    return result
 
 
 def run_iwe2_unchecked(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return run_unchecked_command(iwe2_command(cwd, *args))
+    return run_iwe2_process(cwd, *args)
+
+
+def run_iwe2_module_entrypoint() -> None:
+    runpy.run_module("iwe2.__main__", run_name="__main__")
 
 
 def run_iwe2_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return run_checked_command(iwe2_module_command(cwd, *args))
+    result = run_python_entrypoint(cwd, ["iwe2", *args], run_iwe2_module_entrypoint)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+    return result
 
 
 def iwe2_env() -> dict[str, str]:
@@ -213,6 +209,14 @@ def json_array(value: JsonValue) -> JsonArray:
 def json_string(value: JsonValue) -> str:
     assert isinstance(value, str)
     return value
+
+
+def json_records(payload: JsonObject, key: str) -> list[JsonObject]:
+    return [json_object(record) for record in json_array(payload[key])]
+
+
+def records_by_key(payload: JsonObject, key: str) -> dict[str, JsonObject]:
+    return {json_string(record["key"]): record for record in json_records(payload, key)}
 
 
 def probe_result_files(result: JsonObject) -> set[Path]:
@@ -427,6 +431,47 @@ def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path
     assert f"* [{workspace.project_id}](projects/{workspace.project_id}/index.md) - Project memory bundle." in (workspace.vault / "index.md").read_text()
 
 
+def test_project_initialization_appends_https_remote_project_record(tmp_path: Path) -> None:
+    ssh_repo = initialized_git_repo(tmp_path)
+    https_repo = tmp_path / "https-repo"
+    https_repo.mkdir()
+    subprocess.run(["git", "init"], cwd=https_repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/dzackgarza/https-memory.git",
+        ],
+        cwd=https_repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    vault = tmp_path / "vault"
+    run_iwe2(tmp_path, "maintain", "init-global", "--vault", str(vault))
+
+    run_iwe2(ssh_repo.path, "init", "project", "--vault", str(vault))
+    run_iwe2(https_repo, "init", "project", "--vault", str(vault))
+
+    assert load_project_config(ssh_repo.path)["project_id"] == ssh_repo.project_id
+    assert load_project_config(https_repo)["project_id"] == "github.com__dzackgarza__https-memory"
+    project_records = tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"]
+    assert project_records == [
+        {
+            "project_id": ssh_repo.project_id,
+            "root": str(ssh_repo.path),
+            "remote": "git@github.com:dzackgarza/example-memory.git",
+        },
+        {
+            "project_id": "github.com__dzackgarza__https-memory",
+            "root": str(https_repo),
+            "remote": "https://github.com/dzackgarza/https-memory.git",
+        },
+    ]
+
+
 def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
@@ -511,6 +556,45 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     assert global_key not in result_keys(after_delete)
 
 
+def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    project_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Project Transition",
+        content="transition-signal-0d1f body stays attached to the moved memory",
+    )
+    original_key = project_memory_key(workspace, "decisions", "project-transition")
+    assert project_note["key"] == original_key
+
+    renamed_key = project_memory_key(workspace, "decisions", "project-transition-renamed")
+    renamed = parse_json_stdout(run_iwe2(workspace.repo, "update", original_key, "--title", "Project Transition Renamed"))
+    assert renamed["key"] == renamed_key
+    renamed_text = run_iwe2(workspace.repo, "retrieve", renamed_key).stdout
+    assert "# Project Transition Renamed" in renamed_text
+    assert "transition-signal-0d1f body stays attached to the moved memory" in renamed_text
+    decisions_index = (workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md").read_text()
+    assert "[Project Transition](project-transition.md)" not in decisions_index
+    assert "[Project Transition Renamed](project-transition-renamed.md)" in decisions_index
+
+    retagged_key = project_memory_key(workspace, "traps", "project-transition-renamed")
+    retagged = parse_json_stdout(run_iwe2(workspace.repo, "update", renamed_key, "--type", "trap"))
+    assert retagged["key"] == retagged_key
+    retagged_text = run_iwe2(workspace.repo, "retrieve", retagged_key).stdout
+    assert "# Project Transition Renamed" in retagged_text
+    assert "transition-signal-0d1f body stays attached to the moved memory" in retagged_text
+    assert not (workspace.vault / f"{renamed_key}.md").exists()
+    updated_decisions_index = (workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md").read_text()
+    traps_index = (workspace.vault / "projects" / workspace.project_id / "traps" / "index.md").read_text()
+    assert "[Project Transition Renamed](project-transition-renamed.md)" not in updated_decisions_index
+    assert "[Project Transition Renamed](project-transition-renamed.md)" in traps_index
+
+    no_update = run_iwe2_unchecked(workspace.repo, "update", retagged_key)
+    assert no_update.returncode == 2
+    assert no_update.stderr == "Update requires at least one of --title, --type, or --content.\n"
+
+
 def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
@@ -558,6 +642,13 @@ def test_search_content_ranked_uses_scope_roots(tmp_path: Path) -> None:
     )
     project_path = Path(str(project_note["path"])).resolve()
     global_path = Path(str(global_note["path"])).resolve()
+
+    exact_project = search_content(workspace, scope="project", mode="exact", query="ranked-context-token-48a4")
+    assert str(project_note["key"]) in result_keys(exact_project)
+    assert str(global_note["key"]) not in result_keys(exact_project)
+    exact_global = search_content(workspace, scope="global", mode="exact", query="ranked-context-token-48a4")
+    assert str(global_note["key"]) in result_keys(exact_global)
+    assert str(project_note["key"]) not in result_keys(exact_global)
 
     project_files = probe_result_files(search_content(workspace, scope="project", mode="ranked", query="ranked-context-token-48a4"))
     assert project_path in project_files
@@ -641,6 +732,9 @@ def test_search_metadata_filters_real_frontmatter(tmp_path: Path) -> None:
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
 
+    all_metadata = parse_json_stdout(run_iwe2(workspace.repo, "search", "metadata", "--scope", "both"))
+    assert result_keys(all_metadata) == {project_key, global_key}
+
     project_results = parse_json_stdout(
         run_iwe2(
             workspace.repo,
@@ -699,6 +793,46 @@ def test_maintain_squash_returns_project_index_scope_with_iwe(tmp_path: Path) ->
     assert "- [Decisions](decisions/index) - Project decision memories." in squashed.stdout
     assert "- [Traps](traps/index) - Project trap memories." in squashed.stdout
     assert "squash-global-signal-88ec672b" not in squashed.stdout
+
+
+def test_maintain_split_merge_and_validate_real_memory_graph(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    source_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Split Source",
+        content="Introductory context.\n\n## Extracted Plan\nSplit details stay recoverable.",
+    )
+    source_key = project_memory_key(workspace, "decisions", "split-source")
+    assert source_note["key"] == source_key
+
+    split = parse_json_stdout(run_iwe2(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
+    assert split["key"] == source_key
+    assert split["section"] == "Extracted Plan"
+    extracted_keys = {json_string(key) for key in json_array(split["extracted"])}
+    assert len(extracted_keys) == 1
+    extracted_key = next(iter(extracted_keys))
+    assert extracted_key != source_key
+    split_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "project", "Extracted Plan"))
+    assert extracted_key in result_keys(split_search)
+    assert (workspace.vault / f"{extracted_key}.md").is_file()
+    split_source_text = (workspace.vault / f"{source_key}.md").read_text(encoding="utf-8")
+    assert "Split details stay recoverable." not in split_source_text
+    assert "Extracted Plan" in split_source_text
+
+    merged = parse_json_stdout(run_iwe2(workspace.repo, "maintain", "merge", source_key, "--reference", extracted_key))
+    assert merged["key"] == source_key
+    assert merged["reference"] == extracted_key
+    assert not (workspace.vault / f"{extracted_key}.md").exists()
+    merged_source_text = run_iwe2(workspace.repo, "retrieve", source_key).stdout
+    assert "## Extracted Plan" in merged_source_text
+    assert "Split details stay recoverable." in merged_source_text
+
+    validation = parse_json_stdout(run_iwe2(workspace.repo, "maintain", "validate"))
+    assert validation["vault"] == str(workspace.vault)
+    assert validation["project_id"] == workspace.project_id
+    assert validation["project_root"] == str(workspace.repo)
 
 
 def test_init_project_replaces_existing_agents_memory_pointer(tmp_path: Path) -> None:
@@ -817,29 +951,50 @@ def test_startup_doctor_gate_reports_missing_dependency_before_command_logic(
     env["PATH"] = str(empty_path)
     env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
 
-    result = subprocess.run(
-        [
-            UV_EXECUTABLE,
-            "run",
-            "--project",
-            str(PROJECT_ROOT),
-            "--directory",
-            str(repo),
-            "python",
-            "-m",
-            "iwe2",
-            "doctor",
-        ],
-        cwd=repo,
-        check=False,
-        text=True,
-        capture_output=True,
-        env=env,
-    )
+    original_env = os.environ.copy()
+    try:
+        os.environ.clear()
+        os.environ.update(env)
+        result = run_iwe2_unchecked(repo, "doctor")
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
 
     assert result.returncode == 2
     assert result.stderr == (
         "Missing required dependency: git.\nInstall instructions: run `just setup` from the iwe2 checkout; manual install: install Git from your OS package manager.\n"
+    )
+
+
+def test_startup_doctor_gate_reports_failed_dependency_output(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    broken_bin = tmp_path / "broken-bin"
+    broken_bin.mkdir()
+    broken_git = broken_bin / "git"
+    broken_git.write_text("#!/bin/sh\nprintf 'bad git stdout\\n'\nprintf 'bad git stderr\\n' >&2\nexit 7\n", encoding="utf-8")
+    broken_git.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{broken_bin}:{env['PATH']}"
+    env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+
+    original_env = os.environ.copy()
+    try:
+        os.environ.clear()
+        os.environ.update(env)
+        result = run_iwe2_unchecked(repo, "doctor")
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+
+    assert result.returncode == 2
+    assert result.stderr == (
+        "Dependency check failed: git.\n"
+        "Command: git --version\n"
+        "Install instructions: run `just setup` from the iwe2 checkout; manual install: install Git from your OS package manager.\n"
+        "stdout: bad git stdout\n"
+        "stderr: bad git stderr\n"
     )
 
 
@@ -920,6 +1075,24 @@ def test_inspect_overview_schema_and_paths_map_real_vault(tmp_path: Path) -> Non
             "scope": "project",
         }
     ]
+    root_paths = inspect_json(workspace, "paths", "--scope", "global", "--kind", "roots", "--format", "json")
+    assert root_paths["paths"] == [
+        {
+            "key": "global/index",
+            "path": str(workspace.vault / "global" / "index.md"),
+            "scope": "global",
+        }
+    ]
+    index_paths = inspect_json(workspace, "paths", "--scope", "project", "--kind", "indexes", "--format", "json")
+    index_keys = {json_string(json_object(record)["key"]) for record in json_array(index_paths["paths"])}
+    assert {
+        f"projects/{workspace.project_id}/index",
+        f"projects/{workspace.project_id}/decisions/index",
+        f"projects/{workspace.project_id}/advice/index",
+    }.issubset(index_keys)
+    all_paths = inspect_json(workspace, "paths", "--scope", "both", "--kind", "all", "--format", "json")
+    all_keys = {json_string(json_object(record)["key"]) for record in json_array(all_paths["paths"])}
+    assert {"global/index", f"projects/{workspace.project_id}/index", project_key, global_key}.issubset(all_keys)
 
 
 def test_inspect_tree_maps_project_memory_hierarchy(tmp_path: Path) -> None:
@@ -955,18 +1128,62 @@ def test_inspect_tree_maps_project_memory_hierarchy(tmp_path: Path) -> None:
     assert [json_string(json_object(child)["key"]) for child in decision_children] == [project_key]
 
 
-def test_inspect_links_outline_and_recent_real_vault(tmp_path: Path) -> None:
+def linked_inspect_workspace(tmp_path: Path) -> tuple[CliWorkspace, str, str]:
     workspace = initialized_workspace(tmp_path)
+    global_note = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="advice",
+        title="Inspect Advice",
+        content="Use read-only inspection before maintenance.",
+    )
+    global_key = "global/advice/inspect-advice"
     project_note = add_cli_memory(
         workspace,
         scope="project",
         memory_type="decision",
         title="Inspect Linked",
-        content="## Investigation\nUse outline and graph inspection.",
+        content=("## Investigation\nUse outline and graph inspection.\n\nSee [Inspect Advice](../../../global/advice/inspect-advice.md).\nIgnore empty [placeholder]()."),
     )
     project_key = project_memory_key(workspace, "decisions", "inspect-linked")
+    assert global_note["key"] == global_key
     assert project_note["key"] == project_key
+    return workspace, project_key, global_key
 
+
+def test_inspect_links_real_vault(tmp_path: Path) -> None:
+    workspace, project_key, global_key = linked_inspect_workspace(tmp_path)
+    no_depth_children = inspect_json(
+        workspace,
+        "links",
+        project_key,
+        "--direction",
+        "children",
+        "--depth",
+        "0",
+        "--format",
+        "json",
+    )
+    assert no_depth_children["links"] == []
+    children = inspect_json(
+        workspace,
+        "links",
+        project_key,
+        "--direction",
+        "children",
+        "--depth",
+        "1",
+        "--format",
+        "json",
+    )
+    assert children["links"] == [
+        {
+            "key": global_key,
+            "path": str(workspace.vault / "global" / "advice" / "inspect-advice.md"),
+            "title": "Inspect Advice",
+            "depth": 1,
+        }
+    ]
     parents = inspect_json(
         workspace,
         "links",
@@ -986,9 +1203,25 @@ def test_inspect_links_outline_and_recent_real_vault(tmp_path: Path) -> None:
             "depth": 1,
         }
     ]
+    both = inspect_json(
+        workspace,
+        "links",
+        project_key,
+        "--direction",
+        "both",
+        "--depth",
+        "1",
+        "--format",
+        "json",
+    )
+    both_keys = set(records_by_key(both, "links"))
+    assert both_keys == {f"projects/{workspace.project_id}/decisions/index", global_key}
 
+
+def test_inspect_outline_and_recent_real_vault(tmp_path: Path) -> None:
+    workspace, project_key, _global_key = linked_inspect_workspace(tmp_path)
     outline = inspect_json(workspace, "outline", project_key, "--format", "json")
-    outline_headings = [json_object(heading) for heading in json_array(outline["headings"])]
+    outline_headings = json_records(outline, "headings")
     assert [(json_string(heading["title"]), heading["level"]) for heading in outline_headings] == [
         ("Inspect Linked", 1),
         ("Investigation", 2),
@@ -1007,34 +1240,31 @@ def test_inspect_links_outline_and_recent_real_vault(tmp_path: Path) -> None:
     assert result_keys(recent) == {project_key}
 
 
-def test_inspect_stats_and_export_real_vault(tmp_path: Path) -> None:
-    workspace = initialized_workspace(tmp_path)
-    project_note = add_cli_memory(
-        workspace,
-        scope="project",
-        memory_type="decision",
-        title="Inspect Linked",
-        content="## Investigation\nUse outline and graph inspection.",
-    )
-    global_note = add_cli_memory(
-        workspace,
-        scope="global",
-        memory_type="advice",
-        title="Inspect Advice",
-        content="Use read-only inspection before maintenance.",
-    )
-    project_key = project_memory_key(workspace, "decisions", "inspect-linked")
-    global_key = "global/advice/inspect-advice"
-    assert project_note["key"] == project_key
-    assert global_note["key"] == global_key
-
+def test_inspect_stats_real_vault(tmp_path: Path) -> None:
+    workspace, _project_key, _global_key = linked_inspect_workspace(tmp_path)
     stats = inspect_json(workspace, "stats", "--scope", "both", "--by", "type", "--format", "json")
     assert stats["counts"] == {"advice": 1, "decision": 1}
+    stats_by_scope = inspect_json(workspace, "stats", "--scope", "both", "--by", "scope", "--format", "json")
+    assert stats_by_scope["counts"] == {"global": 1, "project": 1}
+    stats_by_day = inspect_json(workspace, "stats", "--scope", "both", "--by", "day", "--format", "json")
+    day_counts = json_object(stats_by_day["counts"])
+    assert list(day_counts.values()) == [2]
 
+
+def test_inspect_export_profiles_real_vault(tmp_path: Path) -> None:
+    workspace, project_key, global_key = linked_inspect_workspace(tmp_path)
     exported = inspect_json(workspace, "export", "--scope", "project", "--profile", "map", "--format", "graph-json")
     assert exported["profile"] == "map"
-    exported_nodes = {json_string(node["key"]): node for node in (json_object(node) for node in json_array(exported["nodes"]))}
+    exported_nodes = records_by_key(exported, "nodes")
     assert exported_nodes[project_key]["title"] == "Inspect Linked"
     assert "content" not in exported_nodes[project_key]
-    exported_edges = [json_object(edge) for edge in json_array(exported["edges"])]
+    exported_edges = json_records(exported, "edges")
     assert [(json_string(edge["source"]), json_string(edge["target"])) for edge in exported_edges].count((f"projects/{workspace.project_id}/decisions/index", project_key)) == 1
+    context_export = inspect_json(workspace, "export", "--scope", "project", "--profile", "context", "--format", "graph-json")
+    context_nodes = records_by_key(context_export, "nodes")
+    assert "Use outline and graph inspection." in json_string(context_nodes[project_key]["content"])
+    archive_export = inspect_json(workspace, "export", "--scope", "global", "--profile", "archive", "--format", "graph-json")
+    archive_nodes = records_by_key(archive_export, "nodes")
+    archive_metadata = json_object(archive_nodes[global_key]["metadata"])
+    assert archive_metadata["promotable"] is False
+    assert archive_metadata["tags"] == ["global", "advice"]

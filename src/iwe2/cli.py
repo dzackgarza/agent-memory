@@ -151,12 +151,12 @@ def search_content_command(
     """Search memory body text with the selected content mode."""
     if mode is ContentSearchMode.EXACT:
         emit(search_content_exact(scope=scope, query=query, cwd=Path.cwd()))
-    elif mode is ContentSearchMode.FUZZY:
+        return
+    if mode is ContentSearchMode.FUZZY:
         emit(search_content_fuzzy(scope=scope, query=query, cwd=Path.cwd()))
-    elif mode is ContentSearchMode.RANKED:
-        emit(search_content_ranked(scope=scope, query=query, cwd=Path.cwd()))
-    else:
-        raise AssertionError(f"unsupported content search mode: {mode}")
+        return
+    assert mode is ContentSearchMode.RANKED, f"unsupported content search mode: {mode}"
+    emit(search_content_ranked(scope=scope, query=query, cwd=Path.cwd()))
 
 
 def search_metadata_command(
@@ -388,7 +388,7 @@ def emit(payload: Mapping[str, JsonValue]) -> None:
 def main() -> None:
     try:
         basic_doctor(Path.cwd())
-        app()
+        app(sys.argv[1:])
     except UsageError as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(2) from error

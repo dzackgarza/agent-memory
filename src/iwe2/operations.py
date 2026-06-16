@@ -375,6 +375,7 @@ def sync_memory_transition_indexes(transition: MemoryTransition) -> None:
     if transition.destination_path.parent == transition.source_path.parent:
         replace_index_link(
             transition.destination_path.parent / "index.md",
+            transition.old_title,
             transition.new_title,
             transition.destination_path.name,
             transition.description,
@@ -481,15 +482,15 @@ def search_metadata(
 
 
 def key_search_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    query_text = query.casefold()
     records: list[JsonObject] = []
-    for anchor in search_anchors(config, scope):
-        output = run_checked(
-            ["iwe", "find", query, "--included-by", anchor, "--format", "keys"],
-            cwd=config.vault,
-        ).stdout
-        for key in output.splitlines():
-            if key:
-                records.append({"key": key, "source": "keys"})
+    for record in inspect_note_records(config, scope):
+        key_matches = query_text in record.key.casefold()
+        title_matches = query_text in record.title.casefold()
+        if key_matches or title_matches:
+            json_record = note_record_json(record)
+            json_record["source"] = "keys"
+            records.append(json_record)
     return dedupe_records_by_key(records)[: config.search_max_results]
 
 
@@ -772,10 +773,26 @@ def squash_memory(key: str, depth: int, cwd: Path) -> str:
 
 def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
+    source_document = read_memory(memory_path_for_key(config, key))
+    source_title = source_document.metadata_str("title")
+    memory_type = MemoryType(source_document.metadata_str("type"))
+    scope = MemoryScope(source_document.metadata_str("scope"))
     result = run_checked(["iwe", "extract", key, "--section", section, "-f", "keys"], cwd=config.vault)
+    extracted_keys: list[str] = []
+    for affected_key in result.stdout.splitlines():
+        if affected_key == key:
+            continue
+        extracted_path = memory_path_for_key(config, affected_key)
+        extracted_body = extracted_path.read_text(encoding="utf-8")
+        title = first_heading_title(extracted_body)
+        description = f"Extracted from {source_title}."
+        write_memory(extracted_path, note_metadata(config, scope, memory_type, title, description), extracted_body)
+        append_index_link(extracted_path.parent / "index.md", title, extracted_path.name, description)
+        extracted_keys.append(affected_key)
+    assert extracted_keys, "split must create at least one extracted memory"
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Split memory section: {section}")
-    return {"key": key, "section": section, "output": result.stdout}
+    return {"key": key, "section": section, "output": result.stdout, "extracted": json_string_list(extracted_keys)}
 
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
@@ -842,7 +859,7 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     pointer_body = f"# {title}\n\nPromoted to [[{destination_key}]].\n"
     assert source_path.parent.is_dir(), "project memory parent must be a directory"
     write_new_memory(source_path, pointer_metadata, pointer_body)
-    replace_index_link(source_path.parent / "index.md", title, source_path.name, pointer_description)
+    replace_index_link(source_path.parent / "index.md", title, title, source_path.name, pointer_description)
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Move memory {key} to {destination_key}")
     return {"key": destination_key, "path": str(destination_path)}
@@ -1029,15 +1046,15 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
         index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
 
 
-def replace_index_link(index_path: Path, title: str, target: str, description: str) -> None:
+def replace_index_link(index_path: Path, existing_title: str, new_title: str, target: str, description: str) -> None:
     assert index_path.is_file(), "index must exist before replacing a link"
     # IWE rewrites the OKF bullet marker to "-" when it renames linked notes.
-    link_prefixes = (f"* [{title}](", f"- [{title}](")
+    link_prefixes = (f"* [{existing_title}](", f"- [{existing_title}](")
     lines = index_path.read_text(encoding="utf-8").splitlines()
     matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
     assert len(matching_indexes) == 1, "index must contain exactly one link for the title"
     entry_start = matching_indexes[0]
-    lines[entry_start] = okf_index_entry(title, target, description)
+    lines[entry_start] = okf_index_entry(new_title, target, description)
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -1084,12 +1101,10 @@ def git_remote(git_root: Path) -> str:
 
 def project_id_from_remote(remote: str) -> str:
     stripped = remote.removesuffix(".git")
-    if stripped.startswith("git@github.com:"):
-        repository = stripped.removeprefix("git@github.com:")
-    elif stripped.startswith("https://github.com/"):
-        repository = stripped.removeprefix("https://github.com/")
-    else:
-        raise ValueError(f"unsupported remote URL: {remote}")
+    is_ssh_remote = stripped.startswith("git@github.com:")
+    is_https_remote = stripped.startswith("https://github.com/")
+    assert is_ssh_remote or is_https_remote, f"unsupported remote URL: {remote}"
+    repository = stripped.removeprefix("git@github.com:") if is_ssh_remote else stripped.removeprefix("https://github.com/")
     parts = repository.split("/")
     assert len(parts) == 2, "GitHub remote must have owner and repository"
     owner, repo = parts
@@ -1136,11 +1151,11 @@ def load_project_records(projects_file: Path) -> list[ProjectRecord]:
 
 def memory_directory(config: ProjectConfig, scope: MemoryScope, memory_type: MemoryType) -> Path:
     directory_name = MEMORY_TYPE_DIRECTORIES[memory_type]
-    if scope is MemoryScope.PROJECT:
-        return config.vault / "projects" / config.project_id / directory_name
-    if scope is MemoryScope.GLOBAL:
-        return config.vault / "global" / directory_name
-    raise AssertionError(f"unsupported note scope: {scope}")
+    directories = {
+        MemoryScope.PROJECT: config.vault / "projects" / config.project_id / directory_name,
+        MemoryScope.GLOBAL: config.vault / "global" / directory_name,
+    }
+    return directories[scope]
 
 
 def note_metadata(
@@ -1164,59 +1179,39 @@ def note_metadata(
             promotable=False,
             project_id=config.project_id,
         ).to_yaml_payload()
-    if scope is MemoryScope.GLOBAL:
-        return GlobalNoteMetadata(
-            type=memory_type,
-            title=title,
-            description=description,
-            tags=okf_tags(scope, memory_type, ()),
-            timestamp=timestamp,
-            scope=MemoryScope.GLOBAL,
-            source="agent",
-            confidence="high",
-            promotable=False,
-        ).to_yaml_payload()
-    raise AssertionError(f"unsupported note scope: {scope}")
+    assert scope is MemoryScope.GLOBAL, f"unsupported note scope: {scope}"
+    return GlobalNoteMetadata(
+        type=memory_type,
+        title=title,
+        description=description,
+        tags=okf_tags(scope, memory_type, ()),
+        timestamp=timestamp,
+        scope=MemoryScope.GLOBAL,
+        source="agent",
+        confidence="high",
+        promotable=False,
+    ).to_yaml_payload()
 
 
 def run_ripgrep_search(args: Sequence[str], cwd: Path) -> str:
     result = subprocess.run(args, cwd=cwd, check=False, text=True, capture_output=True)
     if result.returncode == 0:
         return result.stdout
-    if result.returncode == 1:
-        assert result.stdout == ""
-        assert result.stderr == ""
-        return ""
-    raise subprocess.CalledProcessError(
-        result.returncode,
-        args,
-        output=result.stdout,
-        stderr=result.stderr,
-    )
-
-
-def search_anchors(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
-    project_anchor = f"projects/{config.project_id}/index:0"
-    global_anchor = "global/index:0"
-    if scope is SearchScope.PROJECT:
-        return (project_anchor,)
-    if scope is SearchScope.GLOBAL:
-        return (global_anchor,)
-    if scope is SearchScope.BOTH:
-        return (project_anchor, global_anchor)
-    raise AssertionError(f"unsupported search scope: {scope}")
+    assert result.returncode == 1, f"ripgrep search failed with exit code {result.returncode}: {result.stderr}"
+    assert result.stdout == ""
+    assert result.stderr == ""
+    return ""
 
 
 def search_roots(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
     project_root = config.vault / "projects" / config.project_id
     global_root = config.vault / "global"
-    if scope is SearchScope.PROJECT:
-        return (project_root,)
-    if scope is SearchScope.GLOBAL:
-        return (global_root,)
-    if scope is SearchScope.BOTH:
-        return (project_root, global_root)
-    raise AssertionError(f"unsupported search scope: {scope}")
+    roots = {
+        SearchScope.PROJECT: (project_root,),
+        SearchScope.GLOBAL: (global_root,),
+        SearchScope.BOTH: (project_root, global_root),
+    }
+    return roots[scope]
 
 
 def memory_key(vault: Path, path: Path) -> str:
@@ -1430,23 +1425,19 @@ def inspect_paths(
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect paths currently emits JSON"
     config = load_project_config(cwd)
-    records: list[JsonObject] = []
-    if kind is InspectPathKind.ROOTS:
-        records.extend(inspect_root_records(config, scope))
-    elif kind is InspectPathKind.INDEXES:
-        records.extend(inspect_index_records(config, scope))
-    elif kind is InspectPathKind.NOTES:
-        records.extend(inspect_path_note_records(config, scope))
-    elif kind is InspectPathKind.ALL:
-        records.extend(inspect_root_records(config, scope))
-        records.extend(inspect_index_records(config, scope))
-        records.extend(inspect_path_note_records(config, scope))
-    else:
-        raise AssertionError(f"unsupported inspect path kind: {kind}")
+    root_records = inspect_root_records(config, scope)
+    index_records = inspect_index_records(config, scope)
+    note_records = inspect_path_note_records(config, scope)
+    records_by_kind = {
+        InspectPathKind.ROOTS: root_records,
+        InspectPathKind.INDEXES: index_records,
+        InspectPathKind.NOTES: note_records,
+        InspectPathKind.ALL: (*root_records, *index_records, *note_records),
+    }
     return {
         "scope": scope.value,
         "kind": kind.value,
-        "paths": json_record_list(records),
+        "paths": json_record_list(records_by_kind[kind]),
     }
 
 
@@ -1512,15 +1503,12 @@ def inspect_stats(
     assert output_format is InspectOutputFormat.JSON, "inspect stats currently emits JSON"
     config = load_project_config(cwd)
     notes = inspect_note_records(config, scope)
-    if group is InspectStatsGroup.TYPE:
-        counts = inspect_counts([note.memory_type.value for note in notes])
-    elif group is InspectStatsGroup.SCOPE:
-        counts = inspect_counts([note.scope.value for note in notes])
-    elif group is InspectStatsGroup.DAY:
-        counts = inspect_day_counts(notes)
-    else:
-        raise AssertionError(f"unsupported inspect stats group: {group}")
-    return {"scope": scope.value, "by": group.value, "counts": counts}
+    counts_by_group = {
+        InspectStatsGroup.TYPE: inspect_counts([note.memory_type.value for note in notes]),
+        InspectStatsGroup.SCOPE: inspect_counts([note.scope.value for note in notes]),
+        InspectStatsGroup.DAY: inspect_day_counts(notes),
+    }
+    return {"scope": scope.value, "by": group.value, "counts": counts_by_group[group]}
 
 
 def inspect_recent(
@@ -1567,13 +1555,12 @@ def inspect_export(
 def inspect_root_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
     global_root = config.vault / "global"
     project_root = config.vault / "projects" / config.project_id
-    if scope is SearchScope.PROJECT:
-        return (project_root,)
-    if scope is SearchScope.GLOBAL:
-        return (global_root,)
-    if scope is SearchScope.BOTH:
-        return (global_root, project_root)
-    raise AssertionError(f"unsupported inspect scope: {scope}")
+    roots = {
+        SearchScope.PROJECT: (project_root,),
+        SearchScope.GLOBAL: (global_root,),
+        SearchScope.BOTH: (global_root, project_root),
+    }
+    return roots[scope]
 
 
 def inspect_root_keys(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
@@ -1632,12 +1619,11 @@ def inspect_day_counts(records: Sequence[NoteRecord]) -> JsonObject:
 
 def inspect_scope_for_path(config: ProjectConfig, path: Path) -> str:
     relative = path.relative_to(config.vault)
-    root = relative.parts[0]
-    if root == "global":
-        return MemoryScope.GLOBAL.value
-    if root == "projects":
-        return MemoryScope.PROJECT.value
-    raise AssertionError(f"path is outside inspectable scopes: {path}")
+    scopes = {
+        "global": MemoryScope.GLOBAL.value,
+        "projects": MemoryScope.PROJECT.value,
+    }
+    return scopes[relative.parts[0]]
 
 
 def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
@@ -1647,12 +1633,11 @@ def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
 
 
 def first_heading_title(markdown: str) -> str:
-    for line in markdown.splitlines():
-        if line.startswith("# "):
-            title = line[2:].strip()
-            assert title, "heading title must be nonempty"
-            return title
-    raise AssertionError("markdown document must contain a top-level heading")
+    headings = [line[2:].strip() for line in markdown.splitlines() if line.startswith("# ")]
+    assert headings, "markdown document must contain a top-level heading"
+    title = headings[0]
+    assert title, "heading title must be nonempty"
+    return title
 
 
 def markdown_headings(markdown: str) -> tuple[JsonObject, ...]:
@@ -1675,8 +1660,6 @@ def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
     keys: list[str] = []
     for match in MARKDOWN_LINK_PATTERN.finditer(text):
         target = match.group(1).split("#", 1)[0]
-        if target == "":
-            continue
         assert target.endswith(".md"), f"markdown link target must point to a Markdown file: {target}"
         target_path = (path.parent / target).resolve()
         vault = config.vault.resolve()
@@ -1727,9 +1710,8 @@ def link_records_for_direction(
         return child_link_records(config, path, depth)
     if direction is InspectLinkDirection.PARENTS:
         return parent_link_records(config, path, depth)
-    if direction is InspectLinkDirection.BOTH:
-        return tuple(dedupe_link_records((*parent_link_records(config, path, depth), *child_link_records(config, path, depth))))
-    raise AssertionError(f"unsupported link traversal direction: {direction}")
+    assert direction is InspectLinkDirection.BOTH, f"unsupported link traversal direction: {direction}"
+    return tuple(dedupe_link_records((*parent_link_records(config, path, depth), *child_link_records(config, path, depth))))
 
 
 def child_link_records(config: ProjectConfig, path: Path, depth: int) -> tuple[LinkRecord, ...]:
@@ -1765,14 +1747,13 @@ def traverse_link_records(
         if current_depth == depth:
             continue
         for related_key in neighbor_provider(config, current_key):
-            if related_key in seen:
-                continue
-            seen.add(related_key)
-            related_path = memory_path_for_key(config, related_key)
-            related_document = read_memory(related_path)
-            record_depth = current_depth + 1
-            records.append(LinkRecord(related_key, related_path, inspect_title_for_document(related_document), record_depth))
-            frontier.append((related_key, record_depth))
+            if related_key not in seen:
+                seen.add(related_key)
+                related_path = memory_path_for_key(config, related_key)
+                related_document = read_memory(related_path)
+                record_depth = current_depth + 1
+                records.append(LinkRecord(related_key, related_path, inspect_title_for_document(related_document), record_depth))
+                frontier.append((related_key, record_depth))
     return tuple(records)
 
 
@@ -1813,20 +1794,13 @@ def inspect_export_node(
     if profile is InspectExportProfile.CONTEXT:
         node["content"] = document.body
         return node
-    if profile is InspectExportProfile.ARCHIVE:
-        node["metadata"] = {key: json_metadata_value(value) for key, value in sorted(document.metadata.items())}
-        node["content"] = document.body
-        return node
-    raise AssertionError(f"unsupported inspect export profile: {profile}")
+    assert profile is InspectExportProfile.ARCHIVE, f"unsupported inspect export profile: {profile}"
+    node["metadata"] = {key: json_metadata_value(value) for key, value in sorted(document.metadata.items())}
+    node["content"] = document.body
+    return node
 
 
 def json_metadata_value(value: MetadataValue) -> JsonValue:
     if isinstance(value, str | bool):
         return value
     return json_string_list(value)
-
-
-def json_string(payload: JsonObject, key: str) -> str:
-    value = payload[key]
-    assert isinstance(value, str), f"JSON field {key} must be a string"
-    return value
