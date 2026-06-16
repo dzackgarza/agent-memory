@@ -728,12 +728,6 @@ def merge_probe_payloads(
         versions.add(version)
     assert len(versions) == 1, "all probe payloads must come from the same Probe version"
     ranked_results = sorted(results, key=probe_score, reverse=True)[:max_results]
-    json_results: list[JsonValue] = []
-    for result in ranked_results:
-        json_results.append(result)
-    json_skipped_files: list[JsonValue] = []
-    for skipped_file in skipped_files:
-        json_skipped_files.append(skipped_file)
     return {
         "limits": {
             "max_bytes": None,
@@ -742,8 +736,8 @@ def merge_probe_payloads(
             "total_bytes": total_bytes,
             "total_tokens": total_tokens,
         },
-        "results": json_results,
-        "skipped_files": json_skipped_files,
+        "results": json_list(ranked_results),
+        "skipped_files": json_list(skipped_files),
         "summary": {
             "count": len(ranked_results),
             "total_bytes": total_bytes,
