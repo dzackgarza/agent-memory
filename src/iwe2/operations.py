@@ -1080,25 +1080,25 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
         index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
 
 
-def replace_index_link(index_path: Path, existing_title: str, new_title: str, target: str, description: str) -> None:
-    assert index_path.is_file(), "index must exist before replacing a link"
-    # IWE rewrites the OKF bullet marker to "-" when it renames linked notes.
-    link_prefixes = (f"* [{existing_title}](", f"- [{existing_title}](")
+def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int]:
+    assert index_path.is_file(), "index must exist before editing a link"
+    # IWE rewrites the OKF bullet marker to "-" when it renames linked notes, so an
+    # entry may start with either bullet. This is the single owner of that contract.
+    link_prefixes = (f"* [{title}](", f"- [{title}](")
     lines = index_path.read_text(encoding="utf-8").splitlines()
     matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
     assert len(matching_indexes) == 1, "index must contain exactly one link for the title"
-    entry_start = matching_indexes[0]
+    return lines, matching_indexes[0]
+
+
+def replace_index_link(index_path: Path, existing_title: str, new_title: str, target: str, description: str) -> None:
+    lines, entry_start = locate_index_link(index_path, existing_title)
     lines[entry_start] = okf_index_entry(new_title, target, description)
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def remove_index_link(index_path: Path, title: str) -> None:
-    assert index_path.is_file(), "index must exist before removing a link"
-    link_prefixes = (f"* [{title}](", f"- [{title}](")
-    lines = index_path.read_text(encoding="utf-8").splitlines()
-    matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
-    assert len(matching_indexes) == 1, "index must contain exactly one removable link for the title"
-    entry_start = matching_indexes[0]
+    lines, entry_start = locate_index_link(index_path, title)
     del lines[entry_start]
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
