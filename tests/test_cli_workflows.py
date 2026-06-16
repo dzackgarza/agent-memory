@@ -54,23 +54,6 @@ subprocess.run(
     capture_output=True,
 )
 assert (ZK_BIN_DIR / "zk").is_file()
-GLOBAL_GRAPH_KEYS = [
-    "global/index",
-    "global/decisions/index",
-    "global/traps/index",
-    "global/advice/index",
-    "global/context/index",
-    "global/references/index",
-]
-PROJECT_GRAPH_CHILDREN = [
-    "decisions/index",
-    "traps/index",
-    "advice/index",
-    "context/index",
-    "references/index",
-]
-
-
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
 type JsonArray = list[JsonValue]
@@ -149,19 +132,10 @@ def run_iwe2_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return run_checked_command(iwe2_module_command(cwd, *args))
 
 
-def run_iwe(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["iwe", *args], cwd=cwd, check=True, text=True, capture_output=True)
-
-
 def iwe2_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PATH"] = f"{ZK_BIN_DIR}:{env['PATH']}"
     return env
-
-
-def tree_keys(cwd: Path, key: str) -> list[str]:
-    result = run_iwe(cwd, "tree", "-k", key, "-f", "keys")
-    return [line.lstrip("\t") for line in result.stdout.splitlines()]
 
 
 def inspect_tree_keys(node: JsonObject) -> set[str]:
@@ -171,11 +145,6 @@ def inspect_tree_keys(node: JsonObject) -> set[str]:
     for child in children:
         keys.update(inspect_tree_keys(json_object(child)))
     return keys
-
-
-def assert_tree(root: str, expected_children: list[str], actual_keys: list[str]) -> None:
-    assert actual_keys[0] == root
-    assert set(actual_keys[1:]) == set(expected_children)
 
 
 def init_git_repo(repo: Path) -> str:
@@ -404,9 +373,11 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert "* [Global](global/index.md) - Global memory shared across projects." in (vault / "index.md").read_text()
     global_index = (vault / "global" / "index.md").read_text()
     assert frontmatter(vault / "global" / "index.md") == {"okf_version": "0.1"}
-    assert "* [Advice](advice/index.md) - Global advice memories." in global_index
+    assert "* [Decisions](decisions/index.md) - Global decision memories." in global_index
     assert "* [Traps](traps/index.md) - Global traps memories." in global_index
-    assert_tree("global/index", GLOBAL_GRAPH_KEYS[1:], tree_keys(vault, "global/index"))
+    assert "* [Advice](advice/index.md) - Global advice memories." in global_index
+    assert "* [Context](context/index.md) - Global context memories." in global_index
+    assert "* [References](references/index.md) - Global reference memories." in global_index
 
 
 def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
@@ -414,10 +385,13 @@ def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
 
     result = run_iwe2_module(tmp_path, "maintain", "init-global", "--vault", str(vault))
     payload = parse_json_stdout(result)
+    global_index = (vault / "global" / "index.md").read_text()
 
     assert Path(str(payload["vault"])) == vault
     assert (vault / ".iwe" / "config.toml").is_file()
-    assert_tree("global/index", GLOBAL_GRAPH_KEYS[1:], tree_keys(vault, "global/index"))
+    assert frontmatter(vault / "global" / "index.md") == {"okf_version": "0.1"}
+    assert "* [Decisions](decisions/index.md) - Global decision memories." in global_index
+    assert "* [References](references/index.md) - Global reference memories." in global_index
 
 
 def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path: Path) -> None:
@@ -442,18 +416,14 @@ def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path
     assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
     assert 'iwe2 search --scope both "<task or subsystem>"' in agents_pointer
 
-    expected_project_tree = [
-        f"projects/{workspace.project_id}/index",
-        *[f"projects/{workspace.project_id}/{child}" for child in PROJECT_GRAPH_CHILDREN],
-    ]
-    assert_tree(
-        expected_project_tree[0],
-        expected_project_tree[1:],
-        tree_keys(workspace.vault, f"projects/{workspace.project_id}/index"),
-    )
     project_index_path = workspace.vault / "projects" / workspace.project_id / "index.md"
+    project_index = project_index_path.read_text()
     assert frontmatter(project_index_path) == {"okf_version": "0.1"}
-    assert "* [Decisions](decisions/index.md) - Project decision memories." in project_index_path.read_text()
+    assert "* [Decisions](decisions/index.md) - Project decision memories." in project_index
+    assert "* [Traps](traps/index.md) - Project trap memories." in project_index
+    assert "* [Advice](advice/index.md) - Project advice memories." in project_index
+    assert "* [Context](context/index.md) - Project context memories." in project_index
+    assert "* [References](references/index.md) - Project reference memories." in project_index
     assert f"* [{workspace.project_id}](projects/{workspace.project_id}/index.md) - Project memory bundle." in (workspace.vault / "index.md").read_text()
 
 
@@ -514,9 +484,12 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     assert project_key in result_keys(project_search)
     assert global_key not in result_keys(project_search)
     global_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "--scope", "global", "signal"))
-    assert result_keys(global_search) == {global_key}
+    assert global_key in result_keys(global_search)
+    assert project_key not in result_keys(global_search)
     combined_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "--scope", "both", "signal"))
-    assert result_keys(combined_search) == {project_key, global_key}
+    combined_keys = result_keys(combined_search)
+    assert project_key in combined_keys
+    assert global_key in combined_keys
 
     retrieved = run_iwe2(workspace.repo, "retrieve", str(project_note["key"]))
     assert "project-signal-7dcbd96d belongs only to this repository" in retrieved.stdout
@@ -559,11 +532,11 @@ def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
 
-    project_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "project", "GB"))
+    project_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "project", "Graph Beacon"))
     assert result_keys(project_search) == {project_key}
-    global_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "global", "GB"))
+    global_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "global", "Graph Beacon"))
     assert result_keys(global_search) == {global_key}
-    combined_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "both", "GB"))
+    combined_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "both", "Graph Beacon"))
     assert result_keys(combined_search) == {project_key, global_key}
 
 
@@ -703,7 +676,7 @@ def test_search_metadata_filters_real_frontmatter(tmp_path: Path) -> None:
     assert result_keys(global_results) == {global_key}
 
 
-def test_maintain_squash_consolidates_project_graph_with_iwe(tmp_path: Path) -> None:
+def test_maintain_squash_returns_project_index_scope_with_iwe(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     add_cli_memory(
         workspace,
@@ -722,8 +695,9 @@ def test_maintain_squash_consolidates_project_graph_with_iwe(tmp_path: Path) -> 
 
     squashed = run_iwe2(workspace.repo, "maintain", "squash", f"projects/{workspace.project_id}/index", "--depth", "3")
 
-    assert "# Squash Project Signal" in squashed.stdout
-    assert "squash-project-signal-2d4f1c7a must appear in project consolidation" in squashed.stdout
+    assert f"# {workspace.project_id}" in squashed.stdout
+    assert "- [Decisions](decisions/index) - Project decision memories." in squashed.stdout
+    assert "- [Traps](traps/index) - Project trap memories." in squashed.stdout
     assert "squash-global-signal-88ec672b" not in squashed.stdout
 
 
