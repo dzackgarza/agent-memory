@@ -21,6 +21,7 @@ from iwe2.models import (
     SearchScope,
 )
 from iwe2.operations import (
+    INSPECT_COMMAND_NAMES,
     JsonValue,
     add_memory,
     basic_doctor,
@@ -359,15 +360,20 @@ def register_commands() -> None:
     search_app.command(search_content_command, name="content")
     search_app.command(search_metadata_command, name="metadata")
     search_app.command(search_keys_command, name="keys")
-    inspect_app.command(inspect_overview_command, name="overview")
-    inspect_app.command(inspect_schema_command, name="schema")
-    inspect_app.command(inspect_paths_command, name="paths")
-    inspect_app.command(inspect_tree_command, name="tree")
-    inspect_app.command(inspect_links_command, name="links")
-    inspect_app.command(inspect_outline_command, name="outline")
-    inspect_app.command(inspect_stats_command, name="stats")
-    inspect_app.command(inspect_recent_command, name="recent")
-    inspect_app.command(inspect_export_command, name="export")
+    inspect_commands = {
+        "overview": inspect_overview_command,
+        "schema": inspect_schema_command,
+        "paths": inspect_paths_command,
+        "tree": inspect_tree_command,
+        "links": inspect_links_command,
+        "outline": inspect_outline_command,
+        "stats": inspect_stats_command,
+        "recent": inspect_recent_command,
+        "export": inspect_export_command,
+    }
+    assert tuple(inspect_commands) == INSPECT_COMMAND_NAMES, "inspect command registry must match the canonical schema order"
+    for name in INSPECT_COMMAND_NAMES:
+        inspect_app.command(inspect_commands[name], name=name)
     app.command(retrieve_command, name="retrieve")
     maintain_app.command(maintain_squash_command, name="squash")
     maintain_app.command(maintain_move_command, name="move")

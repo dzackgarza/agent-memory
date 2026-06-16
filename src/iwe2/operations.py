@@ -68,6 +68,21 @@ MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
 # single source for both the global vault layout and the per-project layout.
 MEMORY_TYPE_DIRECTORY_NAMES: tuple[str, ...] = tuple(MEMORY_TYPE_DIRECTORIES[memory_type] for memory_type in MemoryType)
 
+# Canonical ordering of `iwe2 inspect` subcommands. The CLI layer drives command
+# registration from this tuple and inspect_schema advertises it, so the command set has
+# exactly one source of truth in the inner layer the CLI depends on.
+INSPECT_COMMAND_NAMES: tuple[str, ...] = (
+    "overview",
+    "schema",
+    "paths",
+    "tree",
+    "links",
+    "outline",
+    "stats",
+    "recent",
+    "export",
+)
+
 # Index descriptions read "{Scope} {word} memories." The project word is always the
 # MemoryType value (decision, trap, advice, context, reference). The global word matches
 # except for TRAP, whose global index has historically read "Global traps memories."
@@ -214,11 +229,6 @@ def starter_config() -> StarterConfig:
 class MemoryDocument:
     metadata: dict[str, MetadataValue]
     body: str
-
-    def metadata_str(self, key: str) -> str:
-        value = self.metadata[key]
-        assert isinstance(value, str), f"metadata field must be a string: {key}"
-        return value
 
 
 @dataclass(frozen=True)
@@ -808,9 +818,9 @@ def squash_memory(key: str, depth: int, cwd: Path) -> str:
 def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     source_document = read_memory(memory_path_for_key(config, key))
-    source_title = source_document.metadata_str("title")
-    memory_type = MemoryType(source_document.metadata_str("type"))
-    scope = MemoryScope(source_document.metadata_str("scope"))
+    source_title = metadata_string(source_document.metadata, "title")
+    memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
+    scope = MemoryScope(metadata_string(source_document.metadata, "scope"))
     result = run_checked(["iwe", "extract", key, "--section", section, "-f", "keys"], cwd=config.vault)
     extracted_keys: list[str] = []
     for affected_key in result.stdout.splitlines():
@@ -851,9 +861,9 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     assert destination_path.parent.is_dir(), "move destination directory must exist"
 
     source_document = read_memory(source_path)
-    memory_type = MemoryType(source_document.metadata_str("type"))
-    title = source_document.metadata_str("title")
-    description = source_document.metadata_str("description")
+    memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
+    title = metadata_string(source_document.metadata, "title")
+    description = metadata_string(source_document.metadata, "description")
     run_checked(["iwe", "rename", key, destination_key], cwd=config.vault)
 
     moved_document = read_memory(destination_path)
@@ -1418,19 +1428,7 @@ def inspect_overview(
 def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect schema currently emits JSON"
     return {
-        "commands": {
-            "inspect": [
-                "overview",
-                "schema",
-                "paths",
-                "tree",
-                "links",
-                "outline",
-                "stats",
-                "recent",
-                "export",
-            ]
-        },
+        "commands": {"inspect": list(INSPECT_COMMAND_NAMES)},
         "scopes": [scope.value for scope in SearchScope],
         "memory_types": [memory_type.value for memory_type in MemoryType],
         "path_kinds": [kind.value for kind in InspectPathKind],
@@ -1441,18 +1439,7 @@ def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
             "inspect": [InspectOutputFormat.JSON.value],
             "export": [InspectExportFormat.GRAPH_JSON.value],
         },
-        "metadata_fields": [
-            "type",
-            "title",
-            "description",
-            "tags",
-            "timestamp",
-            "scope",
-            "source",
-            "confidence",
-            "promotable",
-            "project_id",
-        ],
+        "metadata_fields": list(ProjectNoteMetadata.model_fields),
     }
 
 
