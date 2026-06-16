@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated
 
@@ -354,7 +354,7 @@ def register_commands() -> None:
     search_app.command(search_content_command, name="content")
     search_app.command(search_metadata_command, name="metadata")
     search_app.command(search_keys_command, name="keys")
-    inspect_commands = {
+    inspect_commands: dict[str, Callable[..., None]] = {
         "overview": inspect_overview_command,
         "schema": inspect_schema_command,
         "paths": inspect_paths_command,

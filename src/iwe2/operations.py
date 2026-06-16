@@ -97,9 +97,7 @@ GLOBAL_INDEX_DESCRIPTION_WORDS: dict[MemoryType, str] = {
 
 def index_descriptions(scope: MemoryScope) -> dict[str, str]:
     scope_word = scope.value.capitalize()
-    return {
-        MEMORY_TYPE_DIRECTORIES[memory_type]: f"{scope_word} {_index_description_word(scope, memory_type)} memories." for memory_type in MemoryType
-    }
+    return {MEMORY_TYPE_DIRECTORIES[memory_type]: f"{scope_word} {_index_description_word(scope, memory_type)} memories." for memory_type in MemoryType}
 
 
 def _index_description_word(scope: MemoryScope, memory_type: MemoryType) -> str:
