@@ -47,30 +47,39 @@ def just_value(name: str) -> str:
 ZK_VERSION = just_value("ZK_VERSION")
 ZK_ASSET = just_value("ZK_ASSET")
 ZK_BIN_DIR = Path(tempfile.mkdtemp(prefix="iwe2-zk-"))
-subprocess.run(
-    [
-        "gh",
-        "release",
-        "download",
-        ZK_VERSION,
-        "--repo",
-        "zk-org/zk",
-        "--pattern",
-        ZK_ASSET,
-        "--dir",
-        str(ZK_BIN_DIR),
-    ],
-    check=True,
-    text=True,
-    capture_output=True,
-)
-subprocess.run(
-    ["tar", "-xzf", str(ZK_BIN_DIR / ZK_ASSET), "-C", str(ZK_BIN_DIR)],
-    check=True,
-    text=True,
-    capture_output=True,
-)
-assert (ZK_BIN_DIR / "zk").is_file()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def zk_binary() -> None:
+    # The integration tests need the real zk binary on PATH (see iwe2_env). Fetching it
+    # is a session-scoped setup concern, not an import-time one: keeping the gh release
+    # download out of module collection means a zk-org/zk release-asset change or a
+    # GitHub outage breaks test setup loudly instead of breaking collection of every
+    # test in the suite. check=True keeps the failure fail-loud.
+    subprocess.run(
+        [
+            "gh",
+            "release",
+            "download",
+            ZK_VERSION,
+            "--repo",
+            "zk-org/zk",
+            "--pattern",
+            ZK_ASSET,
+            "--dir",
+            str(ZK_BIN_DIR),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["tar", "-xzf", str(ZK_BIN_DIR / ZK_ASSET), "-C", str(ZK_BIN_DIR)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert (ZK_BIN_DIR / "zk").is_file()
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
 type JsonArray = list[JsonValue]
