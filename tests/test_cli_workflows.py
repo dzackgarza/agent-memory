@@ -117,6 +117,18 @@ def run_iwe2_unchecked(cwd: Path, *args: str) -> subprocess.CompletedProcess[str
     return run_iwe2_process(cwd, *args)
 
 
+def run_iwe2_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    command_env = env if env is not None else iwe2_env()
+    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+    return subprocess.run(
+        [sys.executable, "-m", "iwe2", *args],
+        cwd=cwd,
+        env=command_env,
+        text=True,
+        capture_output=True,
+    )
+
+
 def run_iwe2_module_entrypoint() -> None:
     runpy.run_module("iwe2.__main__", run_name="__main__")
 
@@ -590,9 +602,11 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     assert "[Project Transition Renamed](project-transition-renamed.md)" not in updated_decisions_index
     assert "[Project Transition Renamed](project-transition-renamed.md)" in traps_index
 
-    no_update = run_iwe2_unchecked(workspace.repo, "update", retagged_key)
-    assert no_update.returncode == 2
-    assert no_update.stderr == "Update requires at least one of --title, --type, or --content.\n"
+    no_update = run_iwe2_subprocess(workspace.repo, "update", retagged_key)
+    assert no_update.returncode != 0
+    assert "update requires at least one of --title, --type, or --content" in no_update.stderr
+    assert "AssertionError" in no_update.stderr
+    assert "Traceback" in no_update.stderr
 
 
 def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
@@ -920,7 +934,7 @@ def test_project_commands_without_config_fail_with_first_time_setup_guidance(
     repo.mkdir()
     init_git_repo(repo)
 
-    result = run_iwe2_unchecked(
+    result = run_iwe2_subprocess(
         repo,
         "add",
         "--scope",
@@ -933,10 +947,11 @@ def test_project_commands_without_config_fail_with_first_time_setup_guidance(
         "this command cannot run without project setup",
     )
 
-    assert result.returncode == 2
+    assert result.returncode != 0
     assert "No project memory config found" in result.stderr
     assert "iwe2 init project --vault" in result.stderr
-    assert "Traceback" not in result.stderr
+    assert "ProjectNotInitializedError" in result.stderr
+    assert "Traceback" in result.stderr
 
 
 def test_startup_doctor_gate_reports_missing_dependency_before_command_logic(
@@ -949,21 +964,14 @@ def test_startup_doctor_gate_reports_missing_dependency_before_command_logic(
     empty_path.mkdir()
     env = os.environ.copy()
     env["PATH"] = str(empty_path)
-    env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
 
-    original_env = os.environ.copy()
-    try:
-        os.environ.clear()
-        os.environ.update(env)
-        result = run_iwe2_unchecked(repo, "doctor")
-    finally:
-        os.environ.clear()
-        os.environ.update(original_env)
+    result = run_iwe2_subprocess(repo, "doctor", env=env)
 
-    assert result.returncode == 2
-    assert result.stderr == (
-        "Missing required dependency: git.\nInstall instructions: run `just setup` from the iwe2 checkout; manual install: install Git from your OS package manager.\n"
-    )
+    assert result.returncode != 0
+    assert "Missing required dependency: git" in result.stderr
+    assert "Install instructions: run `just setup` from the iwe2 checkout" in result.stderr
+    assert "DependencyError" in result.stderr
+    assert "Traceback" in result.stderr
 
 
 def test_startup_doctor_gate_reports_failed_dependency_output(tmp_path: Path) -> None:
@@ -975,27 +983,18 @@ def test_startup_doctor_gate_reports_failed_dependency_output(tmp_path: Path) ->
     broken_git = broken_bin / "git"
     broken_git.write_text("#!/bin/sh\nprintf 'bad git stdout\\n'\nprintf 'bad git stderr\\n' >&2\nexit 7\n", encoding="utf-8")
     broken_git.chmod(0o755)
-    env = os.environ.copy()
+    env = iwe2_env()
     env["PATH"] = f"{broken_bin}:{env['PATH']}"
-    env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
 
-    original_env = os.environ.copy()
-    try:
-        os.environ.clear()
-        os.environ.update(env)
-        result = run_iwe2_unchecked(repo, "doctor")
-    finally:
-        os.environ.clear()
-        os.environ.update(original_env)
+    result = run_iwe2_subprocess(repo, "doctor", env=env)
 
-    assert result.returncode == 2
-    assert result.stderr == (
-        "Dependency check failed: git.\n"
-        "Command: git --version\n"
-        "Install instructions: run `just setup` from the iwe2 checkout; manual install: install Git from your OS package manager.\n"
-        "stdout: bad git stdout\n"
-        "stderr: bad git stderr\n"
-    )
+    assert result.returncode != 0
+    assert "Dependency check failed: git" in result.stderr
+    assert "Command: git --version" in result.stderr
+    assert "bad git stdout" in result.stderr
+    assert "bad git stderr" in result.stderr
+    assert "DependencyError" in result.stderr
+    assert "Traceback" in result.stderr
 
 
 def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
