@@ -806,7 +806,7 @@ def test_maintain_squash_returns_project_index_scope_with_iwe(tmp_path: Path) ->
     assert "squash-global-signal-88ec672b" not in squashed.stdout
 
 
-def test_maintain_split_merge_and_validate_real_memory_graph(tmp_path: Path) -> None:
+def test_maintain_split_merge_and_doctor_real_memory_graph(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     source_note = add_cli_memory(
         workspace,
@@ -840,7 +840,7 @@ def test_maintain_split_merge_and_validate_real_memory_graph(tmp_path: Path) -> 
     assert "## Extracted Plan" in merged_source_text
     assert "Split details stay recoverable." in merged_source_text
 
-    validation = parse_json_stdout(run_iwe2(workspace.repo, "maintain", "validate"))
+    validation = parse_json_stdout(run_iwe2(workspace.repo, "doctor"))
     assert validation["vault"] == str(workspace.vault)
     assert validation["project_id"] == workspace.project_id
     assert validation["project_root"] == str(workspace.repo)

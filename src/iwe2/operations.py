@@ -847,10 +847,6 @@ def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     return {"key": key, "reference": reference, "output": result.stdout}
 
 
-def validate_memory_vault(cwd: Path) -> JsonObject:
-    return doctor(cwd)
-
-
 def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     assert destination.startswith("global/"), "move destination must be global"
@@ -1318,12 +1314,18 @@ def note_record_matches_metadata(
     )
 
 
-def note_record_json(record: NoteRecord) -> JsonObject:
+def note_record_core(record: NoteRecord) -> JsonObject:
     return {
         "key": record.key,
         "path": str(record.path),
         "title": record.title,
         "type": record.memory_type.value,
+    }
+
+
+def note_record_json(record: NoteRecord) -> JsonObject:
+    return {
+        **note_record_core(record),
         "scope": record.scope.value,
         "tags": json_list(record.tags),
         "timestamp": record.timestamp,
@@ -1332,10 +1334,7 @@ def note_record_json(record: NoteRecord) -> JsonObject:
 
 def metadata_search_record_json(record: NoteRecord) -> JsonObject:
     return {
-        "key": record.key,
-        "path": str(record.path),
-        "title": record.title,
-        "type": record.memory_type.value,
+        **note_record_core(record),
         "tags": json_list(record.tags),
         "timestamp": record.timestamp,
     }
@@ -1343,10 +1342,7 @@ def metadata_search_record_json(record: NoteRecord) -> JsonObject:
 
 def note_path_record_json(record: NoteRecord) -> JsonObject:
     return {
-        "key": record.key,
-        "path": str(record.path),
-        "title": record.title,
-        "type": record.memory_type.value,
+        **note_record_core(record),
         "scope": record.scope.value,
     }
 

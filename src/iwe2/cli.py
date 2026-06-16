@@ -49,7 +49,6 @@ from iwe2.operations import (
     split_memory,
     squash_memory,
     update_memory,
-    validate_memory_vault,
 )
 from iwe2.operations import (
     doctor as run_doctor,
@@ -340,11 +339,6 @@ def maintain_merge_command(
     emit(merge_memory(key=key, reference=reference, cwd=Path.cwd()))
 
 
-def maintain_validate_command() -> None:
-    """Validate the current repository memory setup."""
-    emit(validate_memory_vault(cwd=Path.cwd()))
-
-
 def doctor_command() -> None:
     """Validate dependencies and the current repository memory setup."""
     emit(run_doctor(cwd=Path.cwd()))
@@ -379,7 +373,6 @@ def register_commands() -> None:
     maintain_app.command(maintain_move_command, name="move")
     maintain_app.command(maintain_split_command, name="split")
     maintain_app.command(maintain_merge_command, name="merge")
-    maintain_app.command(maintain_validate_command, name="validate")
     app.command(doctor_command, name="doctor")
 
 

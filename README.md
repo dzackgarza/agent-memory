@@ -127,7 +127,6 @@ iwe2 maintain move <key> --to global/traps
 iwe2 maintain split <key> --section "Section Title"
 iwe2 maintain merge <key> --reference <other-key>
 iwe2 maintain squash <key> --depth 3
-iwe2 maintain validate
 ```
 
 ## Dependencies
