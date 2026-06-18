@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 import tomllib
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from importlib import resources
 from pathlib import Path
+from typing import cast
 
+import mistletoe
 import tomli_w
 import yaml
+from mistletoe import block_token, span_token
+from mistletoe.markdown_renderer import BlankLine, MarkdownRenderer
 
 from iwe2.models import (
     GlobalNoteMetadata,
@@ -48,7 +51,6 @@ class DependencyCheck:
 
 
 OKF_VERSION = "0.1"
-MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 AGENTS_SECTION_START = "<!-- iwe2:agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- iwe2:agent-memory:end -->"
 ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
@@ -523,27 +525,30 @@ def key_search_records(config: ProjectConfig, scope: SearchScope, query: str) ->
 
 
 def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
-    output = run_ripgrep_search(
-        [
-            "rg",
-            "--line-number",
-            "--with-filename",
-            "--fixed-strings",
-            query,
-            *[str(root) for root in search_roots(config, scope)],
-        ],
+    result = subprocess.run(
+        ["rg", "--json", "--fixed-strings", query, *[str(root) for root in search_roots(config, scope)]],
         cwd=config.vault,
+        check=False,
+        text=True,
+        capture_output=True,
     )
+    # ripgrep exits 1 with no matches but still prints a JSON summary object; only exit
+    # codes outside {0, 1} are real failures. Parsing the structured stream instead of
+    # the colon-delimited text format keeps colons in paths and matched lines intact.
+    assert result.returncode in (0, 1), f"ripgrep search failed with exit code {result.returncode}: {result.stderr}"
     records: list[JsonObject] = []
-    for line in output.splitlines():
-        path_text, line_number_text, text = line.split(":", 2)
-        path = Path(path_text).resolve()
+    for line in result.stdout.splitlines():
+        event = json.loads(line)
+        if event["type"] != "match":
+            continue
+        data = event["data"]
+        path = Path(data["path"]["text"]).resolve()
         records.append(
             {
                 "key": memory_key(config.vault, path),
                 "path": str(path),
-                "line": int(line_number_text),
-                "text": text,
+                "line": data["line_number"],
+                "text": data["lines"]["text"].rstrip("\n"),
                 "source": "exact",
             }
         )
@@ -1064,27 +1069,62 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
         index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
 
 
-def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int]:
+def index_item_title(list_item: object) -> str | None:
+    paragraph = next(iter(token_children(list_item)), None)
+    if paragraph is None:
+        return None
+    leading = next(iter(token_children(paragraph)), None)
+    if not isinstance(leading, span_token.Link):
+        return None
+    return inline_text(leading)
+
+
+def rewrite_index_link(index_path: Path, title: str, replacement: str | None) -> None:
     assert index_path.is_file(), "index must exist before editing a link"
-    # IWE rewrites the OKF bullet marker to "-" when it renames linked notes, so an
-    # entry may start with either bullet. This is the single owner of that contract.
-    link_prefixes = (f"* [{title}](", f"- [{title}](")
-    lines = index_path.read_text(encoding="utf-8").splitlines()
-    matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
-    assert len(matching_indexes) == 1, "index must contain exactly one link for the title"
-    return lines, matching_indexes[0]
+    document = read_memory(index_path)
+    # Parsing the list as Markdown handles either OKF bullet ("*" or the "-" that IWE
+    # rewrites to on rename) without prefix matching, and the round-trip renderer
+    # preserves every untouched entry verbatim.
+    with MarkdownRenderer() as renderer:
+        body = mistletoe.Document(document.body)
+        body_children = token_children(body)
+        located = [
+            (block, item_index)
+            for block in body_children
+            if isinstance(block, block_token.List)
+            for item_index, item in enumerate(token_children(block))
+            if index_item_title(item) == title
+        ]
+        assert len(located) == 1, "index must contain exactly one link for the title"
+        block, item_index = located[0]
+        items = token_children(block)
+        if replacement is None:
+            del items[item_index]
+            if items:
+                # the loose-list blank separator lives on each non-final item; drop the
+                # one now trailing the final item so the list does not end with a gap.
+                final = token_children(items[-1])
+                final[:] = [child for child in final if not isinstance(child, BlankLine)]
+            else:
+                body_children.remove(block)
+        else:
+            # Replace the whole item so the canonical OKF "*" bullet is restored even
+            # after IWE rewrote it to "-" on rename, carrying over the loose-list blank
+            # separator so untouched spacing is preserved.
+            separators = [child for child in token_children(items[item_index]) if isinstance(child, BlankLine)]
+            replacement_item = token_children(token_children(mistletoe.Document(f"{replacement}\n"))[0])[0]
+            token_children(replacement_item).extend(separators)
+            items[item_index] = replacement_item
+        new_body = renderer.render(body)
+    write_memory(index_path, document.metadata, new_body)
 
 
 def replace_index_link(index_path: Path, existing_title: str, new_title: str, target: str, description: str) -> None:
-    lines, entry_start = locate_index_link(index_path, existing_title)
-    lines[entry_start] = okf_index_entry(new_title, target, description)
-    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    rewrite_index_link(index_path, existing_title, okf_index_entry(new_title, target, description))
 
 
 def remove_index_link(index_path: Path, title: str) -> None:
-    lines, entry_start = locate_index_link(index_path, title)
-    del lines[entry_start]
-    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    rewrite_index_link(index_path, title, None)
 
 
 def metadata_string(metadata: dict[str, MetadataValue], key: str) -> str:
@@ -1219,16 +1259,6 @@ def note_metadata(
         timestamp=timestamp,
         scope=MemoryScope.GLOBAL,
     ).to_yaml_payload()
-
-
-def run_ripgrep_search(args: Sequence[str], cwd: Path) -> str:
-    result = subprocess.run(args, cwd=cwd, check=False, text=True, capture_output=True)
-    if result.returncode == 0:
-        return result.stdout
-    assert result.returncode == 1, f"ripgrep search failed with exit code {result.returncode}: {result.stderr}"
-    assert result.stdout == ""
-    assert result.stderr == ""
-    return ""
 
 
 def search_roots(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
@@ -1635,37 +1665,58 @@ def resolve_memory_key(config: ProjectConfig, key: str) -> str:
     return candidates[0]
 
 
+def walk_tokens(token: object) -> Iterator[object]:
+    yield token
+    for child in getattr(token, "children", None) or ():
+        yield from walk_tokens(child)
+
+
+def token_children(token: object) -> list[object]:
+    # mistletoe types children as Iterable[Token] | None, but every parsed container
+    # holds a concrete list. Adapt the loose stub in place (no copy) so list mutations
+    # persist back into the parsed document.
+    children = getattr(token, "children", None)
+    assert children is not None, "markdown token has no children"
+    return cast("list[object]", children)
+
+
+def inline_text(token: object) -> str:
+    return "".join(descendant.content for descendant in walk_tokens(token) if isinstance(descendant, span_token.RawText))
+
+
 def first_heading_title(markdown: str) -> str:
-    headings = [line[2:].strip() for line in markdown.splitlines() if line.startswith("# ")]
-    assert headings, "markdown document must contain a top-level heading"
-    title = headings[0]
-    assert title, "heading title must be nonempty"
-    return title
+    for heading in markdown_headings(markdown):
+        if heading["level"] == 1:
+            title = heading["title"]
+            assert isinstance(title, str), "heading title must be a string"
+            return title
+    raise AssertionError("markdown document must contain a top-level heading")
 
 
 def markdown_headings(markdown: str) -> tuple[JsonObject, ...]:
     headings: list[JsonObject] = []
-    for line_number, line in enumerate(markdown.splitlines(), start=1):
-        stripped = line.lstrip()
-        marker_length = len(stripped) - len(stripped.lstrip("#"))
-        if marker_length == 0:
+    for token in walk_tokens(mistletoe.Document(markdown)):
+        if not isinstance(token, block_token.Heading):
             continue
-        assert marker_length <= 6, "markdown heading level must be between 1 and 6"
-        assert stripped[marker_length : marker_length + 1] == " ", "markdown heading marker must be followed by a space"
-        title = stripped[marker_length + 1 :].strip()
+        assert 1 <= token.level <= 6, "markdown heading level must be between 1 and 6"
+        title = inline_text(token).strip()
         assert title, "markdown heading title must be nonempty"
-        headings.append({"level": marker_length, "title": title, "line": line_number})
+        headings.append({"level": token.level, "title": title, "line": cast("int", getattr(token, "line_number"))})
     return tuple(headings)
 
 
 def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
-    text = path.read_text(encoding="utf-8")
+    document = mistletoe.Document(path.read_text(encoding="utf-8"))
+    vault = config.vault.resolve()
     keys: list[str] = []
-    for match in MARKDOWN_LINK_PATTERN.finditer(text):
-        target = match.group(1).split("#", 1)[0]
+    for token in walk_tokens(document):
+        if not isinstance(token, span_token.Link):
+            continue
+        target = token.target.split("#", 1)[0]
+        if not target:
+            continue
         assert target.endswith(".md"), f"markdown link target must point to a Markdown file: {target}"
         target_path = (path.parent / target).resolve()
-        vault = config.vault.resolve()
         assert target_path.is_relative_to(vault), f"markdown link leaves memory vault: {target}"
         keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
     return tuple(keys)
