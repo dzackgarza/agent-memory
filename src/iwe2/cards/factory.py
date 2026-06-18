@@ -31,10 +31,11 @@ def field_definition(field: FieldSpec, status_set: StatusSetSpec) -> tuple[Any, 
         if default is None and field.type == "status":
             default = status_set.default
         return (annotation | None, Field(default=default))
-    if field.type == "int":
+    if field.type in ("int", "number"):
+        scalar_number: Any = int if field.type == "int" else float
         if field.required:
-            return (int, Field(ge=field.min, le=field.max))
-        return (int | None, Field(default=field.default, ge=field.min, le=field.max))
+            return (scalar_number, Field(ge=field.min, le=field.max))
+        return (scalar_number | None, Field(default=field.default, ge=field.min, le=field.max))
     if field.type in ("string_list", "wikilink_list"):
         if field.required:
             return (list[str], Field())

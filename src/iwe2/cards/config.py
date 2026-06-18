@@ -8,6 +8,7 @@ FieldType = Literal[
     "string",
     "text",
     "int",
+    "number",
     "bool",
     "select",
     "status",

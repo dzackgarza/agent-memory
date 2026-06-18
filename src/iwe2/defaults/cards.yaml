@@ -1,0 +1,341 @@
+# Starter card-system config for iwe2 plans (issue #4).
+# Ports the Nimbalyst feature/plan/phase/task schemas + status catalog as DATA.
+# Add a card type or field by editing this file; the app compiles validators from it.
+statuses:
+  unstarted:
+    value: unstarted
+    label: Unstarted
+  in-progress:
+    value: in-progress
+    label: In Progress
+  needs-agent-review:
+    value: needs-agent-review
+    label: Needs Agent Review
+  needs-human-input:
+    value: needs-human-input
+    label: Needs Human Input
+  complete:
+    value: complete
+    label: Complete
+  revision-required:
+    value: revision-required
+    label: Revision Required
+  blocked:
+    value: blocked
+    label: Blocked
+  approved-and-unstarted:
+    value: approved-and-unstarted
+    label: Approved and Unstarted
+status_sets:
+  standard:
+    default: unstarted
+    options: &id001
+    - unstarted
+    - in-progress
+    - needs-agent-review
+    - needs-human-input
+    - complete
+    - revision-required
+    - blocked
+  standard-no-complete-icon:
+    default: unstarted
+    options: *id001
+  plan:
+    default: needs-agent-review
+    required: true
+    options:
+    - needs-agent-review
+    - needs-human-input
+    - approved-and-unstarted
+    - in-progress
+    - complete
+    - blocked
+card_types:
+- name: feature
+  id_prefix: FEATURE
+  status_set: standard
+  parents: []
+  fields:
+  - name: id
+    type: string
+    required: true
+  - name: parents
+    type: wikilink_list
+  - name: dependsOn
+    type: wikilink_list
+  - name: plans
+    type: wikilink_list
+  - name: title
+    type: string
+    required: true
+  - name: status
+    type: status
+  - name: blocked_reason
+    type: text
+  - name: priority
+    type: select
+    options:
+    - low
+    - medium
+    - high
+    - critical
+  - name: owner
+    type: user
+  - name: description
+    type: text
+  - name: releaseVersion
+    type: string
+  - name: releaseNotes
+    type: text
+  - name: tags
+    type: string_list
+- name: plan
+  id_prefix: PLAN
+  status_set: plan
+  parents:
+  - feature
+  fields:
+  - name: id
+    type: string
+    required: true
+  - name: parents
+    type: wikilink_list
+    required: true
+  - name: dependsOn
+    type: wikilink_list
+  - name: blocks
+    type: wikilink_list
+  - name: title
+    type: string
+    required: true
+  - name: status
+    type: status
+    required: true
+  - name: priority
+    type: select
+    options:
+    - low
+    - medium
+    - high
+    - critical
+  - name: owner
+    type: user
+  - name: tags
+    type: string_list
+  - name: description
+    type: text
+    required: true
+  - name: onboardingArtifact
+    type: string
+  - name: workingPaper
+    type: string
+  - name: agentOrganization
+    type: text
+  - name: intakeStatus
+    type: select
+    options:
+    - needs-intake
+    - needs-human-approval
+    - intake-approved
+    - not-applicable
+  - name: workstreamPolicy
+    type: text
+  - name: uncertaintyPolicy
+    type: text
+  - name: successCriteria
+    type: string_list
+    required: true
+  - name: phases
+    type: wikilink_list
+  - name: tasks
+    type: wikilink_list
+- name: phase
+  id_prefix: PHASE
+  status_set: standard-no-complete-icon
+  parents:
+  - plan
+  fields:
+  - name: id
+    type: string
+    required: true
+  - name: parents
+    type: wikilink_list
+  - name: dependsOn
+    type: wikilink_list
+  - name: blocks
+    type: wikilink_list
+  - name: title
+    type: string
+    required: true
+  - name: status
+    type: status
+  - name: blocked_reason
+    type: text
+  - name: priority
+    type: select
+    options:
+    - low
+    - medium
+    - high
+    - critical
+  - name: owner
+    type: user
+  - name: description
+    type: text
+    required: true
+  - name: phaseKind
+    type: select
+    options:
+    - milestone
+    - intake
+    - workstream
+    - review-cycle
+    - synthesis
+  - name: branchType
+    type: select
+    options:
+    - not-applicable
+    - prove
+    - disprove
+    - literature
+    - theory
+    - computation
+    - implementation
+    - formalization
+    - synthesis
+    - audit
+    - exploration
+  - name: agentRoster
+    type: string_list
+  - name: reportArtifact
+    type: string
+  - name: paperSections
+    type: string_list
+  - name: uncertaintySummary
+    type: text
+  - name: failedExplorations
+    type: string_list
+  - name: successCriteria
+    type: string_list
+    required: true
+  - name: tasks
+    type: wikilink_list
+  - name: tags
+    type: string_list
+- name: task
+  id_prefix: TASK
+  status_set: standard-no-complete-icon
+  parents:
+  - phase
+  fields:
+  - name: id
+    type: string
+    required: true
+  - name: parents
+    type: wikilink_list
+  - name: dependsOn
+    type: wikilink_list
+  - name: blocks
+    type: wikilink_list
+  - name: title
+    type: string
+    required: true
+  - name: status
+    type: status
+  - name: blocked_reason
+    type: text
+  - name: priority
+    type: select
+    options:
+    - low
+    - medium
+    - high
+    - critical
+  - name: owner
+    type: user
+  - name: description
+    type: text
+    required: true
+  - name: activityType
+    type: select
+    options:
+    - intent-refinement
+    - literature-search
+    - source-mining
+    - brainstorming
+    - conjecture-generation
+    - counterexample-search
+    - proof-attempt
+    - proof-repair
+    - formalization
+    - computation
+    - numerical-experiment
+    - simulation
+    - implementation
+    - validation
+    - citation-check
+    - synthesis
+    - exposition
+    - review
+    - failure-analysis
+    - user-escalation
+    - workflow-maintenance
+  - name: uncertaintyState
+    type: select
+    options:
+    - none-recorded
+    - ordinary-open
+    - contentious-claim
+    - missing-source
+    - computation-needs-replay
+    - review-stalled
+    - human-judgment-needed
+  - name: workstream
+    type: string
+  - name: paperAnchors
+    type: string_list
+  - name: claimRefs
+    type: string_list
+  - name: workstreamRole
+    type: select
+    options:
+    - intake
+    - literature
+    - theory
+    - computation
+    - implementation
+    - formalization
+    - review
+    - synthesis
+    - failure-record
+  - name: claimStatus
+    type: select
+    options:
+    - unexamined
+    - conjectural
+    - source-backed
+    - computationally-supported
+    - locally-proved
+    - formally-verified
+    - review-disputed
+    - refuted
+    - abandoned
+    - human-input-needed
+    - accepted-local-claim
+  - name: uncertaintyNotes
+    type: text
+  - name: reportArtifacts
+    type: string_list
+  - name: failedExplorations
+    type: string_list
+  - name: successCriteria
+    type: string_list
+    required: true
+  - name: complexity
+    type: number
+    min: 0
+    max: 100
+  - name: commit
+    type: string
+  - name: tags
+    type: string_list

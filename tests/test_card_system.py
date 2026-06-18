@@ -5,7 +5,7 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from iwe2.cards import CardSystemConfig, build_card_models
+from iwe2.cards import CardSystemConfig, build_card_models, load_card_models, load_card_system_config
 
 # Representative card-system config: mirrors the semantic structure of the real
 # Nimbalyst feature/plan schemas (a select-backed status set, required fields, an
@@ -131,3 +131,73 @@ def test_built_plan_model_enforces_int_max_for_time_estimate() -> None:
     assert accepted.time_estimate_seconds == 9_999_999
     with pytest.raises(ValidationError):
         models["plan"].model_validate({**base, "time_estimate_seconds": 10_000_001})
+
+
+# --- shipped starter config + loader (captured real card frontmatter, trackerStatus
+# stripped because migration determines the card type from storage location, not a field) ---
+
+
+def test_shipped_config_covers_core_card_types() -> None:
+    config = load_card_system_config()
+    names = {card_type.name for card_type in config.card_types}
+    assert {"feature", "plan", "phase", "task"} <= names
+
+
+def test_shipped_feature_model_validates_real_feature_frontmatter() -> None:
+    models = load_card_models()
+    card = {
+        "id": "FEATURE-CATEGORY-SPECS-AND-SAGE-SURFACES",
+        "parents": [],
+        "dependsOn": [],
+        "plans": ["[[PLAN-CATEGORY-SPEC-PROGRAM]]", "[[PLAN-SPEC-CORE-VERTICAL-SLICE]]"],
+        "title": "Category specs and Sage-grounded operations",
+        "status": "in-progress",
+        "priority": "critical",
+        "description": "Specify a Sage-compatible categorical language.",
+    }
+    validated = models["feature"].model_validate(card)
+    assert validated.status == "in-progress"
+    assert validated.plans[0] == "[[PLAN-CATEGORY-SPEC-PROGRAM]]"
+
+
+def test_shipped_feature_model_rejects_status_outside_set() -> None:
+    models = load_card_models()
+    card = {
+        "id": "FEATURE-X",
+        "title": "t",
+        "status": "shipped",
+        "description": "d",
+    }
+    with pytest.raises(ValidationError):
+        models["feature"].model_validate(card)
+
+
+def test_shipped_plan_model_requires_success_criteria() -> None:
+    models = load_card_models()
+    base = {
+        "id": "PLAN-CATEGORY-SPEC-PROGRAM",
+        "parents": ["[[FEATURE-CATEGORY-SPECS-AND-SAGE-SURFACES]]"],
+        "title": "Category spec program",
+        "status": "approved-and-unstarted",
+        "description": "Drive the category spec program.",
+        "successCriteria": ["The vertical slice compiles."],
+    }
+    assert models["plan"].model_validate(base).status == "approved-and-unstarted"
+    missing = {key: value for key, value in base.items() if key != "successCriteria"}
+    with pytest.raises(ValidationError):
+        models["plan"].model_validate(missing)
+
+
+def test_shipped_task_model_enforces_complexity_range() -> None:
+    models = load_card_models()
+    base = {
+        "id": "TASK-CATEGORY-OBLIGATION-PLAN-FIX-SCOPE",
+        "parents": ["[[PHASE-CATEGORY-ASSERTION-REPAIR]]"],
+        "title": "Narrow plan description to match actual phase inventory",
+        "status": "complete",
+        "description": "Resolve a scope gap.",
+        "successCriteria": ["Description narrowed."],
+    }
+    assert models["task"].model_validate({**base, "complexity": 42}).complexity == 42
+    with pytest.raises(ValidationError):
+        models["task"].model_validate({**base, "complexity": 150})
