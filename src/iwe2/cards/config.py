@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 FieldType = Literal[
     "string",
@@ -64,3 +64,30 @@ class CardSystemConfig(BaseModel):
     status_sets: dict[str, StatusSetSpec]
     card_types: list[CardTypeSpec]
     subdirectories: list[str] = []
+
+    @model_validator(mode="after")
+    def check_references(self) -> CardSystemConfig:
+        # Every cross-reference in the config must resolve, so a malformed config fails
+        # loudly at load instead of producing a card model that silently drops or
+        # mis-validates fields.
+        status_values = set(self.statuses)
+        for set_name, status_set in self.status_sets.items():
+            if status_set.default not in status_values:
+                raise ValueError(f"status set {set_name} default not in catalog: {status_set.default}")
+            for option in status_set.options:
+                if option not in status_values:
+                    raise ValueError(f"status set {set_name} option not in catalog: {option}")
+        card_names = {card_type.name for card_type in self.card_types}
+        for card_type in self.card_types:
+            if card_type.status_set not in self.status_sets:
+                raise ValueError(f"card type {card_type.name} references unknown status set: {card_type.status_set}")
+            for parent in card_type.parents:
+                if parent not in card_names:
+                    raise ValueError(f"card type {card_type.name} references unknown parent: {parent}")
+            field_names = [field.name for field in card_type.fields]
+            if len(field_names) != len(set(field_names)):
+                raise ValueError(f"card type {card_type.name} has duplicate field names")
+            for field in card_type.fields:
+                if field.type == "select" and not field.options:
+                    raise ValueError(f"select field {card_type.name}.{field.name} must declare options")
+        return self
