@@ -17,7 +17,15 @@ import tomli_w
 import yaml
 from mistletoe import block_token, span_token
 from mistletoe.markdown_renderer import BlankLine, MarkdownRenderer
+from pydantic import BaseModel
 
+from iwe2.cards.config import CardSystemConfig
+from iwe2.cards.dag import render_dag
+from iwe2.cards.factory import build_card_models
+from iwe2.cards.loader import load_card_system_config
+from iwe2.cards.migration import migrate_plans
+from iwe2.cards.storage import card_type_for_id, create_card, delete_card, update_card
+from iwe2.cards.validation import load_card_records, validate_cards
 from iwe2.models import (
     GlobalNoteMetadata,
     InspectExportFormat,
@@ -525,8 +533,15 @@ def key_search_records(config: ProjectConfig, scope: SearchScope, query: str) ->
 
 
 def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    roots = [str(root) for root in search_roots(config, scope)]
+    # span plan cards too, so one query covers both memories and plans (issue #4). Plans
+    # are project-scoped, so include them whenever the scope reaches the project.
+    if scope in (SearchScope.PROJECT, SearchScope.BOTH):
+        plans_root = project_plans_root(config, load_card_system_config())
+        if plans_root.is_dir():
+            roots.append(str(plans_root))
     result = subprocess.run(
-        ["rg", "--json", "--fixed-strings", query, *[str(root) for root in search_roots(config, scope)]],
+        ["rg", "--json", "--fixed-strings", query, *roots],
         cwd=config.vault,
         check=False,
         text=True,
@@ -1858,3 +1873,103 @@ def json_metadata_value(value: MetadataValue) -> JsonValue:
     if isinstance(value, str | bool):
         return value
     return json_list(value)
+
+
+# --- Plan cards (issue #4): bridge the config-driven card engine to the project vault ---
+
+
+def load_card_system() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
+    cards_config = load_card_system_config()
+    return cards_config, build_card_models(cards_config)
+
+
+def project_plans_root(config: ProjectConfig, cards_config: CardSystemConfig) -> Path:
+    return config.vault / "projects" / config.project_id / cards_config.root
+
+
+def all_plans_roots(config: ProjectConfig, cards_config: CardSystemConfig) -> list[Path]:
+    records = load_project_records(config.vault / "_meta" / "projects.toml")
+    return [config.vault / "projects" / record["project_id"] / cards_config.root for record in records]
+
+
+def parse_card_fields(cards_config: CardSystemConfig, type_name: str, assignments: Sequence[str]) -> dict[str, object]:
+    spec = next((card_type for card_type in cards_config.card_types if card_type.name == type_name), None)
+    assert spec is not None, f"unknown card type: {type_name}"
+    field_types = {field.name: field.type for field in spec.fields}
+    fields: dict[str, object] = {}
+    for assignment in assignments:
+        assert "=" in assignment, f"field assignment must be key=value: {assignment}"
+        key, value = assignment.split("=", 1)
+        assert key in field_types, f"unknown field {key} for card type {type_name}"
+        field_type = field_types[key]
+        if field_type in ("string_list", "wikilink_list"):
+            bucket = fields.setdefault(key, [])
+            assert isinstance(bucket, list), "list field accumulator must be a list"
+            bucket.append(value)
+        elif field_type == "int":
+            fields[key] = int(value)
+        elif field_type == "number":
+            fields[key] = float(value)
+        elif field_type == "bool":
+            fields[key] = value.lower() in ("true", "1", "yes")
+        else:
+            fields[key] = value
+    return fields
+
+
+def add_plan_card(type_name: str, card_id: str, parent_id: str | None, assignments: Sequence[str], body: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    cards_config, models = load_card_system()
+    fields = parse_card_fields(cards_config, type_name, assignments)
+    path = create_card(
+        project_plans_root(config, cards_config), cards_config, models,
+        type_name=type_name, card_id=card_id, parent_id=parent_id, fields=fields, body=body,
+    )
+    commit_vault_changes(config.vault, f"Add {type_name} card: {card_id}")
+    return {"id": card_id, "path": str(path)}
+
+
+def update_plan_card(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    cards_config, models = load_card_system()
+    type_name = card_type_for_id(cards_config, card_id).name
+    updates = parse_card_fields(cards_config, type_name, assignments)
+    path = update_card(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
+    commit_vault_changes(config.vault, f"Update plan card: {card_id}")
+    return {"id": card_id, "path": str(path)}
+
+
+def delete_plan_card(card_id: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    cards_config, _models = load_card_system()
+    delete_card(project_plans_root(config, cards_config), card_id)
+    commit_vault_changes(config.vault, f"Delete plan card: {card_id}")
+    return {"deleted": card_id}
+
+
+def validate_plan_cards(cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    cards_config, models = load_card_system()
+    records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
+    problems = validate_cards(records, cards_config)
+    return {"problems": json_list([{"kind": problem.kind, "card": problem.card_id, "detail": problem.detail} for problem in problems])}
+
+
+def write_plan_dag(cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    cards_config, models = load_card_system()
+    records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
+    plans_root = project_plans_root(config, cards_config)
+    plans_root.mkdir(parents=True, exist_ok=True)
+    path = plans_root / "plan-dag.md"
+    path.write_text(render_dag(records), encoding="utf-8")
+    commit_vault_changes(config.vault, "Update plan DAG")
+    return {"path": str(path)}
+
+
+def migrate_plan_cards(source: Path, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    cards_config, models = load_card_system()
+    paths = migrate_plans(source, project_plans_root(config, cards_config), cards_config, models)
+    commit_vault_changes(config.vault, f"Migrate {len(paths)} plan cards")
+    return {"migrated": json_list([str(path) for path in paths])}

@@ -77,6 +77,16 @@ def test_containment_violation_reported(tmp_path: Path) -> None:
     assert any(problem.kind == "containment" and problem.card_id == "TASK-ONE" for problem in problems)
 
 
+def test_load_skips_non_card_files(tmp_path: Path) -> None:
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    seed_feature_chain(root, "ONE", config, models)
+    # a generated artifact with no card frontmatter must be ignored, not parsed as a card
+    (root / "plan-dag.md").write_text("## Dependencies\n\n```mermaid\ngraph LR\n```\n", encoding="utf-8")
+    records = load_card_records([root], config, models)
+    assert set(records) == {"FEATURE-ONE", "PLAN-ONE", "PHASE-ONE", "TASK-ONE"}
+
+
 def test_clean_multi_project_tree_has_no_problems(tmp_path: Path) -> None:
     config, models = models_and_config()
     root1 = tmp_path / "p1" / "plans"

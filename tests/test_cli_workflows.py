@@ -1529,3 +1529,34 @@ def test_merge_probe_payloads_rejects_null_skipped_files() -> None:
     }
     with pytest.raises(AssertionError):
         merge_probe_payloads([payload_null_skips], max_results=5, max_tokens=500)
+
+
+def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    run_iwe2(
+        workspace.repo, "plan", "add", "--type", "feature", "--id", "FEATURE-DEMO",
+        "--set", "title=Demo", "--set", "status=in-progress", "--set", "description=plan-card-signal-9c1f",
+    )
+    run_iwe2(
+        workspace.repo, "plan", "add", "--type", "plan", "--id", "PLAN-DEMO", "--parent", "FEATURE-DEMO",
+        "--set", "title=Plan", "--set", "status=approved-and-unstarted", "--set", "description=demo plan",
+        "--set", "parents=[[FEATURE-DEMO]]", "--set", "successCriteria=ships",
+    )
+    plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PLAN-DEMO.md"
+    assert plan_path.is_file()
+
+    clean = parse_json_stdout(run_iwe2(workspace.repo, "plan", "validate"))
+    assert json_array(clean["problems"]) == []
+
+    dag = parse_json_stdout(run_iwe2(workspace.repo, "plan", "dag"))
+    dag_text = Path(json_string(dag["path"])).read_text(encoding="utf-8")
+    assert dag_text.count("```mermaid") == 2
+
+    feature_key = f"projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
+    search = parse_json_stdout(run_iwe2(workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"))
+    assert feature_key in result_keys(search)
+
+    run_iwe2(workspace.repo, "plan", "update", "PLAN-DEMO", "--set", "dependsOn=[[TASK-GHOST]]")
+    flagged = parse_json_stdout(run_iwe2(workspace.repo, "plan", "validate"))
+    problems = [json_object(item) for item in json_array(flagged["problems"])]
+    assert any(json_string(problem["kind"]) == "reference" for problem in problems)

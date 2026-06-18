@@ -45,10 +45,13 @@ def load_card_records(
     # Load every card across all given project plan roots into one id-keyed map; building
     # the index vault-wide is what lets cross-project [[ID]] references resolve.
     records: dict[str, CardRecord] = {}
+    prefixes = tuple(f"{card_type.id_prefix}-" for card_type in config.card_types)
     for root in plans_roots:
         if not root.exists():
             continue
         for path in sorted(root.rglob("*.md")):
+            if not path.stem.startswith(prefixes):
+                continue  # skip non-card files such as the generated plan-dag.md
             metadata, _body = split_card(path.read_text(encoding="utf-8"))
             card_id = path.stem
             assert metadata.get("id") == card_id, f"card id must match filename: {path}"
