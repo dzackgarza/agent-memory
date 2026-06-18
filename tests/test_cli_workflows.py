@@ -586,6 +586,22 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     assert global_key not in result_keys(after_delete)
 
 
+def test_retrieve_resolves_memory_by_basename(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Epistemic Foundation",
+        content="basename-signal-4f2a1c belongs to this project",
+    )
+    assert note["key"] == project_memory_key(workspace, "decisions", "epistemic-foundation")
+    # The AGENTS.md guidance presents basename-style keys; retrieving by basename must
+    # resolve to the unique full key rather than failing not-found (issue #3).
+    retrieved = run_iwe2(workspace.repo, "retrieve", "epistemic-foundation")
+    assert "basename-signal-4f2a1c belongs to this project" in retrieved.stdout
+
+
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
