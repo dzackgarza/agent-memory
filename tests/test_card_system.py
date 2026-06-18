@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -11,7 +12,7 @@ from iwe2.cards import CardSystemConfig, build_card_models, load_card_models, lo
 # Nimbalyst feature/plan schemas (a select-backed status set, required fields, an
 # int field with a max), without the UI-only noise. The factory must compile this
 # into pydantic validators that enforce every declared constraint.
-CONFIG: dict[str, object] = {
+CONFIG: dict[str, Any] = {
     "statuses": {
         "unstarted": {"value": "unstarted", "label": "Unstarted"},
         "in-progress": {"value": "in-progress", "label": "In Progress"},
@@ -31,6 +32,7 @@ CONFIG: dict[str, object] = {
             "id_prefix": "FEATURE",
             "status_set": "standard",
             "parents": [],
+            "own_dir": True,
             "fields": [
                 {"name": "id", "type": "string", "required": True},
                 {"name": "title", "type": "string", "required": True},
@@ -58,7 +60,7 @@ CONFIG: dict[str, object] = {
 }
 
 
-def valid_feature_card() -> dict[str, object]:
+def valid_feature_card() -> dict[str, Any]:
     return {
         "id": "FEATURE-CATEGORY-SPECS",
         "title": "Category specs and Sage-grounded operations",
@@ -94,10 +96,10 @@ def test_config_rejects_status_set_default_absent_from_catalog() -> None:
 
 def test_built_feature_model_accepts_real_frontmatter_shape() -> None:
     models = build_card_models(CardSystemConfig.model_validate(CONFIG))
-    card = models["feature"].model_validate(valid_feature_card())
-    assert card.status == "in-progress"
-    assert card.plans == ["[[PLAN-CATEGORY-SPEC-PROGRAM]]"]
-    assert card.priority == "critical"
+    card = models["feature"].model_validate(valid_feature_card()).model_dump()
+    assert card["status"] == "in-progress"
+    assert card["plans"] == ["[[PLAN-CATEGORY-SPEC-PROGRAM]]"]
+    assert card["priority"] == "critical"
 
 
 def test_built_model_rejects_status_outside_declared_status_set() -> None:
@@ -127,8 +129,8 @@ def test_built_model_rejects_undeclared_field() -> None:
 def test_built_plan_model_enforces_int_max_for_time_estimate() -> None:
     models = build_card_models(CardSystemConfig.model_validate(CONFIG))
     base = {"id": "PLAN-X", "title": "A plan", "status": "unstarted"}
-    accepted = models["plan"].model_validate({**base, "time_estimate_seconds": 9_999_999})
-    assert accepted.time_estimate_seconds == 9_999_999
+    accepted = models["plan"].model_validate({**base, "time_estimate_seconds": 9_999_999}).model_dump()
+    assert accepted["time_estimate_seconds"] == 9_999_999
     with pytest.raises(ValidationError):
         models["plan"].model_validate({**base, "time_estimate_seconds": 10_000_001})
 
@@ -155,9 +157,9 @@ def test_shipped_feature_model_validates_real_feature_frontmatter() -> None:
         "priority": "critical",
         "description": "Specify a Sage-compatible categorical language.",
     }
-    validated = models["feature"].model_validate(card)
-    assert validated.status == "in-progress"
-    assert validated.plans[0] == "[[PLAN-CATEGORY-SPEC-PROGRAM]]"
+    validated = models["feature"].model_validate(card).model_dump()
+    assert validated["status"] == "in-progress"
+    assert validated["plans"][0] == "[[PLAN-CATEGORY-SPEC-PROGRAM]]"
 
 
 def test_shipped_feature_model_rejects_status_outside_set() -> None:
@@ -182,7 +184,7 @@ def test_shipped_plan_model_requires_success_criteria() -> None:
         "description": "Drive the category spec program.",
         "successCriteria": ["The vertical slice compiles."],
     }
-    assert models["plan"].model_validate(base).status == "approved-and-unstarted"
+    assert models["plan"].model_validate(base).model_dump()["status"] == "approved-and-unstarted"
     missing = {key: value for key, value in base.items() if key != "successCriteria"}
     with pytest.raises(ValidationError):
         models["plan"].model_validate(missing)
@@ -198,6 +200,6 @@ def test_shipped_task_model_enforces_complexity_range() -> None:
         "description": "Resolve a scope gap.",
         "successCriteria": ["Description narrowed."],
     }
-    assert models["task"].model_validate({**base, "complexity": 42}).complexity == 42
+    assert models["task"].model_validate({**base, "complexity": 42}).model_dump()["complexity"] == 42
     with pytest.raises(ValidationError):
         models["task"].model_validate({**base, "complexity": 150})

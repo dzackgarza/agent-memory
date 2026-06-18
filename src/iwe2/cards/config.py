@@ -56,6 +56,11 @@ class CardTypeSpec(BaseModel):
     parents: list[str] = []
     fields: list[FieldSpec]
     validators: list[str] = []
+    # Storage layout: a card of this type lives under <container> beneath its parent
+    # card's own directory (or the system root when it has no parent). own_dir=True means
+    # the card occupies a directory named by its id (so it can contain child cards).
+    container: str = ""
+    own_dir: bool = False
 
 
 class CardSystemConfig(BaseModel):
@@ -64,6 +69,7 @@ class CardSystemConfig(BaseModel):
     statuses: dict[str, StatusSpec]
     status_sets: dict[str, StatusSetSpec]
     card_types: list[CardTypeSpec]
+    root: str = "plans"
     subdirectories: list[str] = []
 
     @model_validator(mode="after")
@@ -78,13 +84,15 @@ class CardSystemConfig(BaseModel):
             for option in status_set.options:
                 if option not in status_values:
                     raise ValueError(f"status set {set_name} option not in catalog: {option}")
-        card_names = {card_type.name for card_type in self.card_types}
+        by_name = {card_type.name: card_type for card_type in self.card_types}
         for card_type in self.card_types:
             if card_type.status_set not in self.status_sets:
                 raise ValueError(f"card type {card_type.name} references unknown status set: {card_type.status_set}")
             for parent in card_type.parents:
-                if parent not in card_names:
+                if parent not in by_name:
                     raise ValueError(f"card type {card_type.name} references unknown parent: {parent}")
+                if not by_name[parent].own_dir:
+                    raise ValueError(f"card type {card_type.name} parent {parent} must own a directory to contain children")
             field_names = [field.name for field in card_type.fields]
             if len(field_names) != len(set(field_names)):
                 raise ValueError(f"card type {card_type.name} has duplicate field names")

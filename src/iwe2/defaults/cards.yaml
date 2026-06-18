@@ -89,6 +89,8 @@ card_types:
     type: text
   - name: tags
     type: string_list
+  container: features
+  own_dir: true
 - name: plan
   id_prefix: PLAN
   status_set: plan
@@ -149,6 +151,8 @@ card_types:
     type: wikilink_list
   - name: tasks
     type: wikilink_list
+  container: plans
+  own_dir: true
 - name: phase
   id_prefix: PHASE
   status_set: standard-no-complete-icon
@@ -222,6 +226,8 @@ card_types:
     type: wikilink_list
   - name: tags
     type: string_list
+  container: ''
+  own_dir: true
 - name: task
   id_prefix: TASK
   status_set: standard-no-complete-icon
@@ -339,3 +345,6 @@ card_types:
     type: string
   - name: tags
     type: string_list
+  container: tasks
+  own_dir: false
+root: plans
