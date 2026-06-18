@@ -1556,6 +1556,22 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     search = parse_json_stdout(run_iwe2(workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"))
     assert feature_key in result_keys(search)
 
+    # migrate an in-repo card tree (carrying trackerStatus) into the vault
+    source = tmp_path / "incoming" / "plans" / "features" / "FEATURE-MIG"
+    source.mkdir(parents=True)
+    (source / "FEATURE-MIG.md").write_text(
+        "---\n" + yaml.safe_dump({"id": "FEATURE-MIG", "trackerStatus": {"type": "feature"}, "title": "Migrated", "status": "in-progress", "description": "migrated"}, sort_keys=False) + "---\n# Migrated\n",
+        encoding="utf-8",
+    )
+    run_iwe2(workspace.repo, "plan", "migrate", "--from", str(tmp_path / "incoming" / "plans"))
+    migrated_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-MIG" / "FEATURE-MIG.md"
+    assert migrated_path.is_file()
+    assert "trackerStatus" not in migrated_path.read_text(encoding="utf-8")
+    assert json_array(parse_json_stdout(run_iwe2(workspace.repo, "plan", "validate"))["problems"]) == []
+
+    run_iwe2(workspace.repo, "plan", "delete", "FEATURE-MIG")
+    assert not migrated_path.exists()
+
     run_iwe2(workspace.repo, "plan", "update", "PLAN-DEMO", "--set", "dependsOn=[[TASK-GHOST]]")
     flagged = parse_json_stdout(run_iwe2(workspace.repo, "plan", "validate"))
     problems = [json_object(item) for item in json_array(flagged["problems"])]
