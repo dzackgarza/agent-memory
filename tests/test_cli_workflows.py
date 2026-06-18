@@ -1426,6 +1426,30 @@ def test_inspect_links_dedupes_reciprocal_index_links(tmp_path: Path) -> None:
     assert both["links"] == [decision_index_record]
 
 
+def test_inspect_links_ignores_links_in_code_blocks(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    add_cli_memory(workspace, scope="global", memory_type="advice", title="Real Target", content="Real linked memory.")
+    add_cli_memory(workspace, scope="global", memory_type="advice", title="Fake Target", content="Memory only referenced from a code block.")
+    project_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Code Fence Links",
+        content=(
+            "See [Real Target](../../../global/advice/real-target.md).\n\n"
+            "```\n"
+            "Example: [Fake Target](../../../global/advice/fake-target.md)\n"
+            "```\n"
+        ),
+    )
+    children = inspect_json(workspace, "links", str(project_note["key"]), "--direction", "children", "--depth", "1", "--format", "json")
+    child_keys = set(records_by_key(children, "links"))
+    # The AST link extractor must skip the link inside the fenced code block; the old
+    # regex would have matched it and surfaced fake-target as a child edge.
+    assert "global/advice/real-target" in child_keys
+    assert "global/advice/fake-target" not in child_keys
+
+
 def test_inspect_outline_and_recent_real_vault(tmp_path: Path) -> None:
     workspace, project_key, _global_key = linked_inspect_workspace(tmp_path)
     outline = inspect_json(workspace, "outline", project_key, "--format", "json")
