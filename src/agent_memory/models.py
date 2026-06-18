@@ -34,6 +34,7 @@ class MemoryType(StrEnum):
     ADVICE = "advice"
     CONTEXT = "context"
     REFERENCE = "reference"
+    PLAN = "plan"
 
 
 class InspectOutputFormat(StrEnum):

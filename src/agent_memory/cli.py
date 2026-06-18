@@ -8,7 +8,7 @@ from typing import Annotated
 
 from cyclopts import App, Parameter
 
-from iwe2.models import (
+from agent_memory.models import (
     ContentSearchMode,
     InspectExportFormat,
     InspectExportProfile,
@@ -20,7 +20,7 @@ from iwe2.models import (
     MemoryType,
     SearchScope,
 )
-from iwe2.operations import (
+from agent_memory.operations import (
     INSPECT_COMMAND_NAMES,
     JsonValue,
     add_memory,
@@ -50,16 +50,16 @@ from iwe2.operations import (
     squash_memory,
     update_memory,
 )
-from iwe2.operations import (
+from agent_memory.operations import (
     doctor as run_doctor,
 )
 
 app = App(
-    name="iwe2",
+    name="agent-memory",
     help=(
         "Memory database CLI for global and project Markdown vaults. "
-        "Use `iwe2 maintain init-global --vault <path>` once, "
-        "`iwe2 init project --vault <path>` per repository, then `add`, `search`, "
+        "Use `agent-memory maintain init-global --vault <path>` once, "
+        "`agent-memory init project --vault <path>` per repository, then `add`, `search`, "
         "`inspect`, `retrieve`, `update`, and `delete` during normal agent work."
     ),
 )

@@ -17,10 +17,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from iwe2.cli import app as iwe2_app
-from iwe2.cli import main as cli_main
-from iwe2.models import MemoryType
-from iwe2.operations import (
+from agent_memory.cli import app as agent_memory_app
+from agent_memory.cli import main as cli_main
+from agent_memory.models import MemoryType
+from agent_memory.operations import (
     OKF_VERSION,
     DependencyCheck,
     DependencyError,
@@ -30,7 +30,7 @@ from iwe2.operations import (
     merge_probe_payloads,
     update_memory,
 )
-from iwe2.operations import load_project_config as operations_load_project_config
+from agent_memory.operations import load_project_config as operations_load_project_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,12 +46,12 @@ def just_value(name: str) -> str:
 
 ZK_VERSION = just_value("ZK_VERSION")
 ZK_ASSET = just_value("ZK_ASSET")
-ZK_BIN_DIR = Path(tempfile.mkdtemp(prefix="iwe2-zk-"))
+ZK_BIN_DIR = Path(tempfile.mkdtemp(prefix="agent-memory-zk-"))
 
 
 def ensure_zk_binary() -> Path:
     # Fetch the real zk binary the integration tests put on PATH. This runs lazily on
-    # first use (from iwe2_env), not at module import: keeping the gh release download
+    # first use (from agent_memory_env), not at module import: keeping the gh release download
     # out of collection means a zk-org/zk release-asset change or a GitHub outage breaks
     # the runs that actually need zk, fail-loud via check=True, instead of breaking
     # collection of the whole module. Idempotent: a present binary is reused.
@@ -103,9 +103,9 @@ class GitRepo:
     project_id: str
 
 
-def run_iwe2_process(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    command = ["iwe2", *args]
-    command_env = iwe2_env()
+def run_agent_memory_process(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    command = ["agent-memory", *args]
+    command_env = agent_memory_env()
     original_cwd = Path.cwd()
     original_argv = sys.argv.copy()
     original_env = os.environ.copy()
@@ -118,7 +118,7 @@ def run_iwe2_process(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         sys.argv = command
         with redirect_stdout(stdout), redirect_stderr(stderr):
             basic_doctor(cwd)
-            returncode = iwe2_app(list(args), exit_on_error=False, result_action="return_int_as_exit_code_else_zero")
+            returncode = agent_memory_app(list(args), exit_on_error=False, result_action="return_int_as_exit_code_else_zero")
     finally:
         os.chdir(original_cwd)
         sys.argv = original_argv
@@ -128,18 +128,18 @@ def run_iwe2_process(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(command, returncode, stdout.getvalue(), stderr.getvalue())
 
 
-def run_iwe2(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    result = run_iwe2_process(cwd, *args)
+def run_agent_memory(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    result = run_agent_memory_process(cwd, *args)
     if result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
     return result
 
 
-def run_iwe2_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    command_env = env if env is not None else iwe2_env()
+def run_agent_memory_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    command_env = env if env is not None else agent_memory_env()
     command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
     return subprocess.run(
-        [sys.executable, "-m", "iwe2", *args],
+        [sys.executable, "-m", "agent_memory", *args],
         cwd=cwd,
         env=command_env,
         text=True,
@@ -147,14 +147,14 @@ def run_iwe2_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None
     )
 
 
-def run_iwe2_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    result = run_iwe2_subprocess(cwd, *args)
+def run_agent_memory_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    result = run_agent_memory_subprocess(cwd, *args)
     if result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
     return result
 
 
-def iwe2_env() -> dict[str, str]:
+def agent_memory_env() -> dict[str, str]:
     ensure_zk_binary()
     env = os.environ.copy()
     env["PATH"] = f"{ZK_BIN_DIR}:{env['PATH']}"
@@ -276,8 +276,8 @@ def initialized_git_repo(tmp_path: Path) -> GitRepo:
 
 def initialized_project_workspace(tmp_path: Path, git_repo: GitRepo) -> CliWorkspace:
     vault = tmp_path / "vault"
-    run_iwe2(tmp_path, "maintain", "init-global", "--vault", str(vault))
-    run_iwe2(git_repo.path, "init", "project", "--vault", str(vault))
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    run_agent_memory(git_repo.path, "init", "project", "--vault", str(vault))
     return CliWorkspace(repo=git_repo.path, vault=vault, project_id=git_repo.project_id)
 
 
@@ -300,7 +300,7 @@ def add_cli_memory(
     content: str,
 ) -> JsonObject:
     return parse_json_stdout(
-        run_iwe2(
+        run_agent_memory(
             workspace.repo,
             "add",
             "--scope",
@@ -321,7 +321,7 @@ def project_memory_key(workspace: CliWorkspace, memory_type_directory: str, slug
 
 def search_content(workspace: CliWorkspace, *, scope: str, mode: str, query: str) -> JsonObject:
     return parse_json_stdout(
-        run_iwe2(
+        run_agent_memory(
             workspace.repo,
             "search",
             "content",
@@ -335,7 +335,7 @@ def search_content(workspace: CliWorkspace, *, scope: str, mode: str, query: str
 
 
 def inspect_json(workspace: CliWorkspace, *args: str) -> JsonObject:
-    return parse_json_stdout(run_iwe2(workspace.repo, "inspect", *args))
+    return parse_json_stdout(run_agent_memory(workspace.repo, "inspect", *args))
 
 
 def frontmatter(markdown: Path) -> dict[str, object]:
@@ -376,7 +376,7 @@ def assert_okf_concept_metadata(
 def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
 
-    result = run_iwe2(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    result = run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     payload = parse_json_stdout(result)
     git_probe = subprocess.run(
         ["git", "-C", str(vault), "rev-parse", "--is-inside-work-tree"],
@@ -389,14 +389,14 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
 
     assert Path(str(payload["vault"])) == vault
     assert git_probe.stdout.strip() == "true"
-    assert git_commit_subjects(vault) == ["Initialize iwe2 vault"]
+    assert git_commit_subjects(vault) == ["Initialize agent-memory vault"]
     assert status_lines == set()
     assert ".gitignore" in tracked_files
     assert ".zk/config.toml" in tracked_files
     assert ".zk/templates/default.md" in tracked_files
     assert ".zk/notebook.db" not in tracked_files
     assert "index.md" in tracked_files
-    assert (vault / ".iwe" / "config.toml").is_file()
+    assert (vault / ".agents" / "memories" / "config.toml").is_file()
     assert (vault / "index.md").is_file()
     assert (vault / "global" / "index.md").is_file()
     assert (vault / "_meta" / "projects.toml").is_file()
@@ -414,12 +414,12 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
 def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
     vault = tmp_path / "module-vault"
 
-    result = run_iwe2_module(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    result = run_agent_memory_module(tmp_path, "maintain", "init-global", "--vault", str(vault))
     payload = parse_json_stdout(result)
     global_index = (vault / "global" / "index.md").read_text()
 
     assert Path(str(payload["vault"])) == vault
-    assert (vault / ".iwe" / "config.toml").is_file()
+    assert (vault / ".agents" / "memories" / "config.toml").is_file()
     assert frontmatter(vault / "global" / "index.md") == {"okf_version": OKF_VERSION}
     assert "* [Decisions](decisions/index.md) - Global decision memories." in global_index
     assert "* [References](references/index.md) - Global reference memories." in global_index
@@ -445,9 +445,9 @@ def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path
     agents_pointer = (workspace.repo / "AGENTS.md").read_text()
     assert f"This repository uses the central agent memory vault at `{workspace.vault}`." in agents_pointer
     assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
-    assert 'iwe2 search --scope both "<task or subsystem>"' in agents_pointer
-    pointer_add_types = re.findall(r"iwe2 add --scope project --type (\S+) ", agents_pointer)
-    assert pointer_add_types, "agent pointer must demonstrate iwe2 add invocations"
+    assert 'agent-memory search --scope both "<task or subsystem>"' in agents_pointer
+    pointer_add_types = re.findall(r"agent-memory add --scope project --type (\S+) ", agents_pointer)
+    assert pointer_add_types, "agent pointer must demonstrate agent-memory add invocations"
     assert [MemoryType(token) for token in pointer_add_types] == list(MemoryType)
 
     project_index_path = workspace.vault / "projects" / workspace.project_id / "index.md"
@@ -480,10 +480,25 @@ def test_project_initialization_appends_https_remote_project_record(tmp_path: Pa
         capture_output=True,
     )
     vault = tmp_path / "vault"
-    run_iwe2(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
 
-    run_iwe2(ssh_repo.path, "init", "project", "--vault", str(vault))
-    run_iwe2(https_repo, "init", "project", "--vault", str(vault))
+    run_agent_memory(ssh_repo.path, "init", "project", "--vault", str(vault))
+    run_agent_memory(https_repo, "init", "project", "--vault", str(vault))
+
+    ssh_remote = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=ssh_repo.path,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    https_remote = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=https_repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
 
     assert load_project_config(ssh_repo.path)["project_id"] == ssh_repo.project_id
     assert load_project_config(https_repo)["project_id"] == "github.com__dzackgarza__https-memory"
@@ -492,12 +507,12 @@ def test_project_initialization_appends_https_remote_project_record(tmp_path: Pa
         {
             "project_id": ssh_repo.project_id,
             "root": str(ssh_repo.path),
-            "remote": "git@github.com:dzackgarza/example-memory.git",
+            "remote": ssh_remote,
         },
         {
             "project_id": "github.com__dzackgarza__https-memory",
             "root": str(https_repo),
-            "remote": "https://github.com/dzackgarza/https-memory.git",
+            "remote": https_remote,
         },
     ]
 
@@ -532,7 +547,7 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         "Record global advice memory: Global Beta",
         "Record project decision memory: Project Alpha",
         f"Register project {workspace.project_id}",
-        "Initialize iwe2 vault",
+        "Initialize agent-memory vault",
     ]
 
     assert_okf_concept_metadata(
@@ -555,21 +570,21 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     assert "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d belongs only to this repository" in (project_path.parent / "index.md").read_text()
     assert "* [Global Beta](global-beta.md) - global-signal-cde4b9f6 belongs to shared agent practice" in (global_path.parent / "index.md").read_text()
 
-    project_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "--scope", "project", "signal"))
+    project_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "signal"))
     assert project_key in result_keys(project_search)
     assert global_key not in result_keys(project_search)
-    global_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "--scope", "global", "signal"))
+    global_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "global", "signal"))
     assert global_key in result_keys(global_search)
     assert project_key not in result_keys(global_search)
-    combined_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "--scope", "both", "signal"))
+    combined_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "both", "signal"))
     combined_keys = result_keys(combined_search)
     assert project_key in combined_keys
     assert global_key in combined_keys
 
-    retrieved = run_iwe2(workspace.repo, "retrieve", str(project_note["key"]))
+    retrieved = run_agent_memory(workspace.repo, "retrieve", str(project_note["key"]))
     assert "project-signal-7dcbd96d belongs only to this repository" in retrieved.stdout
     updated = parse_json_stdout(
-        run_iwe2(
+        run_agent_memory(
             workspace.repo,
             "update",
             str(project_note["key"]),
@@ -578,11 +593,11 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         )
     )
     assert updated["key"] == project_note["key"]
-    assert "durable next step" in run_iwe2(workspace.repo, "retrieve", str(project_note["key"])).stdout
+    assert "durable next step" in run_agent_memory(workspace.repo, "retrieve", str(project_note["key"])).stdout
 
-    deleted = parse_json_stdout(run_iwe2(workspace.repo, "delete", str(global_note["key"])))
+    deleted = parse_json_stdout(run_agent_memory(workspace.repo, "delete", str(global_note["key"])))
     assert deleted["deleted"] == global_key
-    after_delete = parse_json_stdout(run_iwe2(workspace.repo, "search", "--scope", "both", "global-signal-cde4b9f6"))
+    after_delete = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "both", "global-signal-cde4b9f6"))
     assert global_key not in result_keys(after_delete)
 
 
@@ -599,9 +614,9 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     assert project_note["key"] == original_key
 
     renamed_key = project_memory_key(workspace, "decisions", "project-transition-renamed")
-    renamed = parse_json_stdout(run_iwe2(workspace.repo, "update", original_key, "--title", "Project Transition Renamed"))
+    renamed = parse_json_stdout(run_agent_memory(workspace.repo, "update", original_key, "--title", "Project Transition Renamed"))
     assert renamed["key"] == renamed_key
-    renamed_text = run_iwe2(workspace.repo, "retrieve", renamed_key).stdout
+    renamed_text = run_agent_memory(workspace.repo, "retrieve", renamed_key).stdout
     assert "# Project Transition Renamed" in renamed_text
     assert "transition-signal-0d1f body stays attached to the moved memory" in renamed_text
     decisions_index = (workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md").read_text()
@@ -609,9 +624,9 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     assert "[Project Transition Renamed](project-transition-renamed.md)" in decisions_index
 
     retagged_key = project_memory_key(workspace, "traps", "project-transition-renamed")
-    retagged = parse_json_stdout(run_iwe2(workspace.repo, "update", renamed_key, "--type", "trap"))
+    retagged = parse_json_stdout(run_agent_memory(workspace.repo, "update", renamed_key, "--type", "trap"))
     assert retagged["key"] == retagged_key
-    retagged_text = run_iwe2(workspace.repo, "retrieve", retagged_key).stdout
+    retagged_text = run_agent_memory(workspace.repo, "retrieve", retagged_key).stdout
     assert "# Project Transition Renamed" in retagged_text
     assert "transition-signal-0d1f body stays attached to the moved memory" in retagged_text
     assert not (workspace.vault / f"{renamed_key}.md").exists()
@@ -620,7 +635,7 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     assert "[Project Transition Renamed](project-transition-renamed.md)" not in updated_decisions_index
     assert "[Project Transition Renamed](project-transition-renamed.md)" in traps_index
 
-    no_update = run_iwe2_subprocess(workspace.repo, "update", retagged_key)
+    no_update = run_agent_memory_subprocess(workspace.repo, "update", retagged_key)
     assert no_update.returncode != 0
     assert "update requires at least one of --title, --type, or --content" in no_update.stderr
     assert "AssertionError" in no_update.stderr
@@ -648,11 +663,11 @@ def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
 
-    project_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "project", "Graph Beacon"))
+    project_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "project", "Graph Beacon"))
     assert result_keys(project_search) == {project_key}
-    global_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "global", "Graph Beacon"))
+    global_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "global", "Graph Beacon"))
     assert result_keys(global_search) == {global_key}
-    combined_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "both", "Graph Beacon"))
+    combined_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "both", "Graph Beacon"))
     assert result_keys(combined_search) == {project_key, global_key}
 
 
@@ -764,11 +779,11 @@ def test_search_metadata_filters_real_frontmatter(tmp_path: Path) -> None:
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
 
-    all_metadata = parse_json_stdout(run_iwe2(workspace.repo, "search", "metadata", "--scope", "both"))
+    all_metadata = parse_json_stdout(run_agent_memory(workspace.repo, "search", "metadata", "--scope", "both"))
     assert result_keys(all_metadata) == {project_key, global_key}
 
     project_results = parse_json_stdout(
-        run_iwe2(
+        run_agent_memory(
             workspace.repo,
             "search",
             "metadata",
@@ -785,7 +800,7 @@ def test_search_metadata_filters_real_frontmatter(tmp_path: Path) -> None:
     assert result_keys(project_results) == {project_key}
 
     global_results = parse_json_stdout(
-        run_iwe2(
+        run_agent_memory(
             workspace.repo,
             "search",
             "metadata",
@@ -819,7 +834,7 @@ def test_maintain_squash_returns_project_index_scope_with_iwe(tmp_path: Path) ->
         content="squash-global-signal-88ec672b must stay outside project consolidation",
     )
 
-    squashed = run_iwe2(workspace.repo, "maintain", "squash", f"projects/{workspace.project_id}/index", "--depth", "3")
+    squashed = run_agent_memory(workspace.repo, "maintain", "squash", f"projects/{workspace.project_id}/index", "--depth", "3")
 
     assert f"# {workspace.project_id}" in squashed.stdout
     assert "- [Decisions](decisions/index) - Project decision memories." in squashed.stdout
@@ -839,29 +854,29 @@ def test_maintain_split_merge_and_doctor_real_memory_graph(tmp_path: Path) -> No
     source_key = project_memory_key(workspace, "decisions", "split-source")
     assert source_note["key"] == source_key
 
-    split = parse_json_stdout(run_iwe2(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
+    split = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
     assert split["key"] == source_key
     assert split["section"] == "Extracted Plan"
     extracted_keys = {json_string(key) for key in json_array(split["extracted"])}
     assert len(extracted_keys) == 1
     extracted_key = next(iter(extracted_keys))
     assert extracted_key != source_key
-    split_search = parse_json_stdout(run_iwe2(workspace.repo, "search", "keys", "--scope", "project", "Extracted Plan"))
+    split_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "project", "Extracted Plan"))
     assert extracted_key in result_keys(split_search)
     assert (workspace.vault / f"{extracted_key}.md").is_file()
     split_source_text = (workspace.vault / f"{source_key}.md").read_text(encoding="utf-8")
     assert "Split details stay recoverable." not in split_source_text
     assert "Extracted Plan" in split_source_text
 
-    merged = parse_json_stdout(run_iwe2(workspace.repo, "maintain", "merge", source_key, "--reference", extracted_key))
+    merged = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "merge", source_key, "--reference", extracted_key))
     assert merged["key"] == source_key
     assert merged["reference"] == extracted_key
     assert not (workspace.vault / f"{extracted_key}.md").exists()
-    merged_source_text = run_iwe2(workspace.repo, "retrieve", source_key).stdout
+    merged_source_text = run_agent_memory(workspace.repo, "retrieve", source_key).stdout
     assert "## Extracted Plan" in merged_source_text
     assert "Split details stay recoverable." in merged_source_text
 
-    validation = parse_json_stdout(run_iwe2(workspace.repo, "doctor"))
+    validation = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
     assert validation["vault"] == str(workspace.vault)
     assert validation["project_id"] == workspace.project_id
     assert validation["project_root"] == str(workspace.repo)
@@ -872,9 +887,9 @@ def test_init_project_replaces_existing_agents_memory_pointer(tmp_path: Path) ->
         tmp_path,
         "# Existing repo instructions\n\n"
         "Preserve local setup rules before memory.\n\n"
-        "<!-- iwe2:agent-memory:start -->\n"
+        "<!-- agent-memory:start -->\n"
         "stale vault: /tmp/not-the-current-vault\n"
-        "<!-- iwe2:agent-memory:end -->\n\n"
+        "<!-- agent-memory:end -->\n\n"
         "Preserve local setup rules after memory.\n",
     )
 
@@ -882,8 +897,8 @@ def test_init_project_replaces_existing_agents_memory_pointer(tmp_path: Path) ->
     assert "Preserve local setup rules before memory." in agents_pointer
     assert "Preserve local setup rules after memory." in agents_pointer
     assert "/tmp/not-the-current-vault" not in agents_pointer
-    assert agents_pointer.count("<!-- iwe2:agent-memory:start -->") == 1
-    assert agents_pointer.count("<!-- iwe2:agent-memory:end -->") == 1
+    assert agents_pointer.count("<!-- agent-memory:start -->") == 1
+    assert agents_pointer.count("<!-- agent-memory:end -->") == 1
     assert f"This repository uses the central agent memory vault at `{workspace.vault}`." in agents_pointer
     assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
 
@@ -893,13 +908,13 @@ def test_init_project_appends_agents_memory_pointer_to_unmarked_agents(
 ) -> None:
     workspace = initialized_workspace_with_agents(
         tmp_path,
-        "# Existing repo instructions\n\nPreserve instructions that are not managed by iwe2.\n",
+        "# Existing repo instructions\n\nPreserve instructions that are not managed by agent-memory.\n",
     )
 
     agents_pointer = (workspace.repo / "AGENTS.md").read_text(encoding="utf-8")
-    assert "Preserve instructions that are not managed by iwe2." in agents_pointer
-    assert agents_pointer.count("<!-- iwe2:agent-memory:start -->") == 1
-    assert agents_pointer.count("<!-- iwe2:agent-memory:end -->") == 1
+    assert "Preserve instructions that are not managed by agent-memory." in agents_pointer
+    assert agents_pointer.count("<!-- agent-memory:start -->") == 1
+    assert agents_pointer.count("<!-- agent-memory:end -->") == 1
     assert f"This repository uses the central agent memory vault at `{workspace.vault}`." in agents_pointer
     assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
 
@@ -916,7 +931,7 @@ def test_maintain_move_memory_to_global_leaves_project_pointer(
         content="promote-signal-f88f0a72 must become shared knowledge",
     )
 
-    moved = parse_json_stdout(run_iwe2(workspace.repo, "maintain", "move", str(note["key"]), "--to", "global/traps"))
+    moved = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "move", str(note["key"]), "--to", "global/traps"))
 
     destination = Path(str(moved["path"]))
     pointer = Path(str(note["path"]))
@@ -952,7 +967,7 @@ def test_project_commands_without_config_fail_with_first_time_setup_guidance(
     repo.mkdir()
     init_git_repo(repo)
 
-    result = run_iwe2_subprocess(
+    result = run_agent_memory_subprocess(
         repo,
         "add",
         "--scope",
@@ -967,7 +982,7 @@ def test_project_commands_without_config_fail_with_first_time_setup_guidance(
 
     assert result.returncode != 0
     assert "No project memory config found" in result.stderr
-    assert "iwe2 init project --vault" in result.stderr
+    assert "agent-memory init project --vault" in result.stderr
     assert "ProjectNotInitializedError" in result.stderr
     assert "Traceback" in result.stderr
 
@@ -983,11 +998,11 @@ def test_startup_doctor_gate_reports_missing_dependency_before_command_logic(
     env = os.environ.copy()
     env["PATH"] = str(empty_path)
 
-    result = run_iwe2_subprocess(repo, "doctor", env=env)
+    result = run_agent_memory_subprocess(repo, "doctor", env=env)
 
     assert result.returncode != 0
     assert "Missing required dependency: git" in result.stderr
-    assert "Install instructions: run `just setup` from the iwe2 checkout" in result.stderr
+    assert "Install instructions: run `just setup` from the agent-memory checkout" in result.stderr
     assert "DependencyError" in result.stderr
     assert "Traceback" in result.stderr
 
@@ -1001,10 +1016,10 @@ def test_startup_doctor_gate_reports_failed_dependency_output(tmp_path: Path) ->
     broken_git = broken_bin / "git"
     broken_git.write_text("#!/bin/sh\nprintf 'bad git stdout\\n'\nprintf 'bad git stderr\\n' >&2\nexit 7\n", encoding="utf-8")
     broken_git.chmod(0o755)
-    env = iwe2_env()
+    env = agent_memory_env()
     env["PATH"] = f"{broken_bin}:{env['PATH']}"
 
-    result = run_iwe2_subprocess(repo, "doctor", env=env)
+    result = run_agent_memory_subprocess(repo, "doctor", env=env)
 
     assert result.returncode != 0
     assert "Dependency check failed: git" in result.stderr
@@ -1023,7 +1038,7 @@ def test_load_project_config_raises_project_not_initialized(tmp_path: Path) -> N
         operations_load_project_config(repo)
     message = str(excinfo.value)
     assert "No project memory config found" in message
-    assert "iwe2 init project --vault" in message
+    assert "agent-memory init project --vault" in message
 
 
 def test_check_dependency_raises_for_missing_binary(tmp_path: Path) -> None:
@@ -1057,7 +1072,7 @@ def test_check_dependency_raises_for_failed_command(tmp_path: Path) -> None:
     )
     broken_tool.chmod(0o755)
     dependency = DependencyCheck("broken-tool", ("broken-tool", "check"), "reinstall broken-tool")
-    env = iwe2_env()
+    env = agent_memory_env()
     env["PATH"] = f"{broken_bin}:{env['PATH']}"
     original_env = os.environ.copy()
     try:
@@ -1086,7 +1101,7 @@ def test_update_memory_requires_at_least_one_field(tmp_path: Path) -> None:
 def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
-    doctor = parse_json_stdout(run_iwe2(workspace.repo, "doctor"))
+    doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
 
     assert doctor["vault"] == str(workspace.vault)
     assert doctor["project_id"] == workspace.project_id
@@ -1104,7 +1119,7 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
 
 def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    command_env = iwe2_env()
+    command_env = agent_memory_env()
     original_cwd = Path.cwd()
     original_argv = sys.argv.copy()
     original_env = os.environ.copy()
@@ -1113,7 +1128,7 @@ def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path
         os.chdir(workspace.repo)
         os.environ.clear()
         os.environ.update(command_env)
-        sys.argv = ["iwe2", "doctor"]
+        sys.argv = ["agent-memory", "doctor"]
         with redirect_stdout(stdout), pytest.raises(SystemExit) as excinfo:
             cli_main()
     finally:
@@ -1126,9 +1141,9 @@ def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path
     assert payload["project_root"] == str(workspace.repo)
 
 
-def test_python_dash_m_iwe2_module_entrypoint_runs_doctor(tmp_path: Path) -> None:
+def test_python_dash_m_agent_memory_module_entrypoint_runs_doctor(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    command_env = iwe2_env()
+    command_env = agent_memory_env()
     original_cwd = Path.cwd()
     original_argv = sys.argv.copy()
     original_env = os.environ.copy()
@@ -1137,9 +1152,9 @@ def test_python_dash_m_iwe2_module_entrypoint_runs_doctor(tmp_path: Path) -> Non
         os.chdir(workspace.repo)
         os.environ.clear()
         os.environ.update(command_env)
-        sys.argv = ["iwe2", "doctor"]
+        sys.argv = ["agent-memory", "doctor"]
         with redirect_stdout(stdout), pytest.raises(SystemExit) as excinfo:
-            runpy.run_module("iwe2.__main__", run_name="__main__")
+            runpy.run_module("agent_memory.__main__", run_name="__main__")
     finally:
         os.chdir(original_cwd)
         sys.argv = original_argv
@@ -1176,7 +1191,7 @@ def test_inspect_overview_schema_and_paths_map_real_vault(tmp_path: Path) -> Non
     assert overview["project_id"] == workspace.project_id
     assert overview["scope"] == "both"
     assert overview["roots"] == ["global/index", f"projects/{workspace.project_id}/index"]
-    assert overview["totals"] == {"notes": 2, "indexes": 12}
+    assert overview["totals"] == {"notes": 2, "indexes": 14}
     assert overview["notes_by_scope"] == {"global": 1, "project": 1}
     assert overview["notes_by_type"] == {"advice": 1, "decision": 1}
 
@@ -1194,7 +1209,7 @@ def test_inspect_overview_schema_and_paths_map_real_vault(tmp_path: Path) -> Non
         "export",
     ]
     assert schema["scopes"] == ["project", "global", "both"]
-    assert schema["memory_types"] == ["decision", "trap", "advice", "context", "reference"]
+    assert schema["memory_types"] == ["decision", "trap", "advice", "context", "reference", "plan"]
 
     paths = inspect_json(workspace, "paths", "--scope", "project", "--kind", "notes", "--format", "json")
     assert paths["scope"] == "project"
@@ -1250,6 +1265,7 @@ def test_inspect_tree_maps_project_memory_hierarchy(tmp_path: Path) -> None:
         f"projects/{workspace.project_id}/advice/index",
         f"projects/{workspace.project_id}/context/index",
         f"projects/{workspace.project_id}/decisions/index",
+        f"projects/{workspace.project_id}/plans/index",
         project_key,
         f"projects/{workspace.project_id}/references/index",
         f"projects/{workspace.project_id}/traps/index",
@@ -1452,7 +1468,7 @@ def test_inspect_export_profiles_real_vault(tmp_path: Path) -> None:
 def test_merge_probe_payloads_treats_absent_skipped_files_as_no_skips() -> None:
     # Probe 0.6.0's --format json contract emits "skipped_files" only when it skips
     # files under the token budget; when nothing is skipped it omits the key entirely.
-    # iwe2 must interpret that omission as the documented "no files skipped" outcome and
+    # agent-memory must interpret that omission as the documented "no files skipped" outcome and
     # produce an empty skipped-files section, not raise.
     payload_no_skips: JsonObject = {
         "limits": {"total_bytes": 685, "total_tokens": 201},

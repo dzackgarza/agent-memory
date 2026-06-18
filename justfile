@@ -2,14 +2,14 @@ ZK_VERSION := "v0.15.5"
 ZK_ASSET := "zk-" + ZK_VERSION + "-linux-amd64.tar.gz"
 LOCAL_BIN := env_var("HOME") / ".local/bin"
 
-install: _install-iwe2 _install-iwe _install-ripgrep _install-zk _install-probe _verify-toolchain
+install: _install-agent-memory _install-iwe _install-ripgrep _install-zk _install-probe _verify-toolchain
 
 setup: install
     #!/usr/bin/env bash
     set -euo pipefail
     vault="$(gum input --prompt 'Global memory vault: ' --value "$HOME/.agent-memory-vault")"
     : "${vault:?Global memory vault path is required}"
-    iwe2 maintain init-global --vault "$vault"
+    agent-memory maintain init-global --vault "$vault"
 
 test:
     #!/usr/bin/env bash
@@ -22,12 +22,12 @@ test-ci:
     direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test-ci
 
 [private]
-_install-iwe2:
+_install-agent-memory:
     #!/usr/bin/env bash
     set -euo pipefail
     uv tool install --force --editable "{{ justfile_directory() }}"
     bin_dir="$(uv tool dir --bin)"
-    test -x "$bin_dir/iwe2"
+    test -x "$bin_dir/agent-memory"
     case ":$PATH:" in
         *":$bin_dir:"*) ;;
         *)
@@ -36,7 +36,7 @@ _install-iwe2:
             exit 1
             ;;
     esac
-    "$bin_dir/iwe2" --help >/dev/null
+    "$bin_dir/agent-memory" --help >/dev/null
 
 [private]
 _install-iwe:
@@ -89,7 +89,7 @@ _install-probe:
 _verify-toolchain:
     #!/usr/bin/env bash
     set -euo pipefail
-    test -x "$(uv tool dir --bin)/iwe2"
+    test -x "$(uv tool dir --bin)/agent-memory"
     test -x "{{ LOCAL_BIN }}/zk"
     uv --version
     git --version
@@ -99,4 +99,4 @@ _verify-toolchain:
     npx --version
     "{{ LOCAL_BIN }}/zk" --version
     npx -y @probelabs/probe@latest --version
-    "$(uv tool dir --bin)/iwe2" --help >/dev/null
+    "$(uv tool dir --bin)/agent-memory" --help >/dev/null

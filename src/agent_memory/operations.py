@@ -15,7 +15,7 @@ from pathlib import Path
 import tomli_w
 import yaml
 
-from iwe2.models import (
+from agent_memory.models import (
     GlobalNoteMetadata,
     InspectExportFormat,
     InspectExportProfile,
@@ -49,11 +49,11 @@ class DependencyCheck:
 
 OKF_VERSION = "0.1"
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
-AGENTS_SECTION_START = "<!-- iwe2:agent-memory:start -->"
-AGENTS_SECTION_END = "<!-- iwe2:agent-memory:end -->"
+AGENTS_SECTION_START = "<!-- agent-memory:start -->"
+AGENTS_SECTION_END = "<!-- agent-memory:end -->"
 ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
-VAULT_GIT_USER_NAME = "iwe2"
-VAULT_GIT_USER_EMAIL = "iwe2@localhost"
+VAULT_GIT_USER_NAME = "agent-memory"
+VAULT_GIT_USER_EMAIL = "agent-memory@localhost"
 ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
@@ -62,13 +62,14 @@ MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.ADVICE: "advice",
     MemoryType.CONTEXT: "context",
     MemoryType.REFERENCE: "references",
+    MemoryType.PLAN: "plans",
 }
 
 # The directory names for every memory type, in MemoryType enum order. This is the
 # single source for both the global vault layout and the per-project layout.
 MEMORY_TYPE_DIRECTORY_NAMES: tuple[str, ...] = tuple(MEMORY_TYPE_DIRECTORIES[memory_type] for memory_type in MemoryType)
 
-# Canonical ordering of `iwe2 inspect` subcommands. The CLI layer drives command
+# Canonical ordering of `agent-memory inspect` subcommands. The CLI layer drives command
 # registration from this tuple and inspect_schema advertises it, so the command set has
 # exactly one source of truth in the inner layer the CLI depends on.
 INSPECT_COMMAND_NAMES: tuple[str, ...] = (
@@ -102,32 +103,32 @@ BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
     DependencyCheck(
         "git",
         ("git", "--version"),
-        "run `just setup` from the iwe2 checkout; manual install: install Git from your OS package manager.",
+        "run `just setup` from the agent-memory checkout; manual install: install Git from your OS package manager.",
     ),
     DependencyCheck(
         "iwe",
         ("iwe", "--version"),
-        "run `just setup` from the iwe2 checkout; manual install: run `cargo install iwe iwes iwec`.",
+        "run `just setup` from the agent-memory checkout; manual install: run `cargo install iwe iwes iwec`.",
     ),
     DependencyCheck(
         "rg",
         ("rg", "--version"),
-        "run `just setup` from the iwe2 checkout; manual install: run `cargo install ripgrep`.",
+        "run `just setup` from the agent-memory checkout; manual install: run `cargo install ripgrep`.",
     ),
     DependencyCheck(
         "npx",
         ("npx", "--version"),
-        "run `just setup` from the iwe2 checkout; manual install: install Node.js with npm/npx.",
+        "run `just setup` from the agent-memory checkout; manual install: install Node.js with npm/npx.",
     ),
     DependencyCheck(
         "@probelabs/probe",
         ("npx", "-y", "@probelabs/probe@latest", "--version"),
-        "run `just setup` from the iwe2 checkout; manual install: run `npx -y @probelabs/probe@latest --version`.",
+        "run `just setup` from the agent-memory checkout; manual install: run `npx -y @probelabs/probe@latest --version`.",
     ),
     DependencyCheck(
         "zk",
         ("zk", "--version"),
-        "run `just setup` from the iwe2 checkout; manual install: install zk v0.15.5 to a directory on PATH.",
+        "run `just setup` from the agent-memory checkout; manual install: install zk v0.15.5 to a directory on PATH.",
     ),
 )
 
@@ -144,9 +145,9 @@ class ProjectNotInitializedError(RuntimeError):
     """Raised when a project command runs before project memory setup is done."""
 
     GUIDANCE = (
-        "No project memory config found. Run `iwe2 maintain init-global --vault "
+        "No project memory config found. Run `agent-memory maintain init-global --vault "
         "{default_vault}` once if the global vault does not exist, then run "
-        "`iwe2 init project --vault <path-to-global-vault>` from this repository."
+        "`agent-memory init project --vault <path-to-global-vault>` from this repository."
     )
 
     def __init__(self, default_vault: Path) -> None:
@@ -186,7 +187,7 @@ class DependencyError(RuntimeError):
 
 
 def starter_config() -> StarterConfig:
-    payload = tomllib.loads(resources.files("iwe2.defaults").joinpath("global.toml").read_text(encoding="utf-8"))
+    payload = tomllib.loads(resources.files("agent_memory.defaults").joinpath("global.toml").read_text(encoding="utf-8"))
     default_vault = payload["default_vault"]
     global_scopes = payload["global_scopes"]
     search_max_results = payload["search_max_results"]
@@ -279,12 +280,12 @@ def init_global_vault(vault: Path) -> JsonObject:
     write_section_indexes(vault / "global", MEMORY_TYPE_DIRECTORY_NAMES)
     write_new_file(vault / "_meta" / "projects.toml", tomli_w.dumps({"projects": []}))
     index_zk_notebook(vault)
-    commit_vault_changes(vault, "Initialize iwe2 vault")
+    commit_vault_changes(vault, "Initialize agent-memory vault")
     return {"vault": str(vault)}
 
 
 def init_project(vault: Path, cwd: Path) -> JsonObject:
-    assert (vault / ".iwe" / "config.toml").is_file(), "vault must be initialized with IWE"
+    assert (vault / ".agents" / "memories" / "config.toml").is_file(), "vault must be initialized with agent-memory metadata"
     starter = starter_config()
     git_root = git_root_for(cwd)
     remote = git_remote(git_root)
@@ -928,6 +929,7 @@ def commit_vault_changes(vault: Path, message: str) -> None:
 
 
 def configure_vault_git(vault: Path) -> None:
+    run_checked(["git", "config", "--local", "core.hooksPath", ""], cwd=vault)
     run_checked(["git", "config", "user.name", VAULT_GIT_USER_NAME], cwd=vault)
     run_checked(["git", "config", "user.email", VAULT_GIT_USER_EMAIL], cwd=vault)
 
@@ -953,7 +955,7 @@ def write_new_file(path: Path, content: str) -> None:
 
 
 def agents_pointer_section(vault: Path, project_id: str) -> str:
-    add_examples = "".join(f"iwe2 add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in MemoryType)
+    add_examples = "".join(f"agent-memory add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in MemoryType)
     return (
         f"{AGENTS_SECTION_START}\n"
         "# Agent memory\n\n"
@@ -961,16 +963,16 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         f"Project memory key: `projects/{project_id}/index`.\n\n"
         "Before changing architecture, search both project and global memory:\n\n"
         "```bash\n"
-        'iwe2 search --scope both "<task or subsystem>"\n'
+        'agent-memory search --scope both "<task or subsystem>"\n'
         "```\n\n"
         "Record durable repo-specific lessons with:\n\n"
         "```bash\n"
         f"{add_examples}"
         "```\n\n"
-        "Use `iwe2 retrieve <key>`, `iwe2 update <key>`, and `iwe2 delete <key>` for memory CRUD.\n\n"
+        "Use `agent-memory retrieve <key>`, `agent-memory update <key>`, and `agent-memory delete <key>` for memory CRUD.\n\n"
         "Move reusable lessons during maintenance with:\n\n"
         "```bash\n"
-        "iwe2 maintain move <key> --to global/advice\n"
+        "agent-memory maintain move <key> --to global/advice\n"
         "```\n"
         f"{AGENTS_SECTION_END}\n"
     )
@@ -986,7 +988,7 @@ def write_agents_pointer(project_root: Path, vault: Path, project_id: str) -> No
     existing = agents_path.read_text(encoding="utf-8")
     has_start = AGENTS_SECTION_START in existing
     has_end = AGENTS_SECTION_END in existing
-    assert has_start == has_end, f"malformed iwe2 AGENTS section in {agents_path}"
+    assert has_start == has_end, f"malformed agent-memory AGENTS section in {agents_path}"
     if has_start:
         prefix, marked = existing.split(AGENTS_SECTION_START, 1)
         _, suffix = marked.split(AGENTS_SECTION_END, 1)
