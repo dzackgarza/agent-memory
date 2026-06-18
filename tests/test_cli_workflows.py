@@ -602,6 +602,19 @@ def test_retrieve_resolves_memory_by_basename(tmp_path: Path) -> None:
     assert "basename-signal-4f2a1c belongs to this project" in retrieved.stdout
 
 
+def test_retrieve_basename_collision_fails_listing_candidates(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    add_cli_memory(workspace, scope="project", memory_type="advice", title="Shared Title", content="project copy")
+    add_cli_memory(workspace, scope="global", memory_type="advice", title="Shared Title", content="global copy")
+    # Same slug exists in both scopes; a bare basename is ambiguous and must fail loudly
+    # naming every full candidate key, never silently picking one (issue #3).
+    result = run_iwe2_subprocess(workspace.repo, "retrieve", "shared-title")
+    assert result.returncode != 0
+    assert "AssertionError" in result.stderr
+    assert project_memory_key(workspace, "advice", "shared-title") in result.stderr
+    assert "global/advice/shared-title" in result.stderr
+
+
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(

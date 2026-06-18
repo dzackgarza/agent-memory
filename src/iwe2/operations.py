@@ -426,6 +426,7 @@ def update_memory(
 ) -> JsonObject:
     assert title is not None or memory_type is not None or content is not None, "update requires at least one of --title, --type, or --content"
     config = load_project_config(cwd)
+    key = resolve_memory_key(config, key)
     transition = memory_transition(config, key, title, memory_type, content)
     if transition.new_key != transition.old_key:
         run_checked(["iwe", "rename", transition.old_key, transition.new_key], cwd=config.vault)
@@ -441,6 +442,7 @@ def update_memory(
 
 def delete_memory(key: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
+    key = resolve_memory_key(config, key)
     path = config.vault / f"{key}.md"
     document = read_memory(path)
     title = metadata_string(document.metadata, "title")
@@ -779,19 +781,20 @@ def json_int(payload: JsonObject, key: str) -> int:
 
 def retrieve_memory(key: str, cwd: Path) -> str:
     config = load_project_config(cwd)
-    result = run_checked(["iwe", "retrieve", "-k", key], cwd=config.vault)
+    result = run_checked(["iwe", "retrieve", "-k", resolve_memory_key(config, key)], cwd=config.vault)
     return result.stdout
 
 
 def squash_memory(key: str, depth: int, cwd: Path) -> str:
     assert depth > 0, f"squash depth must be positive: {depth}"
     config = load_project_config(cwd)
-    result = run_checked(["iwe", "squash", key, "--depth", str(depth)], cwd=config.vault)
+    result = run_checked(["iwe", "squash", resolve_memory_key(config, key), "--depth", str(depth)], cwd=config.vault)
     return result.stdout
 
 
 def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
+    key = resolve_memory_key(config, key)
     source_document = read_memory(memory_path_for_key(config, key))
     source_title = metadata_string(source_document.metadata, "title")
     memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
@@ -816,6 +819,8 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
+    key = resolve_memory_key(config, key)
+    reference = resolve_memory_key(config, reference)
     result = run_checked(["iwe", "inline", key, "--reference", reference, "-f", "keys"], cwd=config.vault)
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Merge memory reference: {reference}")
@@ -824,6 +829,7 @@ def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
 
 def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
+    key = resolve_memory_key(config, key)
     assert destination.startswith("global/"), "move destination must be global"
     source_path = config.vault / f"{key}.md"
     assert source_path.is_file(), "memory to move must exist"
@@ -968,6 +974,9 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         f"{add_examples}"
         "```\n\n"
         "Use `iwe2 retrieve <key>`, `iwe2 update <key>`, and `iwe2 delete <key>` for memory CRUD.\n\n"
+        f"A `<key>` is the full vault-relative path printed by `add`, e.g. `projects/{project_id}/advice/<slug>`. "
+        "These commands also accept a bare `<slug>` when it is unique across project and global scope; "
+        "an ambiguous slug fails loudly and lists the full candidate keys.\n\n"
         "Move reusable lessons during maintenance with:\n\n"
         "```bash\n"
         "iwe2 maintain move <key> --to global/advice\n"
@@ -1451,6 +1460,7 @@ def inspect_links(
     assert output_format is InspectOutputFormat.JSON, "inspect links currently emits JSON"
     assert depth >= 0, "inspect links depth must be nonnegative"
     config = load_project_config(cwd)
+    key = resolve_memory_key(config, key)
     path = memory_path_for_key(config, key)
     records = link_records_for_direction(config, path, depth, direction)
     return {
@@ -1469,6 +1479,7 @@ def inspect_outline(
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect outline currently emits JSON"
     config = load_project_config(cwd)
+    key = resolve_memory_key(config, key)
     path = memory_path_for_key(config, key)
     document = read_memory(path)
     return {
@@ -1608,6 +1619,20 @@ def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
     path = config.vault / f"{key}.md"
     assert path.is_file(), f"memory key does not exist: {key}"
     return path
+
+
+def resolve_memory_key(config: ProjectConfig, key: str) -> str:
+    # The iwe v1 backend resolves only full vault-relative keys, but the AGENTS.md
+    # guidance and add/search output expose bare basenames. Accept either: a key that
+    # already names an existing file is returned as-is; otherwise resolve a unique
+    # basename across both scopes to its full key, failing loudly on collision so a
+    # path miss is never silently misread as a missing memory (issue #3).
+    if (config.vault / f"{key}.md").is_file():
+        return key
+    candidates = sorted(memory_key(config.vault, path) for path in memory_files(config, SearchScope.BOTH) if path.stem == key)
+    assert candidates, f"memory key does not exist: {key}"
+    assert len(candidates) == 1, f"memory basename is ambiguous: {key}; candidates: {', '.join(candidates)}"
+    return candidates[0]
 
 
 def first_heading_title(markdown: str) -> str:
