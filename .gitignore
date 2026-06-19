@@ -10,3 +10,4 @@ htmlcov/
 Cargo.lock
 src/agent_memory/_iwe*.so
 *.abi3.so
+.venv-build/
