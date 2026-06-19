@@ -1106,10 +1106,9 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     assert doctor["vault"] == str(workspace.vault)
     assert doctor["project_id"] == workspace.project_id
     assert doctor["project_root"] == str(workspace.repo)
-    assert doctor["tools"] == ["git", "iwe", "rg", "npx", "@probelabs/probe", "zk"]
+    assert doctor["tools"] == ["git", "rg", "npx", "@probelabs/probe", "zk"]
     assert doctor["dependencies"] == [
         {"name": "git", "command": ["git", "--version"], "status": "ok"},
-        {"name": "iwe", "command": ["iwe", "--version"], "status": "ok"},
         {"name": "rg", "command": ["rg", "--version"], "status": "ok"},
         {"name": "npx", "command": ["npx", "--version"], "status": "ok"},
         {"name": "@probelabs/probe", "command": ["npx", "-y", "@probelabs/probe@latest", "--version"], "status": "ok"},

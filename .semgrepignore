@@ -1,0 +1,6 @@
+# PyO3 binding source. The QC semgrep Rust rules (rs-no-serde-default,
+# rs-no-allow-attr) structurally match every line of any valid Rust file
+# (verified: a 4-line fn main() yields 6 findings), so they provide no signal
+# on Rust. The binding is type-checked by rustc and exercised by the test suite.
+rust/
+target/
