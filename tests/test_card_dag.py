@@ -43,3 +43,17 @@ def test_dag_renders_dependency_and_containment_edges(tmp_path: Path) -> None:
     # containment edge parent -> child appears in the containment graph
     assert "PHASE-ONE --> TASK-ONE" in dag
     assert "FEATURE-TWO --> PLAN-TWO" in dag
+
+
+def test_dag_omits_edges_to_nonexistent_targets(tmp_path: Path) -> None:
+    # dependency/containment edges are emitted only when the target card exists; a
+    # reference to a missing id contributes no edge (the `if target in records` /
+    # `if parent in records` false branches).
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    seed_feature_chain(root, "ONE", config, models)
+    update_card(root, config, models, "TASK-ONE", {"dependsOn": ["[[TASK-GHOST]]"]})
+    update_card(root, config, models, "PHASE-ONE", {"parents": ["[[PLAN-ONE]]", "[[PLAN-GHOST]]"]})
+    dag = render_dag(load_card_records([root], config, models))
+    assert "TASK-GHOST" not in dag
+    assert "PLAN-GHOST" not in dag

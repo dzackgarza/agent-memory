@@ -94,3 +94,28 @@ def test_clean_multi_project_tree_has_no_problems(tmp_path: Path) -> None:
     seed_feature_chain(root1, "ONE", config, models)
     seed_feature_chain(root2, "TWO", config, models)
     assert validate_cards(load_card_records([root1, root2], config, models), config) == []
+
+
+def test_wikilink_ids_passes_through_unbracketed() -> None:
+    # a value without the [[...]] wrapper is already a bare id and must pass through
+    # unchanged (the false branch of the bracket check).
+    assert wikilink_ids(["PLAIN-ID"]) == ["PLAIN-ID"]
+    assert wikilink_ids("BARE") == ["BARE"]
+
+
+def test_load_card_records_tolerates_missing_root(tmp_path: Path) -> None:
+    # a plans root that does not exist must be skipped, not crash (the `if not
+    # root.exists(): continue` branch); real roots still load fully.
+    config, models = models_and_config()
+    real_root = tmp_path / "p" / "plans"
+    seed_feature_chain(real_root, "ONE", config, models)
+    records = load_card_records([tmp_path / "missing" / "plans", real_root], config, models)
+    assert set(records) == {"FEATURE-ONE", "PLAN-ONE", "PHASE-ONE", "TASK-ONE"}
+
+
+def test_dependency_cycles_diamond_is_acyclic() -> None:
+    # a diamond (A->B, A->C, B->D, C->D) has a shared sink but no cycle; revisiting D
+    # via the second path hits the color==2 (already finished) branch, not a cycle.
+    from iwe2.cards.validation import dependency_cycles
+
+    assert dependency_cycles({"A": ["B", "C"], "B": ["D"], "C": ["D"], "D": []}) == []

@@ -17,6 +17,7 @@ import tomli_w
 import yaml
 from mistletoe import block_token, span_token
 from mistletoe.markdown_renderer import BlankLine, MarkdownRenderer
+from mistletoe.token import Token
 from pydantic import BaseModel
 
 from iwe2.cards.config import CardSystemConfig
@@ -1084,14 +1085,45 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
         index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
 
 
-def index_item_title(list_item: object) -> str | None:
-    paragraph = next(iter(token_children(list_item)), None)
-    if paragraph is None:
-        return None
-    leading = next(iter(token_children(paragraph)), None)
-    if not isinstance(leading, span_token.Link):
-        return None
+def index_item_title(list_item: Token) -> str:
+    leading = next(iter(token_children(next(iter(token_children(list_item))))))
     return inline_text(leading)
+
+
+def locate_index_item(body_children: list[Token], title: str) -> tuple[block_token.List, int]:
+    located = [
+        (block, item_index)
+        for block in body_children
+        if isinstance(block, block_token.List)
+        for item_index, item in enumerate(token_children(block))
+        if index_item_title(item) == title
+    ]
+    assert len(located) == 1, "index must contain exactly one link for the title"
+    block, item_index = located[0]
+    return block, item_index
+
+
+def apply_remove_item(body_children: list[Token], block: block_token.List, item_index: int) -> None:
+    items = token_children(block)
+    del items[item_index]
+    if items:
+        # the loose-list blank separator lives on each non-final item; drop the
+        # one now trailing the final item so the list does not end with a gap.
+        final = token_children(items[-1])
+        final[:] = [child for child in final if not isinstance(child, BlankLine)]
+    else:
+        body_children.remove(block)
+
+
+def apply_replace_item(block: block_token.List, item_index: int, replacement: str) -> None:
+    # Replace the whole item so the canonical OKF "*" bullet is restored even
+    # after IWE rewrote it to "-" on rename, carrying over the loose-list blank
+    # separator so untouched spacing is preserved.
+    items = token_children(block)
+    separators = [child for child in token_children(items[item_index]) if isinstance(child, BlankLine)]
+    replacement_item = token_children(token_children(mistletoe.Document(f"{replacement}\n"))[0])[0]
+    token_children(replacement_item).extend(separators)
+    items[item_index] = replacement_item
 
 
 def rewrite_index_link(index_path: Path, title: str, replacement: str | None) -> None:
@@ -1103,33 +1135,11 @@ def rewrite_index_link(index_path: Path, title: str, replacement: str | None) ->
     with MarkdownRenderer() as renderer:
         body = mistletoe.Document(document.body)
         body_children = token_children(body)
-        located = [
-            (block, item_index)
-            for block in body_children
-            if isinstance(block, block_token.List)
-            for item_index, item in enumerate(token_children(block))
-            if index_item_title(item) == title
-        ]
-        assert len(located) == 1, "index must contain exactly one link for the title"
-        block, item_index = located[0]
-        items = token_children(block)
+        block, item_index = locate_index_item(body_children, title)
         if replacement is None:
-            del items[item_index]
-            if items:
-                # the loose-list blank separator lives on each non-final item; drop the
-                # one now trailing the final item so the list does not end with a gap.
-                final = token_children(items[-1])
-                final[:] = [child for child in final if not isinstance(child, BlankLine)]
-            else:
-                body_children.remove(block)
+            apply_remove_item(body_children, block, item_index)
         else:
-            # Replace the whole item so the canonical OKF "*" bullet is restored even
-            # after IWE rewrote it to "-" on rename, carrying over the loose-list blank
-            # separator so untouched spacing is preserved.
-            separators = [child for child in token_children(items[item_index]) if isinstance(child, BlankLine)]
-            replacement_item = token_children(token_children(mistletoe.Document(f"{replacement}\n"))[0])[0]
-            token_children(replacement_item).extend(separators)
-            items[item_index] = replacement_item
+            apply_replace_item(block, item_index, replacement)
         new_body = renderer.render(body)
     write_memory(index_path, document.metadata, new_body)
 
@@ -1680,22 +1690,25 @@ def resolve_memory_key(config: ProjectConfig, key: str) -> str:
     return candidates[0]
 
 
-def walk_tokens(token: object) -> Iterator[object]:
+def walk_tokens(token: Token) -> Iterator[Token]:
     yield token
-    for child in getattr(token, "children", None) or ():
-        yield from walk_tokens(child)
+    children = token.children
+    if children is not None:
+        for child in children:
+            yield from walk_tokens(child)
 
 
-def token_children(token: object) -> list[object]:
+def token_children(token: Token) -> list[Token]:
     # mistletoe types children as Iterable[Token] | None, but every parsed container
     # holds a concrete list. Adapt the loose stub in place (no copy) so list mutations
     # persist back into the parsed document.
-    children = getattr(token, "children", None)
+    children = token.children
     assert children is not None, "markdown token has no children"
-    return cast("list[object]", children)
+    assert isinstance(children, list), "container token children must be a list"
+    return children
 
 
-def inline_text(token: object) -> str:
+def inline_text(token: Token) -> str:
     return "".join(descendant.content for descendant in walk_tokens(token) if isinstance(descendant, span_token.RawText))
 
 
@@ -1892,6 +1905,25 @@ def all_plans_roots(config: ProjectConfig, cards_config: CardSystemConfig) -> li
     return [config.vault / "projects" / record["project_id"] / cards_config.root for record in records]
 
 
+def coerce_scalar_field(field_type: str, value: str) -> object:
+    assert field_type not in ("string_list", "wikilink_list"), "list fields must be appended, not coerced"
+    if field_type == "int":
+        return int(value)
+    if field_type == "number":
+        return float(value)
+    if field_type == "bool":
+        return value.lower() in ("true", "1", "yes")
+    return value
+
+
+def append_list_field(fields: dict[str, object], key: str, value: str) -> None:
+    if key not in fields:
+        fields[key] = []
+    bucket = fields[key]
+    assert isinstance(bucket, list), "list field accumulator must be a list"
+    bucket.append(value)
+
+
 def parse_card_fields(cards_config: CardSystemConfig, type_name: str, assignments: Sequence[str]) -> dict[str, object]:
     spec = next((card_type for card_type in cards_config.card_types if card_type.name == type_name), None)
     assert spec is not None, f"unknown card type: {type_name}"
@@ -1903,17 +1935,9 @@ def parse_card_fields(cards_config: CardSystemConfig, type_name: str, assignment
         assert key in field_types, f"unknown field {key} for card type {type_name}"
         field_type = field_types[key]
         if field_type in ("string_list", "wikilink_list"):
-            bucket = fields.setdefault(key, [])
-            assert isinstance(bucket, list), "list field accumulator must be a list"
-            bucket.append(value)
-        elif field_type == "int":
-            fields[key] = int(value)
-        elif field_type == "number":
-            fields[key] = float(value)
-        elif field_type == "bool":
-            fields[key] = value.lower() in ("true", "1", "yes")
+            append_list_field(fields, key, value)
         else:
-            fields[key] = value
+            fields[key] = coerce_scalar_field(field_type, value)
     return fields
 
 

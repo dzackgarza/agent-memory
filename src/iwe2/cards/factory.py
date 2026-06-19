@@ -19,31 +19,53 @@ def membership_validator(options: list[str]) -> Callable[[str], str]:
     return check
 
 
+def _membership_field(field: FieldSpec, status_set: StatusSetSpec) -> tuple[Any, Any]:
+    options = status_set.options if field.type == "status" else field.options
+    annotation: Any = Annotated[str, AfterValidator(membership_validator(options))]
+    if field.required:
+        return (annotation, Field())
+    default = field.default
+    if default is None and field.type == "status":
+        default = status_set.default
+    # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is False; required fields compile to a bare Field() and fail loud if missing.
+    # ast-grep-ignore: no-field-default
+    return (annotation | None, Field(default=default))
+
+
+def _numeric_field(field: FieldSpec) -> tuple[Any, Any]:
+    scalar_number: Any = int if field.type == "int" else float
+    if field.required:
+        return (scalar_number, Field(ge=field.min, le=field.max))
+    # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is False; required fields compile to a bare Field() and fail loud if missing.
+    # ast-grep-ignore: no-field-default
+    return (scalar_number | None, Field(default=field.default, ge=field.min, le=field.max))
+
+
+def _list_field(field: FieldSpec) -> tuple[Any, Any]:
+    if field.required:
+        return (list[str], Field())
+    return (list[str], Field(default_factory=list))
+
+
+def _scalar_field(field: FieldSpec) -> tuple[Any, Any]:
+    scalar: Any = bool if field.type == "bool" else str
+    if field.required:
+        return (scalar, Field())
+    # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is False; required fields compile to a bare Field() and fail loud if missing.
+    # ast-grep-ignore: no-field-default
+    return (scalar | None, Field(default=field.default))
+
+
 def field_definition(field: FieldSpec, status_set: StatusSetSpec) -> tuple[Any, Any]:
     # Map a declared field spec onto a (type, FieldInfo) pair for pydantic.create_model.
     # Constraints declared in config become real pydantic validation; nothing is advisory.
     if field.type in ("status", "select"):
-        options = status_set.options if field.type == "status" else field.options
-        annotation: Any = Annotated[str, AfterValidator(membership_validator(options))]
-        if field.required:
-            return (annotation, Field())
-        default = field.default
-        if default is None and field.type == "status":
-            default = status_set.default
-        return (annotation | None, Field(default=default))
+        return _membership_field(field, status_set)
     if field.type in ("int", "number"):
-        scalar_number: Any = int if field.type == "int" else float
-        if field.required:
-            return (scalar_number, Field(ge=field.min, le=field.max))
-        return (scalar_number | None, Field(default=field.default, ge=field.min, le=field.max))
+        return _numeric_field(field)
     if field.type in ("string_list", "wikilink_list"):
-        if field.required:
-            return (list[str], Field())
-        return (list[str], Field(default_factory=list))
-    scalar: Any = bool if field.type == "bool" else str
-    if field.required:
-        return (scalar, Field())
-    return (scalar | None, Field(default=field.default))
+        return _list_field(field)
+    return _scalar_field(field)
 
 
 def build_card_models(config: CardSystemConfig) -> dict[str, type[BaseModel]]:

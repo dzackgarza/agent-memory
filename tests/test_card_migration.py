@@ -55,3 +55,23 @@ def test_migrated_tree_validates_clean_and_preserves_fields(tmp_path: Path) -> N
     assert task["successCriteria"] == ["shipped"]
     assert task["status"] == "complete"
     assert task["parents"] == ["[[PHASE-M]]"]
+
+
+def test_migration_skips_plan_dag_and_falls_back_to_id_prefix(tmp_path: Path) -> None:
+    # plan-dag.md is a generated artifact and must be skipped; a card lacking
+    # trackerStatus must have its type inferred from the id prefix (the else branch).
+    config, models = models_and_config()
+    source = tmp_path / "repo" / ".agents" / "plans"
+    write_card(
+        source / "features" / "FEATURE-N" / "FEATURE-N.md",
+        {"id": "FEATURE-N", "title": "No tracker feature", "status": "in-progress", "description": "d"},
+        "# No tracker feature\n",
+    )
+    (source / "plans").mkdir(parents=True, exist_ok=True)
+    (source / "plans" / "plan-dag.md").write_text("# dag\n", encoding="utf-8")
+    vault = tmp_path / "vault" / "projects" / "proj" / "plans"
+
+    migrated = migrate_plans(source, vault, config, models)
+
+    assert all(path.name != "plan-dag.md" for path in migrated)
+    assert (vault / "features" / "FEATURE-N" / "FEATURE-N.md").is_file()

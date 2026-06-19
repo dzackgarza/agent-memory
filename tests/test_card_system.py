@@ -13,13 +13,7 @@ from iwe2.cards import CardSystemConfig, build_card_models, load_card_models, lo
 # int field with a max), without the UI-only noise. The factory must compile this
 # into pydantic validators that enforce every declared constraint.
 CONFIG: dict[str, Any] = {
-    "statuses": {
-        "unstarted": {"value": "unstarted", "label": "Unstarted"},
-        "in-progress": {"value": "in-progress", "label": "In Progress"},
-        "complete": {"value": "complete", "label": "Complete"},
-        "needs-agent-review": {"value": "needs-agent-review", "label": "Needs Agent Review"},
-        "blocked": {"value": "blocked", "label": "Blocked"},
-    },
+    "statuses": ["unstarted", "in-progress", "complete", "needs-agent-review", "blocked"],
     "status_sets": {
         "standard": {
             "default": "unstarted",
@@ -118,6 +112,14 @@ def test_built_model_rejects_missing_required_field() -> None:
         models["feature"].model_validate(card)
 
 
+def test_built_model_applies_defaults_for_omitted_optional_fields() -> None:
+    models = build_card_models(CardSystemConfig.model_validate(CONFIG))
+    dumped = models["feature"].model_validate({"id": "FEATURE-X", "title": "T", "status": "in-progress"}).model_dump()
+    assert dumped["priority"] is None  # optional select -> None default
+    assert dumped["description"] is None  # optional scalar -> None default
+    assert dumped["parents"] == []  # optional list -> empty default
+
+
 def test_built_model_rejects_undeclared_field() -> None:
     models = build_card_models(CardSystemConfig.model_validate(CONFIG))
     card = valid_feature_card()
@@ -133,6 +135,50 @@ def test_built_plan_model_enforces_int_max_for_time_estimate() -> None:
     assert accepted["time_estimate_seconds"] == 9_999_999
     with pytest.raises(ValidationError):
         models["plan"].model_validate({**base, "time_estimate_seconds": 10_000_001})
+
+
+def test_config_rejects_status_set_option_absent_from_catalog() -> None:
+    bad = deepcopy(CONFIG)
+    bad["status_sets"]["standard"]["options"].append("not-a-status")
+    with pytest.raises(ValidationError):
+        CardSystemConfig.model_validate(bad)
+
+
+def test_config_rejects_parent_that_does_not_own_a_directory() -> None:
+    # the plan card type lists feature as a parent; a parent must own a directory to
+    # contain children, so flipping feature.own_dir off must be rejected.
+    bad = deepcopy(CONFIG)
+    bad["card_types"][0]["own_dir"] = False
+    with pytest.raises(ValidationError):
+        CardSystemConfig.model_validate(bad)
+
+
+def test_config_rejects_duplicate_field_names() -> None:
+    bad = deepcopy(CONFIG)
+    bad["card_types"][0]["fields"].append({"name": "title", "type": "string"})
+    with pytest.raises(ValidationError):
+        CardSystemConfig.model_validate(bad)
+
+
+def test_config_rejects_select_field_without_options() -> None:
+    bad = deepcopy(CONFIG)
+    bad["card_types"][0]["fields"].append({"name": "tier", "type": "select"})
+    with pytest.raises(ValidationError):
+        CardSystemConfig.model_validate(bad)
+
+
+def test_built_model_requires_required_int_field() -> None:
+    # a required numeric field must compile to a bare (no-default) field that enforces
+    # presence and the declared min/max range.
+    cfg = deepcopy(CONFIG)
+    cfg["card_types"][1]["fields"].append({"name": "weight", "type": "int", "required": True, "min": 0, "max": 100})
+    models = build_card_models(CardSystemConfig.model_validate(cfg))
+    base = {"id": "PLAN-X", "title": "A plan", "status": "unstarted"}
+    assert models["plan"].model_validate({**base, "weight": 50}).model_dump()["weight"] == 50
+    with pytest.raises(ValidationError):
+        models["plan"].model_validate(base)
+    with pytest.raises(ValidationError):
+        models["plan"].model_validate({**base, "weight": 200})
 
 
 # --- shipped starter config + loader (captured real card frontmatter, trackerStatus
