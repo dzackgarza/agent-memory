@@ -24,8 +24,10 @@ from agent_memory.operations import (
     INSPECT_COMMAND_NAMES,
     JsonValue,
     add_memory,
+    add_plan_card,
     basic_doctor,
     delete_memory,
+    delete_plan_card,
     init_global_vault,
     init_project,
     inspect_export,
@@ -38,6 +40,7 @@ from agent_memory.operations import (
     inspect_stats,
     inspect_tree,
     merge_memory,
+    migrate_plan_cards,
     move_memory,
     retrieve_memory,
     search_content_exact,
@@ -49,6 +52,9 @@ from agent_memory.operations import (
     split_memory,
     squash_memory,
     update_memory,
+    update_plan_card,
+    validate_plan_cards,
+    write_plan_dag,
 )
 from agent_memory.operations import (
     doctor as run_doctor,
@@ -67,6 +73,7 @@ init_app = app.command(App(name="init", help="Initialize project memory bindings
 search_app = app.command(App(name="search", help="Query memories by keys, content, or metadata."))
 inspect_app = app.command(App(name="inspect", help="Read-only vault navigation and analysis commands."))
 maintain_app = app.command(App(name="maintain", help="Vault setup and maintenance workflows."))
+plan_app = app.command(App(name="plan", help="Create, validate, and visualize project-scoped plan cards."))
 
 
 def maintain_init_global(
@@ -344,6 +351,49 @@ def doctor_command() -> None:
     emit(run_doctor(cwd=Path.cwd()))
 
 
+def plan_add_command(
+    type_name: Annotated[str, Parameter(name="type", help="Card type, e.g. feature, plan, phase, task.")],
+    card_id: Annotated[str, Parameter(name="id", help="Card id, must start with the type's prefix (e.g. TASK-...).")],
+    *,
+    parent: Annotated[str | None, Parameter(help="Parent card id for non-root cards.")] = None,
+    set_: Annotated[list[str] | None, Parameter(name="set", help="Field assignment key=value; repeat for list fields.")] = None,
+    body: Annotated[str | None, Parameter(help="Markdown body for the card.")] = None,
+) -> None:
+    """Add a plan card to the project vault."""
+    emit(add_plan_card(type_name=type_name, card_id=card_id, parent_id=parent, assignments=set_ or [], body=body if body is not None else f"# {card_id}\n", cwd=Path.cwd()))
+
+
+def plan_update_command(
+    card_id: Annotated[str, Parameter(name="id", help="Card id to update.")],
+    *,
+    set_: Annotated[list[str] | None, Parameter(name="set", help="Field assignment key=value; repeat for list fields.")] = None,
+) -> None:
+    """Update fields on an existing plan card."""
+    emit(update_plan_card(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
+
+
+def plan_delete_command(card_id: Annotated[str, Parameter(name="id", help="Card id to delete.")]) -> None:
+    """Delete a plan card."""
+    emit(delete_plan_card(card_id=card_id, cwd=Path.cwd()))
+
+
+def plan_validate_command() -> None:
+    """Validate the plan card graph across the whole vault (references, containment, DAG cycles)."""
+    emit(validate_plan_cards(cwd=Path.cwd()))
+
+
+def plan_dag_command() -> None:
+    """Render the plan dependency and containment DAG to plan-dag.md."""
+    emit(write_plan_dag(cwd=Path.cwd()))
+
+
+def plan_migrate_command(
+    source: Annotated[Path, Parameter(name="from", help="In-repo plans directory to ingest, e.g. .agents/plans.")],
+) -> None:
+    """Migrate an in-repo card tree into the project vault."""
+    emit(migrate_plan_cards(source=source.expanduser(), cwd=Path.cwd()))
+
+
 def register_commands() -> None:
     maintain_app.command(maintain_init_global, name="init-global")
     init_app.command(init_project_command, name="project")
@@ -373,6 +423,12 @@ def register_commands() -> None:
     maintain_app.command(maintain_move_command, name="move")
     maintain_app.command(maintain_split_command, name="split")
     maintain_app.command(maintain_merge_command, name="merge")
+    plan_app.command(plan_add_command, name="add")
+    plan_app.command(plan_update_command, name="update")
+    plan_app.command(plan_delete_command, name="delete")
+    plan_app.command(plan_validate_command, name="validate")
+    plan_app.command(plan_dag_command, name="dag")
+    plan_app.command(plan_migrate_command, name="migrate")
     app.command(doctor_command, name="doctor")
 
 
