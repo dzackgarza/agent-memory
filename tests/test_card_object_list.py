@@ -60,15 +60,25 @@ def test_object_list_defaults_to_empty_when_omitted() -> None:
 
 
 def test_object_list_rejects_undeclared_nested_key() -> None:
-    bad = {"owner": "o", "sageNames": [], "projectNames": [], "sprint": "Q3"}
+    bad: dict[str, Any] = {"owner": "o", "sageNames": [], "projectNames": [], "sprint": "Q3"}
     with pytest.raises(ValidationError):
         spec_model().model_validate({**base_card(), "inventories": [bad]})
 
 
 def test_object_list_rejects_missing_required_nested_field() -> None:
-    bad = {"sageNames": [], "projectNames": []}  # missing required owner
+    bad: dict[str, Any] = {"sageNames": [], "projectNames": []}  # missing required owner
     with pytest.raises(ValidationError):
         spec_model().model_validate({**base_card(), "inventories": [bad]})
+
+
+def test_object_list_required_field_must_be_present() -> None:
+    cfg = deepcopy(CONFIG)
+    cfg["card_types"][0]["fields"][3]["required"] = True
+    model = build_card_models(CardSystemConfig.model_validate(cfg))["spec"]
+    item = {"owner": "o", "sageNames": [], "projectNames": []}
+    assert model.model_validate({**base_card(), "inventories": [item]}).model_dump()["inventories"][0]["owner"] == "o"
+    with pytest.raises(ValidationError):
+        model.model_validate(base_card())  # required object_list omitted
 
 
 def test_config_rejects_object_list_without_schema() -> None:

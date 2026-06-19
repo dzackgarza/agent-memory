@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 FieldType = Literal[
     "string",
@@ -16,11 +16,12 @@ FieldType = Literal[
     "wikilink",
     "wikilink_list",
     "user",
+    "object_list",
 ]
 
 
 class FieldSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     name: str
     type: FieldType
@@ -29,6 +30,9 @@ class FieldSpec(BaseModel):
     options: list[str] = []
     min: int | None = None
     max: int | None = None
+    # For an object_list field, the schema of each nested item. Aliased to "schema"
+    # (the config key) to avoid shadowing BaseModel.schema. Empty for scalar fields.
+    item_schema: list[FieldSpec] = Field(default_factory=list, alias="schema")
 
 
 class StatusSetSpec(BaseModel):
@@ -72,13 +76,27 @@ def _validate_card_parents(card_type: CardTypeSpec, by_name: dict[str, CardTypeS
             raise ValueError(f"card type {card_type.name} parent {parent} must own a directory to contain children")
 
 
-def _validate_card_fields(card_type: CardTypeSpec) -> None:
-    field_names = [field.name for field in card_type.fields]
+def _validate_field(field: FieldSpec, context: str) -> None:
+    if field.type == "select" and not field.options:
+        raise ValueError(f"select field {context}.{field.name} must declare options")
+    if field.type == "object_list":
+        if not field.item_schema:
+            raise ValueError(f"object_list field {context}.{field.name} must declare a nested schema")
+        _validate_fields(field.item_schema, f"{context}.{field.name}")
+    elif field.item_schema:
+        raise ValueError(f"field {context}.{field.name} declares a nested schema but is not an object_list")
+
+
+def _validate_fields(fields: list[FieldSpec], context: str) -> None:
+    field_names = [field.name for field in fields]
     if len(field_names) != len(set(field_names)):
-        raise ValueError(f"card type {card_type.name} has duplicate field names")
-    for field in card_type.fields:
-        if field.type == "select" and not field.options:
-            raise ValueError(f"select field {card_type.name}.{field.name} must declare options")
+        raise ValueError(f"{context} has duplicate field names")
+    for field in fields:
+        _validate_field(field, context)
+
+
+def _validate_card_fields(card_type: CardTypeSpec) -> None:
+    _validate_fields(card_type.fields, card_type.name)
 
 
 def _validate_card_types(card_types: list[CardTypeSpec], status_sets: dict[str, StatusSetSpec]) -> None:

@@ -10,6 +10,8 @@ statuses:
   - revision-required
   - blocked
   - approved-and-unstarted
+  - decided
+  - implemented
 status_sets:
   standard:
     default: unstarted
@@ -34,6 +36,14 @@ status_sets:
       - in-progress
       - complete
       - blocked
+  decision:
+    default: unstarted
+    options:
+      - unstarted
+      - in-progress
+      - needs-human-input
+      - decided
+      - implemented
 card_types:
   - name: feature
     id_prefix: FEATURE
@@ -330,5 +340,99 @@ card_types:
       - name: tags
         type: string_list
     container: tasks
+    own_dir: false
+  - name: spec
+    id_prefix: SPEC
+    status_set: standard
+    parents:
+      - feature
+    fields:
+      - name: id
+        type: string
+        required: true
+      - name: parents
+        type: wikilink_list
+      - name: dependsOn
+        type: wikilink_list
+      - name: title
+        type: string
+        required: true
+      - name: status
+        type: status
+      - name: blocked_reason
+        type: text
+      - name: priority
+        type: select
+        options:
+          - low
+          - medium
+          - high
+          - critical
+      - name: complexity
+        type: number
+        min: 0
+        max: 100
+      - name: requirement
+        type: text
+      - name: acceptanceCriteria
+        type: string_list
+      - name: constructorNameInventories
+        type: object_list
+        schema:
+          - name: owner
+            type: string
+          - name: sageConstructorNames
+            type: string_list
+          - name: projectOwnedConstructionNames
+            type: string_list
+      - name: tags
+        type: string_list
+    container: specs
+    own_dir: false
+  - name: decision
+    id_prefix: DECISION
+    status_set: decision
+    parents:
+      - feature
+    fields:
+      - name: id
+        type: string
+        required: true
+      - name: parents
+        type: wikilink_list
+      - name: dependsOn
+        type: wikilink_list
+      - name: title
+        type: string
+        required: true
+      - name: status
+        type: status
+      - name: description
+        type: text
+      - name: priority
+        type: select
+        options:
+          - low
+          - medium
+          - high
+          - critical
+      - name: chosen
+        type: string
+      - name: options
+        type: object_list
+        schema:
+          - name: name
+            type: string
+          - name: pros
+            type: string_list
+          - name: cons
+            type: string_list
+      - name: evidence
+        type: string_list
+      - name: resolution
+        type: text
+      - name: tags
+        type: string_list
+    container: decisions
     own_dir: false
 root: plans

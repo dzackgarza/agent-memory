@@ -59,9 +59,26 @@ def _scalar_field(field: FieldSpec) -> tuple[Any, Any]:
     return (scalar | None, Field(default=field.default))
 
 
+def _object_list_field(field: FieldSpec, status_set: StatusSetSpec) -> tuple[Any, Any]:
+    item_definitions: dict[str, Any] = {nested.name: field_definition(nested, status_set) for nested in field.item_schema}
+    item_model = create_model(
+        f"{field.name[:1].upper()}{field.name[1:]}Item",
+        __config__=ConfigDict(extra="forbid"),
+        **item_definitions,
+    )
+    # The element model is created at runtime, so build list[item_model] via a value-level
+    # call (not a type expression) — mypy cannot statically type a dynamic model.
+    list_type: Any = list.__class_getitem__(item_model)
+    if field.required:
+        return (list_type, Field())
+    return (list_type, Field(default_factory=list))
+
+
 def field_definition(field: FieldSpec, status_set: StatusSetSpec) -> tuple[Any, Any]:
     # Map a declared field spec onto a (type, FieldInfo) pair for pydantic.create_model.
     # Constraints declared in config become real pydantic validation; nothing is advisory.
+    if field.type == "object_list":
+        return _object_list_field(field, status_set)
     if field.type in ("status", "select"):
         return _membership_field(field, status_set)
     if field.type in ("int", "number"):
