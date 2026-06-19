@@ -1,0 +1,11 @@
+# uv constraints applied to every uvx tool environment in this project, including the
+# QC gate's pytest/coverage runner (the gate invokes `uvx --with pytest`, which has no
+# project-level version pin of its own; UV_CONSTRAINT from .envrc applies here).
+#
+# pytest 9.1.x cannot collect any test module that uses `from __future__ import
+# annotations` under Python 3.14: its traceback filter raises
+# `KeyError: __tracebackhide__`, masking a `TypeError: issubclass() arg 1 must be a
+# class` where pytest's unittest plugin calls issubclass on the __future__._Feature
+# object exposed by the future-import. A trivial five-line test reproduces it. pytest
+# 8.x collects the same module correctly. Pin below 9 until the regression is fixed.
+pytest<9

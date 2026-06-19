@@ -2,7 +2,7 @@ ZK_VERSION := "v0.15.5"
 ZK_ASSET := "zk-" + ZK_VERSION + "-linux-amd64.tar.gz"
 LOCAL_BIN := env_var("HOME") / ".local/bin"
 
-install: _install-agent-memory _install-iwe _install-ripgrep _install-zk _install-probe _verify-toolchain
+install: _install-agent-memory _install-ripgrep _install-zk _install-probe _verify-toolchain
 
 setup: install
     #!/usr/bin/env bash
@@ -25,6 +25,7 @@ test-ci:
 _install-agent-memory:
     #!/usr/bin/env bash
     set -euo pipefail
+    cargo --version
     uv tool install --force --editable "{{ justfile_directory() }}"
     bin_dir="$(uv tool dir --bin)"
     test -x "$bin_dir/agent-memory"
@@ -37,14 +38,6 @@ _install-agent-memory:
             ;;
     esac
     "$bin_dir/agent-memory" --help >/dev/null
-
-[private]
-_install-iwe:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo --version
-    cargo install --force iwe iwes iwec
-    iwe --version
 
 [private]
 _install-ripgrep:
@@ -94,7 +87,7 @@ _verify-toolchain:
     uv --version
     git --version
     gum --version
-    iwe --version
+    cargo --version
     rg --version
     npx --version
     "{{ LOCAL_BIN }}/zk" --version
