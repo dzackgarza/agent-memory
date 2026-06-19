@@ -18,7 +18,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8",
+    # pytest 9.1.x crashes collecting any module that uses `from __future__ import
+    # annotations` under Python 3.14 (its traceback filter raises KeyError on
+    # __tracebackhide__, masking a TypeError where it calls issubclass on the
+    # __future__._Feature object). Pin below 9 until that regression is fixed upstream.
+    "pytest>=8,<9",
     "types-PyYAML>=6",
 ]
 
