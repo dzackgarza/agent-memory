@@ -15,6 +15,7 @@ from pathlib import Path
 import tomli_w
 import yaml
 
+from agent_memory import iwe
 from agent_memory.models import (
     GlobalNoteMetadata,
     InspectExportFormat,
@@ -104,11 +105,6 @@ BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
         "git",
         ("git", "--version"),
         "run `just setup` from the agent-memory checkout; manual install: install Git from your OS package manager.",
-    ),
-    DependencyCheck(
-        "iwe",
-        ("iwe", "--version"),
-        "run `just setup` from the agent-memory checkout; manual install: run `cargo install iwe iwes iwec`.",
     ),
     DependencyCheck(
         "rg",
@@ -257,7 +253,7 @@ def init_global_vault(vault: Path) -> JsonObject:
     configure_vault_git(vault)
     write_new_file(vault / ".gitignore", f"{ZK_NOTEBOOK_DB_IGNORE}\n")
     run_checked(["zk", "--no-input", "init", str(vault)], cwd=vault)
-    run_checked(["iwe", "init"], cwd=vault)
+    write_agent_memory_marker(vault)
     for relative_dir in VAULT_DIRECTORIES:
         (vault / relative_dir).mkdir(parents=True)
     write_new_file(
@@ -282,6 +278,16 @@ def init_global_vault(vault: Path) -> JsonObject:
     index_zk_notebook(vault)
     commit_vault_changes(vault, "Initialize agent-memory vault")
     return {"vault": str(vault)}
+
+
+def write_agent_memory_marker(vault: Path) -> None:
+    # The vault's agent-memory metadata marker. Its presence proves the vault was
+    # initialized by this tool; the file is asserted but never read, so it carries only
+    # the marker version. liwe loads notes directly from the vault root in-process, so no
+    # .iwe/ config directory is created.
+    marker_dir = vault / ".agents" / "memories"
+    marker_dir.mkdir(parents=True)
+    write_new_file(marker_dir / "config.toml", tomli_w.dumps({"okf_version": OKF_VERSION}))
 
 
 def init_project(vault: Path, cwd: Path) -> JsonObject:
@@ -429,7 +435,7 @@ def update_memory(
     config = load_project_config(cwd)
     transition = memory_transition(config, key, title, memory_type, content)
     if transition.new_key != transition.old_key:
-        run_checked(["iwe", "rename", transition.old_key, transition.new_key], cwd=config.vault)
+        iwe.rename(config.vault, transition.old_key, transition.new_key)
     write_memory(transition.destination_path, transition.metadata, transition.body)
     sync_memory_transition_indexes(transition)
     index_zk_notebook(config.vault)
@@ -446,7 +452,7 @@ def delete_memory(key: str, cwd: Path) -> JsonObject:
     document = read_memory(path)
     title = metadata_string(document.metadata, "title")
     remove_index_link(path.parent / "index.md", title)
-    run_checked(["iwe", "delete", key, "-f", "keys"], cwd=config.vault)
+    iwe.delete(config.vault, key)
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Delete memory: {title}")
     return {"deleted": key}
@@ -780,15 +786,13 @@ def json_int(payload: JsonObject, key: str) -> int:
 
 def retrieve_memory(key: str, cwd: Path) -> str:
     config = load_project_config(cwd)
-    result = run_checked(["iwe", "retrieve", "-k", key], cwd=config.vault)
-    return result.stdout
+    return iwe.retrieve(config.vault, key)
 
 
 def squash_memory(key: str, depth: int, cwd: Path) -> str:
     assert depth > 0, f"squash depth must be positive: {depth}"
     config = load_project_config(cwd)
-    result = run_checked(["iwe", "squash", key, "--depth", str(depth)], cwd=config.vault)
-    return result.stdout
+    return iwe.squash(config.vault, key, depth)
 
 
 def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
@@ -797,9 +801,9 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     source_title = metadata_string(source_document.metadata, "title")
     memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
     scope = MemoryScope(metadata_string(source_document.metadata, "scope"))
-    result = run_checked(["iwe", "extract", key, "--section", section, "-f", "keys"], cwd=config.vault)
+    affected_keys = iwe.extract(config.vault, key, section)
     extracted_keys: list[str] = []
-    for affected_key in result.stdout.splitlines():
+    for affected_key in affected_keys:
         if affected_key == key:
             continue
         extracted_path = memory_path_for_key(config, affected_key)
@@ -812,15 +816,15 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     assert extracted_keys, "split must create at least one extracted memory"
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Split memory section: {section}")
-    return {"key": key, "section": section, "output": result.stdout, "extracted": json_list(extracted_keys)}
+    return {"key": key, "section": section, "output": json_list(affected_keys), "extracted": json_list(extracted_keys)}
 
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    result = run_checked(["iwe", "inline", key, "--reference", reference, "-f", "keys"], cwd=config.vault)
+    affected_keys = iwe.inline(config.vault, key, reference)
     index_zk_notebook(config.vault)
     commit_vault_changes(config.vault, f"Merge memory reference: {reference}")
-    return {"key": key, "reference": reference, "output": result.stdout}
+    return {"key": key, "reference": reference, "output": json_list(affected_keys)}
 
 
 def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
@@ -836,7 +840,7 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
     title = metadata_string(source_document.metadata, "title")
     description = metadata_string(source_document.metadata, "description")
-    run_checked(["iwe", "rename", key, destination_key], cwd=config.vault)
+    iwe.rename(config.vault, key, destination_key)
 
     moved_document = read_memory(destination_path)
     moved_metadata = PromotedNoteMetadata(

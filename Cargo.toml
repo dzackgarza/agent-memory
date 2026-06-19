@@ -12,4 +12,5 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.27", features = ["extension-module", "abi3-py314"] }
 liwe = { git = "https://github.com/iwe-org/iwe", rev = "71d5fb3e08a32f8f49a6f12f650bd780e4c633c9", package = "liwe" }
+serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
