@@ -540,9 +540,9 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
     # span plan cards too, so one query covers both memories and plans (issue #4). Plans
     # are project-scoped, so include them whenever the scope reaches the project.
     if scope in (SearchScope.PROJECT, SearchScope.BOTH):
-        plans_root = project_plans_root(config, load_card_system_config())
-        if plans_root.is_dir():
-            roots.append(str(plans_root))
+        # An initialized project always has its plans/ directory (it is also the
+        # MemoryType.PLAN directory), so it is unconditionally a valid search root.
+        roots.append(str(project_plans_root(config, load_card_system_config())))
     output = run_ripgrep_search(
         [
             "rg",
@@ -1252,12 +1252,7 @@ def memory_key(vault: Path, path: Path) -> str:
 
 
 def memory_files(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    return tuple(
-        path
-        for directory in memory_note_directories(config, scope)
-        for path in sorted(directory.glob("*.md"))
-        if path.name not in ("index.md", PLAN_DAG_FILENAME)
-    )
+    return tuple(path for directory in memory_note_directories(config, scope) for path in sorted(directory.glob("*.md")) if path.name not in ("index.md", PLAN_DAG_FILENAME))
 
 
 def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
