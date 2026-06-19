@@ -1,0 +1,15 @@
+[package]
+name = "agent-memory-iwe"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+
+[lib]
+name = "agent_memory_iwe"
+path = "rust/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py314"] }
+liwe = { git = "https://github.com/iwe-org/iwe", rev = "71d5fb3e08a32f8f49a6f12f650bd780e4c633c9", package = "liwe" }
+serde_yaml = "0.9"

@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
 
 [project]
 name = "agent-memory"
@@ -38,5 +38,8 @@ layers = [
     "agent_memory.models",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/agent_memory"]
+[tool.maturin]
+python-source = "src"
+module-name = "agent_memory._iwe"
+manifest-path = "Cargo.toml"
+features = ["pyo3/extension-module"]
