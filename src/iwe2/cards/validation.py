@@ -85,10 +85,7 @@ def dependency_cycles(graph: dict[str, list[str]]) -> list[Problem]:
 
 
 def reference_field_names(config: CardSystemConfig) -> dict[str, list[str]]:
-    return {
-        card_type.name: [field.name for field in card_type.fields if field.type in ("wikilink", "wikilink_list")]
-        for card_type in config.card_types
-    }
+    return {card_type.name: [field.name for field in card_type.fields if field.type in ("wikilink", "wikilink_list")] for card_type in config.card_types}
 
 
 def reference_problems(

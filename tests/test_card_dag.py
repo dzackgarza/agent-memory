@@ -16,17 +16,39 @@ def models_and_config() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
 
 
 def seed_feature_chain(root: Path, suffix: str, config: CardSystemConfig, models: dict[str, type[BaseModel]]) -> None:
-    create_card(root, config, models, type_name="feature", card_id=f"FEATURE-{suffix}", parent_id=None,
-                fields={"title": "F", "status": "in-progress", "description": "d"}, body="# F\n")
-    create_card(root, config, models, type_name="plan", card_id=f"PLAN-{suffix}", parent_id=f"FEATURE-{suffix}",
-                fields={"title": "P", "status": "approved-and-unstarted", "description": "d",
-                        "parents": [f"[[FEATURE-{suffix}]]"], "successCriteria": ["c"]}, body="# P\n")
-    create_card(root, config, models, type_name="phase", card_id=f"PHASE-{suffix}", parent_id=f"PLAN-{suffix}",
-                fields={"title": "PH", "status": "in-progress", "description": "d",
-                        "parents": [f"[[PLAN-{suffix}]]"], "successCriteria": ["c"]}, body="# PH\n")
-    create_card(root, config, models, type_name="task", card_id=f"TASK-{suffix}", parent_id=f"PHASE-{suffix}",
-                fields={"title": "T", "status": "in-progress", "description": "d",
-                        "parents": [f"[[PHASE-{suffix}]]"], "successCriteria": ["c"]}, body="# T\n")
+    create_card(
+        root, config, models, type_name="feature", card_id=f"FEATURE-{suffix}", parent_id=None, fields={"title": "F", "status": "in-progress", "description": "d"}, body="# F\n"
+    )
+    create_card(
+        root,
+        config,
+        models,
+        type_name="plan",
+        card_id=f"PLAN-{suffix}",
+        parent_id=f"FEATURE-{suffix}",
+        fields={"title": "P", "status": "approved-and-unstarted", "description": "d", "parents": [f"[[FEATURE-{suffix}]]"], "successCriteria": ["c"]},
+        body="# P\n",
+    )
+    create_card(
+        root,
+        config,
+        models,
+        type_name="phase",
+        card_id=f"PHASE-{suffix}",
+        parent_id=f"PLAN-{suffix}",
+        fields={"title": "PH", "status": "in-progress", "description": "d", "parents": [f"[[PLAN-{suffix}]]"], "successCriteria": ["c"]},
+        body="# PH\n",
+    )
+    create_card(
+        root,
+        config,
+        models,
+        type_name="task",
+        card_id=f"TASK-{suffix}",
+        parent_id=f"PHASE-{suffix}",
+        fields={"title": "T", "status": "in-progress", "description": "d", "parents": [f"[[PHASE-{suffix}]]"], "successCriteria": ["c"]},
+        body="# T\n",
+    )
 
 
 def test_dag_renders_dependency_and_containment_edges(tmp_path: Path) -> None:

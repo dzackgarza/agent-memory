@@ -24,12 +24,52 @@ def write_card(path: Path, frontmatter: dict[str, Any], body: str) -> None:
 
 def build_nimbalyst_source(source_root: Path) -> None:
     feature_dir = source_root / "features" / "FEATURE-M"
-    write_card(feature_dir / "FEATURE-M.md", {"id": "FEATURE-M", "trackerStatus": {"type": "feature"}, "title": "Migrated feature", "status": "in-progress", "description": "d"}, "# Migrated feature\n")
+    write_card(
+        feature_dir / "FEATURE-M.md",
+        {"id": "FEATURE-M", "trackerStatus": {"type": "feature"}, "title": "Migrated feature", "status": "in-progress", "description": "d"},
+        "# Migrated feature\n",
+    )
     plan_dir = feature_dir / "plans" / "PLAN-M"
-    write_card(plan_dir / "PLAN-M.md", {"id": "PLAN-M", "trackerStatus": {"type": "plan"}, "parents": ["[[FEATURE-M]]"], "title": "Migrated plan", "status": "approved-and-unstarted", "description": "d", "successCriteria": ["compiles"]}, "# Migrated plan\n")
+    write_card(
+        plan_dir / "PLAN-M.md",
+        {
+            "id": "PLAN-M",
+            "trackerStatus": {"type": "plan"},
+            "parents": ["[[FEATURE-M]]"],
+            "title": "Migrated plan",
+            "status": "approved-and-unstarted",
+            "description": "d",
+            "successCriteria": ["compiles"],
+        },
+        "# Migrated plan\n",
+    )
     phase_dir = plan_dir / "PHASE-M"
-    write_card(phase_dir / "PHASE-M.md", {"id": "PHASE-M", "trackerStatus": {"type": "phase"}, "parents": ["[[PLAN-M]]"], "title": "Migrated phase", "status": "in-progress", "description": "d", "successCriteria": ["done"]}, "# Migrated phase\n")
-    write_card(phase_dir / "tasks" / "TASK-M.md", {"id": "TASK-M", "trackerStatus": {"type": "task"}, "parents": ["[[PHASE-M]]"], "title": "Migrated task", "status": "complete", "description": "d", "successCriteria": ["shipped"]}, "# Migrated task\n")
+    write_card(
+        phase_dir / "PHASE-M.md",
+        {
+            "id": "PHASE-M",
+            "trackerStatus": {"type": "phase"},
+            "parents": ["[[PLAN-M]]"],
+            "title": "Migrated phase",
+            "status": "in-progress",
+            "description": "d",
+            "successCriteria": ["done"],
+        },
+        "# Migrated phase\n",
+    )
+    write_card(
+        phase_dir / "tasks" / "TASK-M.md",
+        {
+            "id": "TASK-M",
+            "trackerStatus": {"type": "task"},
+            "parents": ["[[PHASE-M]]"],
+            "title": "Migrated task",
+            "status": "complete",
+            "description": "d",
+            "successCriteria": ["shipped"],
+        },
+        "# Migrated task\n",
+    )
 
 
 def test_migrate_strips_tracker_status_and_mirrors_hierarchy(tmp_path: Path) -> None:

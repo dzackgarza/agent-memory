@@ -25,11 +25,7 @@ def test_remove_index_link_keeps_block_with_remaining_items(tmp_path: Path) -> N
     # Removing the first of two entries must keep the List block and the surviving
     # entry, then strip the BlankLine now trailing the new final item so the list
     # does not end with a loose-list gap (the apply_remove_item if-items branch).
-    body = (
-        "# Decisions\n\n# Concepts\n\n"
-        "* [First](first.md) - one\n\n"
-        "* [Second](second.md) - two\n"
-    )
+    body = "# Decisions\n\n# Concepts\n\n* [First](first.md) - one\n\n* [Second](second.md) - two\n"
     index = tmp_path / "index.md"
     index.write_text(render_memory({"okf_version": OKF_VERSION}, body), encoding="utf-8")
 

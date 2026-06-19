@@ -17,23 +17,44 @@ def make_models() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
 def create_feature_plan_phase_task(plans_root: Path) -> dict[str, Path]:
     config, models = make_models()
     feature = create_card(
-        plans_root, config, models, type_name="feature", card_id="FEATURE-DEMO", parent_id=None,
-        fields={"title": "Demo feature", "status": "in-progress", "description": "demo"}, body="# Demo feature\n",
+        plans_root,
+        config,
+        models,
+        type_name="feature",
+        card_id="FEATURE-DEMO",
+        parent_id=None,
+        fields={"title": "Demo feature", "status": "in-progress", "description": "demo"},
+        body="# Demo feature\n",
     )
     plan = create_card(
-        plans_root, config, models, type_name="plan", card_id="PLAN-DEMO", parent_id="FEATURE-DEMO",
-        fields={"title": "Demo plan", "status": "approved-and-unstarted", "description": "demo",
-                "parents": ["[[FEATURE-DEMO]]"], "successCriteria": ["plan compiles"]}, body="# Demo plan\n",
+        plans_root,
+        config,
+        models,
+        type_name="plan",
+        card_id="PLAN-DEMO",
+        parent_id="FEATURE-DEMO",
+        fields={"title": "Demo plan", "status": "approved-and-unstarted", "description": "demo", "parents": ["[[FEATURE-DEMO]]"], "successCriteria": ["plan compiles"]},
+        body="# Demo plan\n",
     )
     phase = create_card(
-        plans_root, config, models, type_name="phase", card_id="PHASE-DEMO", parent_id="PLAN-DEMO",
-        fields={"title": "Demo phase", "status": "in-progress", "description": "demo",
-                "parents": ["[[PLAN-DEMO]]"], "successCriteria": ["phase done"]}, body="# Demo phase\n",
+        plans_root,
+        config,
+        models,
+        type_name="phase",
+        card_id="PHASE-DEMO",
+        parent_id="PLAN-DEMO",
+        fields={"title": "Demo phase", "status": "in-progress", "description": "demo", "parents": ["[[PLAN-DEMO]]"], "successCriteria": ["phase done"]},
+        body="# Demo phase\n",
     )
     task = create_card(
-        plans_root, config, models, type_name="task", card_id="TASK-DEMO", parent_id="PHASE-DEMO",
-        fields={"title": "Demo task", "status": "in-progress", "description": "demo",
-                "parents": ["[[PHASE-DEMO]]"], "successCriteria": ["task done"], "complexity": 30}, body="# Demo task\n",
+        plans_root,
+        config,
+        models,
+        type_name="task",
+        card_id="TASK-DEMO",
+        parent_id="PHASE-DEMO",
+        fields={"title": "Demo task", "status": "in-progress", "description": "demo", "parents": ["[[PHASE-DEMO]]"], "successCriteria": ["task done"], "complexity": 30},
+        body="# Demo task\n",
     )
     return {"feature": feature, "plan": plan, "phase": phase, "task": task}
 
@@ -62,7 +83,12 @@ def test_create_child_with_missing_parent_fails(tmp_path: Path) -> None:
     config, models = make_models()
     with pytest.raises(AssertionError):
         create_card(
-            root, config, models, type_name="task", card_id="TASK-ORPHAN", parent_id="PHASE-ABSENT",
+            root,
+            config,
+            models,
+            type_name="task",
+            card_id="TASK-ORPHAN",
+            parent_id="PHASE-ABSENT",
             fields={"title": "Orphan", "status": "in-progress", "description": "x", "successCriteria": ["y"]},
             body="# Orphan\n",
         )
@@ -73,8 +99,14 @@ def test_create_rejects_invalid_field_values(tmp_path: Path) -> None:
     config, models = make_models()
     with pytest.raises(ValidationError):
         create_card(
-            root, config, models, type_name="feature", card_id="FEATURE-BAD", parent_id=None,
-            fields={"title": "Bad", "status": "shipped", "description": "x"}, body="# Bad\n",
+            root,
+            config,
+            models,
+            type_name="feature",
+            card_id="FEATURE-BAD",
+            parent_id=None,
+            fields={"title": "Bad", "status": "shipped", "description": "x"},
+            body="# Bad\n",
         )
 
 

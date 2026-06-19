@@ -1435,12 +1435,7 @@ def test_inspect_links_ignores_links_in_code_blocks(tmp_path: Path) -> None:
         scope="project",
         memory_type="decision",
         title="Code Fence Links",
-        content=(
-            "See [Real Target](../../../global/advice/real-target.md).\n\n"
-            "```\n"
-            "Example: [Fake Target](../../../global/advice/fake-target.md)\n"
-            "```\n"
-        ),
+        content=("See [Real Target](../../../global/advice/real-target.md).\n\n```\nExample: [Fake Target](../../../global/advice/fake-target.md)\n```\n"),
     )
     children = inspect_json(workspace, "links", str(project_note["key"]), "--direction", "children", "--depth", "1", "--format", "json")
     child_keys = set(records_by_key(children, "links"))
@@ -1534,13 +1529,40 @@ def test_merge_probe_payloads_rejects_null_skipped_files() -> None:
 def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     run_iwe2(
-        workspace.repo, "plan", "add", "--type", "feature", "--id", "FEATURE-DEMO",
-        "--set", "title=Demo", "--set", "status=in-progress", "--set", "description=plan-card-signal-9c1f",
+        workspace.repo,
+        "plan",
+        "add",
+        "--type",
+        "feature",
+        "--id",
+        "FEATURE-DEMO",
+        "--set",
+        "title=Demo",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "description=plan-card-signal-9c1f",
     )
     run_iwe2(
-        workspace.repo, "plan", "add", "--type", "plan", "--id", "PLAN-DEMO", "--parent", "FEATURE-DEMO",
-        "--set", "title=Plan", "--set", "status=approved-and-unstarted", "--set", "description=demo plan",
-        "--set", "parents=[[FEATURE-DEMO]]", "--set", "successCriteria=ships",
+        workspace.repo,
+        "plan",
+        "add",
+        "--type",
+        "plan",
+        "--id",
+        "PLAN-DEMO",
+        "--parent",
+        "FEATURE-DEMO",
+        "--set",
+        "title=Plan",
+        "--set",
+        "status=approved-and-unstarted",
+        "--set",
+        "description=demo plan",
+        "--set",
+        "parents=[[FEATURE-DEMO]]",
+        "--set",
+        "successCriteria=ships",
     )
     plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PLAN-DEMO.md"
     assert plan_path.is_file()
@@ -1560,7 +1582,12 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     source = tmp_path / "incoming" / "plans" / "features" / "FEATURE-MIG"
     source.mkdir(parents=True)
     (source / "FEATURE-MIG.md").write_text(
-        "---\n" + yaml.safe_dump({"id": "FEATURE-MIG", "trackerStatus": {"type": "feature"}, "title": "Migrated", "status": "in-progress", "description": "migrated"}, sort_keys=False) + "---\n# Migrated\n",
+        "---\n"
+        + yaml.safe_dump(
+            {"id": "FEATURE-MIG", "trackerStatus": {"type": "feature"}, "title": "Migrated", "status": "in-progress", "description": "migrated"},
+            sort_keys=False,
+        )
+        + "---\n# Migrated\n",
         encoding="utf-8",
     )
     run_iwe2(workspace.repo, "plan", "migrate", "--from", str(tmp_path / "incoming" / "plans"))

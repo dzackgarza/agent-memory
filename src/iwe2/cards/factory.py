@@ -27,7 +27,8 @@ def _membership_field(field: FieldSpec, status_set: StatusSetSpec) -> tuple[Any,
     default = field.default
     if default is None and field.type == "status":
         default = status_set.default
-    # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is False; required fields compile to a bare Field() and fail loud if missing.
+    # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is
+    # False; required fields compile to a bare Field() and fail loud if missing.
     # ast-grep-ignore: no-field-default
     return (annotation | None, Field(default=default))
 
@@ -36,7 +37,8 @@ def _numeric_field(field: FieldSpec) -> tuple[Any, Any]:
     scalar_number: Any = int if field.type == "int" else float
     if field.required:
         return (scalar_number, Field(ge=field.min, le=field.max))
-    # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is False; required fields compile to a bare Field() and fail loud if missing.
+    # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is
+    # False; required fields compile to a bare Field() and fail loud if missing.
     # ast-grep-ignore: no-field-default
     return (scalar_number | None, Field(default=field.default, ge=field.min, le=field.max))
 
@@ -51,7 +53,8 @@ def _scalar_field(field: FieldSpec) -> tuple[Any, Any]:
     scalar: Any = bool if field.type == "bool" else str
     if field.required:
         return (scalar, Field())
-    # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is False; required fields compile to a bare Field() and fail loud if missing.
+    # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is
+    # False; required fields compile to a bare Field() and fail loud if missing.
     # ast-grep-ignore: no-field-default
     return (scalar | None, Field(default=field.default))
 

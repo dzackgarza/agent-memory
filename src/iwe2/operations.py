@@ -1946,8 +1946,14 @@ def add_plan_card(type_name: str, card_id: str, parent_id: str | None, assignmen
     cards_config, models = load_card_system()
     fields = parse_card_fields(cards_config, type_name, assignments)
     path = create_card(
-        project_plans_root(config, cards_config), cards_config, models,
-        type_name=type_name, card_id=card_id, parent_id=parent_id, fields=fields, body=body,
+        project_plans_root(config, cards_config),
+        cards_config,
+        models,
+        type_name=type_name,
+        card_id=card_id,
+        parent_id=parent_id,
+        fields=fields,
+        body=body,
     )
     commit_vault_changes(config.vault, f"Add {type_name} card: {card_id}")
     return {"id": card_id, "path": str(path)}
