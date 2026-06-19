@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from agent_memory import iwe
 from agent_memory.cards.config import CardSystemConfig
-from agent_memory.cards.dag import render_dag
+from agent_memory.cards.dag import PLAN_DAG_FILENAME, render_dag
 from agent_memory.cards.factory import build_card_models
 from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
@@ -1252,7 +1252,12 @@ def memory_key(vault: Path, path: Path) -> str:
 
 
 def memory_files(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    return tuple(path for directory in memory_note_directories(config, scope) for path in sorted(directory.glob("*.md")) if path.name != "index.md")
+    return tuple(
+        path
+        for directory in memory_note_directories(config, scope)
+        for path in sorted(directory.glob("*.md"))
+        if path.name not in ("index.md", PLAN_DAG_FILENAME)
+    )
 
 
 def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
@@ -1908,7 +1913,7 @@ def write_plan_dag(cwd: Path) -> JsonObject:
     records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
     plans_root = project_plans_root(config, cards_config)
     plans_root.mkdir(parents=True, exist_ok=True)
-    path = plans_root / "plan-dag.md"
+    path = plans_root / PLAN_DAG_FILENAME
     path.write_text(render_dag(records), encoding="utf-8")
     commit_vault_changes(config.vault, "Update plan DAG")
     return {"path": str(path)}

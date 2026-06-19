@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from agent_memory.cards.validation import CardRecord, wikilink_ids
 
+# Filename of the generated plan dependency/containment DAG. It is a rendered artifact,
+# not a card or a memory note, so enumerators that read frontmatter must skip it.
+PLAN_DAG_FILENAME = "plan-dag.md"
+
 
 def mermaid_block(title: str, nodes: list[str], edges: list[str]) -> str:
     lines = ["graph LR", *[f"  {node}" for node in nodes], *edges]

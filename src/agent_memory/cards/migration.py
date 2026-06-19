@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from agent_memory.cards.config import CardSystemConfig
+from agent_memory.cards.dag import PLAN_DAG_FILENAME
 from agent_memory.cards.storage import card_type_for_id, render_card, split_card
 
 
@@ -20,7 +21,7 @@ def migrate_plans(
     assert source_plans_root.is_dir(), f"source plans root does not exist: {source_plans_root}"
     migrated: list[Path] = []
     for source in sorted(source_plans_root.rglob("*.md")):
-        if source.name == "plan-dag.md":
+        if source.name == PLAN_DAG_FILENAME:
             continue
         metadata, body = split_card(source.read_text(encoding="utf-8"))
         tracker = metadata.pop("trackerStatus", None)
