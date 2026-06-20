@@ -1509,7 +1509,11 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
         "status=in-progress",
         "--set",
         "description=plan-card-signal-9c1f",
+        "--set",
+        "plans=[[PLAN-DEMO]]",
     )
+    # The plan is in-progress (a started child for the in-progress feature) and tags equal
+    # its sole ancestor, so the tree is valid under every validation rule.
     run_agent_memory(
         workspace.repo,
         "plan",
@@ -1523,13 +1527,15 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
         "--set",
         "title=Plan",
         "--set",
-        "status=approved-and-unstarted",
+        "status=in-progress",
         "--set",
         "description=demo plan",
         "--set",
         "parents=[[FEATURE-DEMO]]",
         "--set",
         "successCriteria=ships",
+        "--set",
+        "tags=FEATURE-DEMO",
     )
     plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PLAN-DEMO.md"
     assert plan_path.is_file()
