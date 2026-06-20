@@ -435,4 +435,23 @@ card_types:
         type: string_list
     container: decisions
     own_dir: false
+# Status lifecycle roles ported from ~/ai/planning/status-catalog.yaml (minus "done",
+# which is not a status in this catalog). complete statuses are also started statuses.
+workflow_roles:
+  started:
+    - in-progress
+    - needs-agent-review
+    - needs-human-input
+    - revision-required
+    - complete
+    - blocked
+    - decided
+    - implemented
+  complete:
+    - complete
+    - decided
+    - implemented
+  unstarted:
+    - unstarted
+    - approved-and-unstarted
 root: plans
