@@ -15,17 +15,32 @@ def models_and_config() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
 
 
 def seed_feature_chain(root: Path, suffix: str, config: CardSystemConfig, models: dict[str, type[BaseModel]]) -> None:
+    # A single-child feature->plan->phase->task chain that is valid under every validation
+    # rule: every level is in-progress (a started child for each started parent), the
+    # feature declares its lone plan in `plans`, and each card's tags equal its ancestor
+    # chain. Single children need no further ordering.
+    feature = f"FEATURE-{suffix}"
+    plan = f"PLAN-{suffix}"
+    phase = f"PHASE-{suffix}"
+    task = f"TASK-{suffix}"
     create_card(
-        root, config, models, type_name="feature", card_id=f"FEATURE-{suffix}", parent_id=None, fields={"title": "F", "status": "in-progress", "description": "d"}, body="# F\n"
+        root,
+        config,
+        models,
+        type_name="feature",
+        card_id=feature,
+        parent_id=None,
+        fields={"title": "F", "status": "in-progress", "description": "d", "plans": [f"[[{plan}]]"]},
+        body="# F\n",
     )
     create_card(
         root,
         config,
         models,
         type_name="plan",
-        card_id=f"PLAN-{suffix}",
-        parent_id=f"FEATURE-{suffix}",
-        fields={"title": "P", "status": "approved-and-unstarted", "description": "d", "parents": [f"[[FEATURE-{suffix}]]"], "successCriteria": ["c"]},
+        card_id=plan,
+        parent_id=feature,
+        fields={"title": "P", "status": "in-progress", "description": "d", "parents": [f"[[{feature}]]"], "successCriteria": ["c"], "tags": [feature]},
         body="# P\n",
     )
     create_card(
@@ -33,9 +48,9 @@ def seed_feature_chain(root: Path, suffix: str, config: CardSystemConfig, models
         config,
         models,
         type_name="phase",
-        card_id=f"PHASE-{suffix}",
-        parent_id=f"PLAN-{suffix}",
-        fields={"title": "PH", "status": "in-progress", "description": "d", "parents": [f"[[PLAN-{suffix}]]"], "successCriteria": ["c"]},
+        card_id=phase,
+        parent_id=plan,
+        fields={"title": "PH", "status": "in-progress", "description": "d", "parents": [f"[[{plan}]]"], "successCriteria": ["c"], "tags": [feature, plan]},
         body="# PH\n",
     )
     create_card(
@@ -43,9 +58,9 @@ def seed_feature_chain(root: Path, suffix: str, config: CardSystemConfig, models
         config,
         models,
         type_name="task",
-        card_id=f"TASK-{suffix}",
-        parent_id=f"PHASE-{suffix}",
-        fields={"title": "T", "status": "in-progress", "description": "d", "parents": [f"[[PHASE-{suffix}]]"], "successCriteria": ["c"]},
+        card_id=task,
+        parent_id=phase,
+        fields={"title": "T", "status": "in-progress", "description": "d", "parents": [f"[[{phase}]]"], "successCriteria": ["c"], "tags": [feature, plan, phase]},
         body="# T\n",
     )
 
