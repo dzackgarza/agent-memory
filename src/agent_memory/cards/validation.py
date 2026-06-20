@@ -182,7 +182,8 @@ def _in_progress_parent_problems(parent_id: str, parent_status: str, statuses: d
     problems: list[Problem] = []
     if len(unstarted_children) == len(statuses):
         child_id = unstarted_children[0]
-        problems.append(Problem("status-hierarchy", parent_id, f"status '{parent_status}' cannot contain only unstarted children; example child '{child_id}' is '{statuses[child_id]}'"))
+        detail = f"status '{parent_status}' cannot contain only unstarted children; example child '{child_id}' is '{statuses[child_id]}'"
+        problems.append(Problem("status-hierarchy", parent_id, detail))
     if not started_children:
         problems.append(Problem("status-hierarchy", parent_id, f"status '{parent_status}' requires at least one started child"))
     return problems
