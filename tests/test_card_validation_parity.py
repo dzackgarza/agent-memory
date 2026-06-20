@@ -114,6 +114,31 @@ def test_status_hierarchy_clean_tree_silent(tmp_path: Path) -> None:
     assert [p for p in problems if p.kind == "status-hierarchy"] == []
 
 
+def test_status_hierarchy_unstarted_parent_with_unstarted_child_silent(tmp_path: Path) -> None:
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    # an unstarted feature over an unstarted plan is consistent (the unstarted parent has no
+    # started child), so the unstarted-parent rule stays silent.
+    make_feature(root, config, models, "ONE", "unstarted")
+    make_plan(root, config, models, "ONE", "approved-and-unstarted", "FEATURE-ONE")
+    update_card(root, config, models, "FEATURE-ONE", {"plans": ["[[PLAN-ONE]]"]})
+    problems = validate_cards(load_card_records([root], config, models), config)
+    assert [p for p in problems if p.kind == "status-hierarchy"] == []
+
+
+def test_status_hierarchy_complete_parent_with_complete_child_silent(tmp_path: Path) -> None:
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    # a complete feature over a complete plan is consistent (no incomplete child), so the
+    # complete-parent rule stays silent.
+    make_feature(root, config, models, "ONE", "complete")
+    make_plan(root, config, models, "ONE", "complete", "FEATURE-ONE")
+    update_card(root, config, models, "FEATURE-ONE", {"plans": ["[[PLAN-ONE]]"]})
+    update_card(root, config, models, "PLAN-ONE", {"tags": ["FEATURE-ONE"]})
+    problems = validate_cards(load_card_records([root], config, models), config)
+    assert [p for p in problems if p.kind == "status-hierarchy"] == []
+
+
 # --- sibling ordering -------------------------------------------------------
 
 
@@ -302,7 +327,7 @@ def test_tags_from_ancestry_no_ancestors_but_declares_tags_flagged(tmp_path: Pat
     assert any(p.kind == "tags-from-ancestry" and p.card_id == "FEATURE-ONE" and "no tagged ancestors" in p.detail for p in problems)
 
 
-def dangling_parent_records() -> dict[str, "object"]:
+def dangling_parent_records() -> dict[str, object]:
     # A single phase whose only parent link points at a plan id that is not in the record
     # set, exercising the "parent not a record" branches of the child map and ancestor chain.
     from agent_memory.cards.validation import CardRecord
@@ -331,3 +356,26 @@ def test_filesystem_hierarchy_skips_card_with_no_resolvable_parent() -> None:
     records = dangling_parent_records()
     problems = validate_cards(records, config)  # type: ignore[arg-type]
     assert [p for p in problems if p.kind == "filesystem-hierarchy"] == []
+
+
+def test_ancestor_chain_dedups_shared_ancestors() -> None:
+    # A diamond ancestry (a phase reachable through two plans that share one feature) must
+    # appear once in the derived tag chain, exercising ancestor_chain's "already in chain"
+    # dedup branches. Built directly because create_card enforces a single containment parent.
+    from agent_memory.cards.validation import CardRecord, ancestor_chain
+
+    base = Path("/tmp/plans")
+    records: dict[str, CardRecord] = {
+        "FEATURE-D": CardRecord("feature", base / "features/FEATURE-D/FEATURE-D.md", {"id": "FEATURE-D"}),
+        "PLAN-A": CardRecord("plan", base / "features/FEATURE-D/plans/PLAN-A/PLAN-A.md", {"id": "PLAN-A", "parents": ["[[FEATURE-D]]"]}),
+        "PLAN-B": CardRecord("plan", base / "features/FEATURE-D/plans/PLAN-B/PLAN-B.md", {"id": "PLAN-B", "parents": ["[[FEATURE-D]]"]}),
+        # PHASE-D lists PLAN-A, PLAN-B (both children of FEATURE-D) and FEATURE-D directly.
+        # Processing PLAN-B re-yields FEATURE-D, already in the chain from PLAN-A (the inner
+        # "ancestor already in chain" branch); processing FEATURE-D directly finds it already
+        # present (the outer "parent already in chain" branch).
+        "PHASE-D": CardRecord("phase", base / "PHASE-D/PHASE-D.md", {"id": "PHASE-D", "parents": ["[[PLAN-A]]", "[[PLAN-B]]", "[[FEATURE-D]]"]}),
+    }
+    chain = ancestor_chain("PHASE-D", records, frozenset())
+    # FEATURE-D is reachable three ways but must appear exactly once
+    assert chain.count("FEATURE-D") == 1
+    assert set(chain) == {"FEATURE-D", "PLAN-A", "PLAN-B"}
