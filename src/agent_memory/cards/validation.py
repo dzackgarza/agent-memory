@@ -152,54 +152,110 @@ def card_status(record: CardRecord) -> str:
     return status
 
 
+@dataclass(frozen=True)
+class StatusRoles:
+    started: set[str]
+    complete: set[str]
+    unstarted: set[str]
+
+
+def _unstarted_parent_problems(parent_id: str, parent_status: str, statuses: dict[str, str], roles: StatusRoles) -> list[Problem]:
+    if parent_status not in roles.unstarted:
+        return []
+    started_children = _members_in_role(statuses, roles.started)
+    if not started_children:
+        return []
+    child_id = started_children[0]
+    return [Problem("status-hierarchy", parent_id, f"status '{parent_status}' cannot contain started child '{child_id}' status '{statuses[child_id]}'")]
+
+
+def _members_in_role(statuses: dict[str, str], role: set[str]) -> list[str]:
+    return [child_id for child_id, status in statuses.items() if status in role]
+
+
+def _in_progress_parent_problems(parent_id: str, parent_status: str, statuses: dict[str, str], roles: StatusRoles) -> list[Problem]:
+    if parent_status != "in-progress":
+        return []
+    started_children = _members_in_role(statuses, roles.started)
+    unstarted_children = _members_in_role(statuses, roles.unstarted)
+    problems: list[Problem] = []
+    if len(unstarted_children) == len(statuses):
+        child_id = unstarted_children[0]
+        problems.append(Problem("status-hierarchy", parent_id, f"status '{parent_status}' cannot contain only unstarted children; example child '{child_id}' is '{statuses[child_id]}'"))
+    if not started_children:
+        problems.append(Problem("status-hierarchy", parent_id, f"status '{parent_status}' requires at least one started child"))
+    return problems
+
+
+def _complete_parent_problems(parent_id: str, parent_status: str, statuses: dict[str, str], roles: StatusRoles) -> list[Problem]:
+    if parent_status != "complete":
+        return []
+    incomplete_children = [child_id for child_id, status in statuses.items() if status not in roles.complete]
+    if not incomplete_children:
+        return []
+    child_id = incomplete_children[0]
+    return [Problem("status-hierarchy", parent_id, f"status '{parent_status}' cannot be complete while child '{child_id}' is '{statuses[child_id]}'")]
+
+
 def status_hierarchy_problems(records: dict[str, CardRecord], config: CardSystemConfig) -> list[Problem]:
     # Port of validate_status_hierarchy: a parent's status must be consistent with the
     # workflow roles of its children. Statuses are the iwe2 hyphenated values; the role
     # sets come from unit D's workflow_roles rather than the source's status catalog.
-    started = config.statuses_with_role("started")
-    complete = config.statuses_with_role("complete")
-    unstarted = config.statuses_with_role("unstarted")
-    children = children_by_parent(records)
+    roles = StatusRoles(config.statuses_with_role("started"), config.statuses_with_role("complete"), config.statuses_with_role("unstarted"))
     problems: list[Problem] = []
-    for parent_id, child_ids in children.items():
+    for parent_id, child_ids in children_by_parent(records).items():
         parent_status = card_status(records[parent_id])
         statuses = {child_id: card_status(records[child_id]) for child_id in child_ids}
-        started_children = [child_id for child_id in child_ids if statuses[child_id] in started]
-        incomplete_children = [child_id for child_id in child_ids if statuses[child_id] not in complete]
-        unstarted_children = [child_id for child_id in child_ids if statuses[child_id] in unstarted]
-        if parent_status in unstarted and started_children:
-            child_id = started_children[0]
-            problems.append(Problem("status-hierarchy", parent_id, f"status '{parent_status}' cannot contain started child '{child_id}' status '{statuses[child_id]}'"))
-        if parent_status == "in-progress":
-            if len(unstarted_children) == len(child_ids):
-                child_id = unstarted_children[0]
-                problems.append(Problem("status-hierarchy", parent_id, f"status '{parent_status}' cannot contain only unstarted children; example child '{child_id}' is '{statuses[child_id]}'"))
-            if not started_children:
-                problems.append(Problem("status-hierarchy", parent_id, f"status '{parent_status}' requires at least one started child"))
-        if parent_status == "complete" and incomplete_children:
-            child_id = incomplete_children[0]
-            problems.append(Problem("status-hierarchy", parent_id, f"status '{parent_status}' cannot be complete while child '{child_id}' is '{statuses[child_id]}'"))
+        problems.extend(_unstarted_parent_problems(parent_id, parent_status, statuses, roles))
+        problems.extend(_in_progress_parent_problems(parent_id, parent_status, statuses, roles))
+        problems.extend(_complete_parent_problems(parent_id, parent_status, statuses, roles))
     return problems
 
 
-def ordered_children(parent_id: str, child_type: str, field_name: str, children: list[str], records: dict[str, CardRecord], problems: list[Problem]) -> list[str]:
+@dataclass(frozen=True)
+class OrderedChildren:
+    sequence: list[str]
+    problems: list[Problem]
+
+
+def _mismatch_problem(parent_id: str, child_type: str, field_name: str, label: str, ids: list[str]) -> list[Problem]:
+    if not ids:
+        return []
+    return [Problem("sibling-ordering", parent_id, f"'{field_name}' {label} {child_type} ids: {', '.join(ids)}")]
+
+
+def _difference(items: list[str], exclude: set[str]) -> list[str]:
+    return [item for item in items if item not in exclude]
+
+
+def _reconcile_declared_order(parent_id: str, child_type: str, field_name: str, declared: list[str], children: list[str]) -> OrderedChildren:
+    missing = _difference(children, set(declared))
+    extras = _difference(declared, set(children))
+    problems = _mismatch_problem(parent_id, child_type, field_name, "omits", missing) + _mismatch_problem(parent_id, child_type, field_name, "references non-child", extras)
+    if missing or extras:
+        return OrderedChildren(children, problems)
+    # declared and children are now the same set, so declaration order is the canonical order
+    return OrderedChildren(declared, problems)
+
+
+def ordered_children(parent_id: str, child_type: str, field_name: str, children: list[str], records: dict[str, CardRecord]) -> OrderedChildren:
     # Reconcile a parent's declared ordered child-link field against its actual children of
     # the given type; report omissions/extras and fall back to declaration order. Port of
     # the source's ordered_children closure.
     if len(children) <= 1:
-        return children
+        return OrderedChildren(children, [])
     declared = wikilink_ids(records[parent_id].metadata.get(field_name) or [])
     if not declared:
-        problems.append(Problem("sibling-ordering", parent_id, f"parent with multiple {child_type} children must declare ordered '{field_name}' links"))
-        return children
-    missing = [child_id for child_id in children if child_id not in declared]
-    extras = [child_id for child_id in declared if child_id not in children]
-    for ids, label in ((missing, "omits"), (extras, "references non-child")):
-        if ids:
-            problems.append(Problem("sibling-ordering", parent_id, f"'{field_name}' {label} {child_type} ids: {', '.join(ids)}"))
-    if missing or extras:
-        return children
-    return [child_id for child_id in declared if child_id in children]
+        return OrderedChildren(children, [Problem("sibling-ordering", parent_id, f"parent with multiple {child_type} children must declare ordered '{field_name}' links")])
+    return _reconcile_declared_order(parent_id, child_type, field_name, declared, children)
+
+
+def _dependson_order_problems(sequence: list[str], records: dict[str, CardRecord]) -> list[Problem]:
+    return [
+        Problem("sibling-ordering", child_id, f"sibling order requires dependsOn '{previous_id}'")
+        for previous_id, child_id in zip(sequence, sequence[1:], strict=False)
+        if previous_id not in depends_targets(records[child_id], records)
+    ]
 
 
 def sibling_ordering_problems(records: dict[str, CardRecord]) -> list[Problem]:
@@ -213,10 +269,9 @@ def sibling_ordering_problems(records: dict[str, CardRecord]) -> list[Problem]:
             continue
         child_type, field_name = ordering
         typed = [child_id for child_id in children.get(parent_id, []) if records[child_id].type_name == child_type]
-        sequence = ordered_children(parent_id, child_type, field_name, typed, records, problems)
-        for previous_id, child_id in zip(sequence, sequence[1:], strict=False):
-            if previous_id not in depends_targets(records[child_id], records):
-                problems.append(Problem("sibling-ordering", child_id, f"sibling order requires dependsOn '{previous_id}'"))
+        resolved = ordered_children(parent_id, child_type, field_name, typed, records)
+        problems.extend(resolved.problems)
+        problems.extend(_dependson_order_problems(resolved.sequence, records))
     return problems
 
 
@@ -232,23 +287,24 @@ def plans_root_for(card_id: str, record: CardRecord, records: dict[str, CardReco
     return Path(*parts[: parts.index("features")])
 
 
+def _filesystem_problem(card_id: str, record: CardRecord, card_type: CardTypeSpec, records: dict[str, CardRecord]) -> Problem | None:
+    parents = [parent_id for parent_id in parent_ids(record) if parent_id in records]
+    is_root = not card_type.parents
+    if not is_root and len(parents) != 1:
+        return None  # malformed parent count is reported by the containment check
+    parent_id = None if is_root else parents[0]
+    expected = card_file_path(plans_root_for(card_id, record, records), card_type, card_id, parent_id).resolve()
+    if record.path.resolve() == expected:
+        return None
+    return Problem("filesystem-hierarchy", card_id, f"expected path {expected}, found {record.path.resolve()}")
+
+
 def filesystem_hierarchy_problems(records: dict[str, CardRecord], config: CardSystemConfig) -> list[Problem]:
     # Port of validate_filesystem_hierarchy: each card's on-disk path must equal the
     # canonical path computed by card_file_path from its type + single containment parent.
     by_type = {card_type.name: card_type for card_type in config.card_types}
-    problems: list[Problem] = []
-    for card_id in sorted(records):
-        record = records[card_id]
-        parents = [parent_id for parent_id in parent_ids(record) if parent_id in records]
-        is_root = not by_type[record.type_name].parents
-        if not is_root and len(parents) != 1:
-            continue
-        parent_id = None if is_root else parents[0]
-        plans_root = plans_root_for(card_id, record, records)
-        expected = card_file_path(plans_root, by_type[record.type_name], card_id, parent_id).resolve()
-        if record.path.resolve() != expected:
-            problems.append(Problem("filesystem-hierarchy", card_id, f"expected path {expected}, found {record.path.resolve()}"))
-    return problems
+    problems = [_filesystem_problem(card_id, records[card_id], by_type[records[card_id].type_name], records) for card_id in sorted(records)]
+    return [problem for problem in problems if problem is not None]
 
 
 def ancestor_chain(card_id: str, records: dict[str, CardRecord], active: frozenset[str]) -> list[str]:
