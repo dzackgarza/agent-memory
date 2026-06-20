@@ -137,12 +137,13 @@ def parent_ids(record: CardRecord) -> list[str]:
 
 def children_by_parent(records: dict[str, CardRecord]) -> dict[str, list[str]]:
     # Group every card under each of its (resolvable) containment parents, preserving the
-    # id-sorted record order so emitted problems are deterministic.
-    children: dict[str, list[str]] = {}
-    for card_id in sorted(records):
+    # id-sorted record order so emitted problems are deterministic. Every record id is a key
+    # (empty list when it has no children) so callers use subscript access, never get/default.
+    children: dict[str, list[str]] = {card_id: [] for card_id in sorted(records)}
+    for card_id in children:
         for parent_id in parent_ids(records[card_id]):
-            if parent_id in records:
-                children.setdefault(parent_id, []).append(card_id)
+            if parent_id in children:
+                children[parent_id].append(card_id)
     return children
 
 
@@ -204,6 +205,8 @@ def status_hierarchy_problems(records: dict[str, CardRecord], config: CardSystem
     roles = StatusRoles(config.statuses_with_role("started"), config.statuses_with_role("complete"), config.statuses_with_role("unstarted"))
     problems: list[Problem] = []
     for parent_id, child_ids in children_by_parent(records).items():
+        if not child_ids:
+            continue  # a card with no children imposes no hierarchy constraint
         parent_status = card_status(records[parent_id])
         statuses = {child_id: card_status(records[child_id]) for child_id in child_ids}
         problems.extend(_unstarted_parent_problems(parent_id, parent_status, statuses, roles))
@@ -268,7 +271,7 @@ def sibling_ordering_problems(records: dict[str, CardRecord]) -> list[Problem]:
         if ordering is None:
             continue
         child_type, field_name = ordering
-        typed = [child_id for child_id in children.get(parent_id, []) if records[child_id].type_name == child_type]
+        typed = [child_id for child_id in children[parent_id] if records[child_id].type_name == child_type]
         resolved = ordered_children(parent_id, child_type, field_name, typed, records)
         problems.extend(resolved.problems)
         problems.extend(_dependson_order_problems(resolved.sequence, records))
