@@ -23,10 +23,13 @@ def write_card(path: Path, frontmatter: dict[str, Any], body: str) -> None:
 
 
 def build_nimbalyst_source(source_root: Path) -> None:
+    # A valid Nimbalyst feature->plan->phase->task chain: each level started, the feature
+    # declares its lone plan, and tags equal the ancestor chain, so the migrated tree passes
+    # every validation rule (status hierarchy, sibling ordering, filesystem, tags).
     feature_dir = source_root / "features" / "FEATURE-M"
     write_card(
         feature_dir / "FEATURE-M.md",
-        {"id": "FEATURE-M", "trackerStatus": {"type": "feature"}, "title": "Migrated feature", "status": "in-progress", "description": "d"},
+        {"id": "FEATURE-M", "trackerStatus": {"type": "feature"}, "plans": ["[[PLAN-M]]"], "title": "Migrated feature", "status": "in-progress", "description": "d"},
         "# Migrated feature\n",
     )
     plan_dir = feature_dir / "plans" / "PLAN-M"
@@ -37,9 +40,10 @@ def build_nimbalyst_source(source_root: Path) -> None:
             "trackerStatus": {"type": "plan"},
             "parents": ["[[FEATURE-M]]"],
             "title": "Migrated plan",
-            "status": "approved-and-unstarted",
+            "status": "in-progress",
             "description": "d",
             "successCriteria": ["compiles"],
+            "tags": ["FEATURE-M"],
         },
         "# Migrated plan\n",
     )
@@ -54,6 +58,7 @@ def build_nimbalyst_source(source_root: Path) -> None:
             "status": "in-progress",
             "description": "d",
             "successCriteria": ["done"],
+            "tags": ["FEATURE-M", "PLAN-M"],
         },
         "# Migrated phase\n",
     )
@@ -67,6 +72,7 @@ def build_nimbalyst_source(source_root: Path) -> None:
             "status": "complete",
             "description": "d",
             "successCriteria": ["shipped"],
+            "tags": ["FEATURE-M", "PLAN-M", "PHASE-M"],
         },
         "# Migrated task\n",
     )
