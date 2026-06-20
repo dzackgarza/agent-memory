@@ -290,3 +290,44 @@ def test_tags_from_ancestry_root_feature_no_tags_silent(tmp_path: Path) -> None:
     # a root feature has no tagged ancestors; absent tags must NOT be flagged
     problems = validate_cards(load_card_records([root], config, models), config)
     assert [p for p in problems if p.kind == "tags-from-ancestry"] == []
+
+
+def test_tags_from_ancestry_no_ancestors_but_declares_tags_flagged(tmp_path: Path) -> None:
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    make_feature(root, config, models, "ONE", "in-progress")
+    # a root feature with no tagged ancestors must not declare any tags (the elif branch)
+    update_card(root, config, models, "FEATURE-ONE", {"tags": ["STRAY"]})
+    problems = validate_cards(load_card_records([root], config, models), config)
+    assert any(p.kind == "tags-from-ancestry" and p.card_id == "FEATURE-ONE" and "no tagged ancestors" in p.detail for p in problems)
+
+
+def dangling_parent_records() -> dict[str, "object"]:
+    # A single phase whose only parent link points at a plan id that is not in the record
+    # set, exercising the "parent not a record" branches of the child map and ancestor chain.
+    from agent_memory.cards.validation import CardRecord
+
+    path = Path("/tmp/plans/features/FEATURE-X/PHASE-X/PHASE-X.md")
+    return {"PHASE-X": CardRecord(type_name="phase", path=path, metadata={"id": "PHASE-X", "status": "in-progress", "parents": ["[[PLAN-GONE]]"]})}
+
+
+def test_dangling_parent_links_are_skipped_in_hierarchy_and_tags() -> None:
+    # A parent id that resolves to no record must be skipped by children_by_parent and by
+    # ancestor_chain (the `parent_id not in records` / `not in children` branches), so a card
+    # whose sole parent is missing produces no status-hierarchy, sibling, or tags problem.
+    config = load_card_system_config()
+    records = dangling_parent_records()
+    problems = validate_cards(records, config)  # type: ignore[arg-type]
+    kinds = {p.kind for p in problems}
+    assert "status-hierarchy" not in kinds
+    assert "tags-from-ancestry" not in kinds
+    assert "sibling-ordering" not in kinds
+
+
+def test_filesystem_hierarchy_skips_card_with_no_resolvable_parent() -> None:
+    # A non-root card whose single parent link is unresolvable has len(parents) != 1, so the
+    # filesystem check skips it (the early-return branch) and emits no filesystem problem.
+    config = load_card_system_config()
+    records = dangling_parent_records()
+    problems = validate_cards(records, config)  # type: ignore[arg-type]
+    assert [p for p in problems if p.kind == "filesystem-hierarchy"] == []
