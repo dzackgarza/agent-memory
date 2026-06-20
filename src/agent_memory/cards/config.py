@@ -58,6 +58,14 @@ class CardTypeSpec(BaseModel):
     own_dir: bool = False
 
 
+def _validate_workflow_roles(statuses: list[str], workflow_roles: dict[str, list[str]]) -> None:
+    status_values = set(statuses)
+    for role, members in workflow_roles.items():
+        for status in members:
+            if status not in status_values:
+                raise ValueError(f"workflow role {role} lists status not in catalog: {status}")
+
+
 def _validate_status_sets(statuses: list[str], status_sets: dict[str, StatusSetSpec]) -> None:
     status_values = set(statuses)
     for set_name, status_set in status_sets.items():
@@ -114,6 +122,9 @@ class CardSystemConfig(BaseModel):
     statuses: list[str]
     status_sets: dict[str, StatusSetSpec]
     card_types: list[CardTypeSpec]
+    # Status lifecycle roles (started / complete / unstarted) used for rollups and
+    # transitions; each role maps to the catalog statuses that count as being in it.
+    workflow_roles: dict[str, list[str]] = {}
     root: str = "plans"
 
     @model_validator(mode="after")
@@ -122,5 +133,10 @@ class CardSystemConfig(BaseModel):
         # loudly at load instead of producing a card model that silently drops or
         # mis-validates fields.
         _validate_status_sets(self.statuses, self.status_sets)
+        _validate_workflow_roles(self.statuses, self.workflow_roles)
         _validate_card_types(self.card_types, self.status_sets)
         return self
+
+    def statuses_with_role(self, role: str) -> set[str]:
+        assert role in self.workflow_roles, f"unknown workflow role: {role}"
+        return set(self.workflow_roles[role])
