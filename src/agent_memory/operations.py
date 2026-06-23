@@ -64,6 +64,7 @@ ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
 VAULT_GIT_USER_NAME = "agent-memory"
 VAULT_GIT_USER_EMAIL = "agent-memory@localhost"
 ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
+PROJECT_AGENT_STATE_DIRECTORIES: tuple[str, ...] = (".agents", ".hermes")
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.DECISION: "decisions",
@@ -322,6 +323,7 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
     for directory in MEMORY_TYPE_DIRECTORY_NAMES:
         (project_dir / directory).mkdir()
     write_section_indexes(project_dir, MEMORY_TYPE_DIRECTORY_NAMES)
+    install_project_agent_state_links(git_root, project_dir)
     append_index_link(
         vault / "index.md",
         project_id,
@@ -936,12 +938,14 @@ def doctor(cwd: Path) -> JsonObject:
     basic = basic_doctor(cwd)
     config = load_project_config(cwd)
     git_root = git_root_for(cwd)
+    project_dir = config.vault / "projects" / config.project_id
     assert (config.vault / ".zk" / "config.toml").is_file(), "vault must be initialized with zk"
     assert (config.vault / ".zk" / "templates" / "default.md").is_file(), "zk default template must exist"
     return {
         "vault": str(config.vault),
         "project_id": config.project_id,
         "project_root": str(git_root),
+        "agent_state": project_agent_state_records(git_root, project_dir),
         "tools": basic["tools"],
         "dependencies": basic["dependencies"],
     }
@@ -982,6 +986,44 @@ def write_new_file(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def install_project_agent_state_links(git_root: Path, project_dir: Path) -> None:
+    for name in PROJECT_AGENT_STATE_DIRECTORIES:
+        install_project_agent_state_link(git_root, project_dir, name)
+
+
+def install_project_agent_state_link(git_root: Path, project_dir: Path, name: str) -> None:
+    repo_path = git_root / name
+    vault_path = project_dir / name
+    vault_path.mkdir()
+    if repo_path.is_symlink():
+        assert repo_path.resolve() == vault_path.resolve(), f"refusing to replace foreign symlink {repo_path}"
+        return
+    if repo_path.exists():
+        assert repo_path.is_dir(), f"refusing to replace non-directory {repo_path}"
+        migrate_directory_contents(repo_path, vault_path)
+        repo_path.rmdir()
+    repo_path.symlink_to(vault_path, target_is_directory=True)
+
+
+def migrate_directory_contents(source: Path, destination: Path) -> None:
+    for child in tuple(source.iterdir()):
+        target = destination / child.name
+        assert not target.exists() and not target.is_symlink(), f"refusing to overwrite migrated path {target}"
+        shutil.move(str(child), str(target))
+
+
+def project_agent_state_records(git_root: Path, project_dir: Path) -> list[JsonValue]:
+    records: list[JsonValue] = []
+    for name in PROJECT_AGENT_STATE_DIRECTORIES:
+        repo_path = git_root / name
+        vault_path = project_dir / name
+        assert vault_path.is_dir(), f"project agent state directory is missing: {vault_path}"
+        assert repo_path.is_symlink(), f"project agent state path is not a symlink: {repo_path}"
+        assert repo_path.resolve() == vault_path.resolve(), f"project agent state path points outside the vault project: {repo_path}"
+        records.append({"name": name, "repo_path": str(repo_path), "vault_path": str(vault_path)})
+    return records
+
+
 def agents_pointer_section(vault: Path, project_id: str) -> str:
     add_examples = "".join(f"agent-memory add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in MemoryType)
     return (
@@ -989,6 +1031,7 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         "# Agent memory\n\n"
         f"This repository uses the central agent memory vault at `{vault}`.\n\n"
         f"Project memory key: `projects/{project_id}/index`.\n\n"
+        "Repository `.agents` and `.hermes` paths are symlinks into the vault-owned project directory.\n\n"
         "Before changing architecture, search both project and global memory:\n\n"
         "```bash\n"
         'agent-memory search --scope both "<task or subsystem>"\n'
