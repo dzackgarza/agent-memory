@@ -1,7 +1,7 @@
 # agent-memory
 
 `agent-memory` is a global and project-scoped Markdown memory database for agents.
-It stores memories as plain files in an IWE-backed vault and exposes a small CLI for normal agent work: create, retrieve, update, delete, and search memories.
+It stores memories and vault-backed plan cards as plain files in an IWE-backed vault and exposes a small CLI for normal agent work: create, retrieve, update, delete, search, inspect, and plan-card lifecycle operations.
 
 ## Install And Setup
 
@@ -54,6 +54,9 @@ Retrieve a memory:
 agent-memory retrieve projects/<project-id>/decisions/parser-choice
 ```
 
+`retrieve` expects a full vault-relative key.
+Use `agent-memory search --scope both "<term>"` to discover keys first; basename or slug fragments such as `parser-choice` are not a supported `retrieve` contract.
+
 Update a memory:
 
 ```bash
@@ -71,6 +74,39 @@ Validate the current repository setup:
 ```bash
 agent-memory doctor
 ```
+
+## Plan Cards
+
+Project plan cards live in the same vault under `projects/<project-id>/plans/`. The shipped source of truth is the `agent-memory plan ...` surface, not a parallel in-repo `.agents/plans` tree after migration.
+
+Create plan cards in the vault:
+
+```bash
+agent-memory plan add --type feature --id FEATURE-DEMO --set title=Demo --set status=in-progress --set description="Plan card in the vault"
+agent-memory plan add --type plan --id PLAN-DEMO --parent FEATURE-DEMO --set title=Plan --set status=in-progress --set parents=[[FEATURE-DEMO]] --set successCriteria=ships
+```
+
+Validate and render the shared DAG:
+
+```bash
+agent-memory plan validate
+agent-memory plan dag
+```
+
+Migrate an existing in-repo card tree into the vault:
+
+```bash
+agent-memory plan migrate --from .agents/plans
+```
+
+Search and retrieve plan cards through the same vault-key surface:
+
+```bash
+agent-memory search --scope project "plan card"
+agent-memory retrieve projects/<project-id>/plans/features/FEATURE-DEMO/FEATURE-DEMO
+```
+
+`plan validate` and `plan dag` load every registered project plans root from the vault metadata, so cross-project `dependsOn` references are validated and rendered from one shared graph.
 
 ## Search
 

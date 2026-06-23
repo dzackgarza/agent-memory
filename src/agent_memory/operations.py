@@ -801,7 +801,16 @@ def json_int(payload: JsonObject, key: str) -> int:
 
 def retrieve_memory(key: str, cwd: Path) -> str:
     config = load_project_config(cwd)
-    return iwe.retrieve(config.vault, key)
+    try:
+        return iwe.retrieve(config.vault, key)
+    except KeyError as exc:
+        raise AssertionError(
+            "retrieve expects a full vault-relative key. "
+            f"Could not resolve `{key}`. "
+            'Use `agent-memory search --scope both "<term>"` to discover keys, then retrieve a result such as '
+            "`projects/<project-id>/decisions/parser-choice` or "
+            "`projects/<project-id>/plans/features/FEATURE-ID/FEATURE-ID`."
+        ) from exc
 
 
 def squash_memory(key: str, depth: int, cwd: Path) -> str:

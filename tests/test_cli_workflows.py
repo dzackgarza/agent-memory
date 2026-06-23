@@ -595,6 +595,13 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     assert updated["key"] == project_note["key"]
     assert "durable next step" in run_agent_memory(workspace.repo, "retrieve", str(project_note["key"])).stdout
 
+    basename_miss = run_agent_memory_subprocess(workspace.repo, "retrieve", "project-alpha")
+    assert basename_miss.returncode != 0
+    assert "retrieve expects a full vault-relative key" in basename_miss.stderr
+    assert "projects/<project-id>/decisions/parser-choice" in basename_miss.stderr
+    assert "projects/<project-id>/plans/features/FEATURE-ID/FEATURE-ID" in basename_miss.stderr
+    assert "agent-memory search --scope both" in basename_miss.stderr
+
     deleted = parse_json_stdout(run_agent_memory(workspace.repo, "delete", str(global_note["key"])))
     assert deleted["deleted"] == global_key
     after_delete = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "both", "global-signal-cde4b9f6"))
@@ -1550,6 +1557,9 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     feature_key = f"projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
     search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"))
     assert feature_key in result_keys(search)
+    feature_text = run_agent_memory(workspace.repo, "retrieve", feature_key).stdout
+    assert f"#projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO" in feature_text
+    assert "# FEATURE-DEMO" in feature_text
 
     # migrate an in-repo card tree (carrying trackerStatus) into the vault
     source = tmp_path / "incoming" / "plans" / "features" / "FEATURE-MIG"

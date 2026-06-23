@@ -66,14 +66,14 @@ app = App(
         "Memory database CLI for global and project Markdown vaults. "
         "Use `agent-memory maintain init-global --vault <path>` once, "
         "`agent-memory init project --vault <path>` per repository, then `add`, `search`, "
-        "`inspect`, `retrieve`, `update`, and `delete` during normal agent work."
+        "`inspect`, `retrieve`, `update`, `delete`, and `plan` during normal agent work."
     ),
 )
 init_app = app.command(App(name="init", help="Initialize project memory bindings."))
 search_app = app.command(App(name="search", help="Query memories by keys, content, or metadata."))
 inspect_app = app.command(App(name="inspect", help="Read-only vault navigation and analysis commands."))
 maintain_app = app.command(App(name="maintain", help="Vault setup and maintenance workflows."))
-plan_app = app.command(App(name="plan", help="Create, validate, and visualize project-scoped plan cards."))
+plan_app = app.command(App(name="plan", help="Create, migrate, validate, and visualize vault-backed project plan cards."))
 
 
 def maintain_init_global(
@@ -304,9 +304,9 @@ def inspect_export_command(
 
 
 def retrieve_command(
-    key: Annotated[str, Parameter(help="Memory key to retrieve.")],
+    key: Annotated[str, Parameter(help="Full vault-relative key to retrieve (memory or plan card).")],
 ) -> None:
-    """Retrieve one memory with graph context."""
+    """Retrieve one vault note by full key."""
     print(retrieve_memory(key=key, cwd=Path.cwd()), end="")
 
 
