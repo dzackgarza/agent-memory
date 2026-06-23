@@ -291,8 +291,8 @@ def initialized_workspace_with_agents(tmp_path: Path, agents_text: str) -> CliWo
     return initialized_project_workspace(tmp_path, git_repo)
 
 
-def project_agent_state_path(workspace: CliWorkspace, name: str) -> Path:
-    return workspace.vault / "projects" / workspace.project_id / name
+def project_agent_state_path(workspace: CliWorkspace) -> Path:
+    return workspace.vault / "projects" / workspace.project_id
 
 
 def add_cli_memory(
@@ -932,10 +932,10 @@ def test_init_project_appends_agents_memory_pointer_to_unmarked_agents(
 
 def test_init_project_symlinks_agent_state_directories_to_vault_project(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
+    vault_path = project_agent_state_path(workspace)
 
     for name in (".agents", ".hermes"):
         repo_path = workspace.repo / name
-        vault_path = project_agent_state_path(workspace, name)
         assert vault_path.is_dir()
         assert repo_path.is_symlink()
         assert repo_path.resolve() == vault_path.resolve()
@@ -952,12 +952,12 @@ def test_init_project_migrates_existing_agent_state_into_vault_project(tmp_path:
 
     workspace = initialized_project_workspace(tmp_path, git_repo)
 
-    assert (project_agent_state_path(workspace, ".agents") / "justfile").read_text(encoding="utf-8") == "_private:\n    true\n"
-    assert (project_agent_state_path(workspace, ".hermes") / "plans" / "existing-plan.md").read_text(encoding="utf-8") == "# Existing Plan\n"
+    assert (project_agent_state_path(workspace) / "justfile").read_text(encoding="utf-8") == "_private:\n    true\n"
+    assert (project_agent_state_path(workspace) / "plans" / "existing-plan.md").read_text(encoding="utf-8") == "# Existing Plan\n"
     assert (workspace.repo / ".agents").is_symlink()
     assert (workspace.repo / ".hermes").is_symlink()
-    assert (workspace.repo / ".agents").resolve() == project_agent_state_path(workspace, ".agents").resolve()
-    assert (workspace.repo / ".hermes").resolve() == project_agent_state_path(workspace, ".hermes").resolve()
+    assert (workspace.repo / ".agents").resolve() == project_agent_state_path(workspace).resolve()
+    assert (workspace.repo / ".hermes").resolve() == project_agent_state_path(workspace).resolve()
 
 
 def test_maintain_move_memory_to_global_leaves_project_pointer(
@@ -1151,12 +1151,12 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
         {
             "name": ".agents",
             "repo_path": str(workspace.repo / ".agents"),
-            "vault_path": str(project_agent_state_path(workspace, ".agents")),
+            "vault_path": str(project_agent_state_path(workspace)),
         },
         {
             "name": ".hermes",
             "repo_path": str(workspace.repo / ".hermes"),
-            "vault_path": str(project_agent_state_path(workspace, ".hermes")),
+            "vault_path": str(project_agent_state_path(workspace)),
         },
     ]
     assert doctor["tools"] == ["git", "rg", "npx", "@probelabs/probe", "zk"]

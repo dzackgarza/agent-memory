@@ -993,8 +993,7 @@ def install_project_agent_state_links(git_root: Path, project_dir: Path) -> None
 
 def install_project_agent_state_link(git_root: Path, project_dir: Path, name: str) -> None:
     repo_path = git_root / name
-    vault_path = project_dir / name
-    vault_path.mkdir()
+    vault_path = project_dir
     if repo_path.is_symlink():
         assert repo_path.resolve() == vault_path.resolve(), f"refusing to replace foreign symlink {repo_path}"
         return
@@ -1008,6 +1007,10 @@ def install_project_agent_state_link(git_root: Path, project_dir: Path, name: st
 def migrate_directory_contents(source: Path, destination: Path) -> None:
     for child in tuple(source.iterdir()):
         target = destination / child.name
+        if child.is_dir() and not child.is_symlink() and target.is_dir() and not target.is_symlink():
+            migrate_directory_contents(child, target)
+            child.rmdir()
+            continue
         assert not target.exists() and not target.is_symlink(), f"refusing to overwrite migrated path {target}"
         shutil.move(str(child), str(target))
 
@@ -1016,7 +1019,7 @@ def project_agent_state_records(git_root: Path, project_dir: Path) -> list[JsonV
     records: list[JsonValue] = []
     for name in PROJECT_AGENT_STATE_DIRECTORIES:
         repo_path = git_root / name
-        vault_path = project_dir / name
+        vault_path = project_dir
         assert vault_path.is_dir(), f"project agent state directory is missing: {vault_path}"
         assert repo_path.is_symlink(), f"project agent state path is not a symlink: {repo_path}"
         assert repo_path.resolve() == vault_path.resolve(), f"project agent state path points outside the vault project: {repo_path}"
@@ -1031,7 +1034,7 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         "# Agent memory\n\n"
         f"This repository uses the central agent memory vault at `{vault}`.\n\n"
         f"Project memory key: `projects/{project_id}/index`.\n\n"
-        "Repository `.agents` and `.hermes` paths are symlinks into the vault-owned project directory.\n\n"
+        "Repository `.agents` and `.hermes` paths are symlinks to the same vault-owned project directory.\n\n"
         "Before changing architecture, search both project and global memory:\n\n"
         "```bash\n"
         'agent-memory search --scope both "<task or subsystem>"\n'

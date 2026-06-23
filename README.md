@@ -36,8 +36,8 @@ Bind a repository to that vault:
 agent-memory init project --vault <vault>
 ```
 
-This writes `.agent-memory.toml` in the repository, adds an `AGENTS.md` pointer to the project memory key, creates vault-owned project `.agents` and `.hermes` directories, and symlinks the repository `.agents` and `.hermes` paths to those vault locations.
-Existing local `.agents` or `.hermes` contents are moved into the vault-owned project directory during initialization.
+This writes `.agent-memory.toml` in the repository, adds an `AGENTS.md` pointer to the project memory key, and symlinks the repository `.agents` and `.hermes` paths to the same vault-owned project directory.
+Existing local `.agents` or `.hermes` contents are merged into that vault-owned project directory during initialization.
 
 ## Normal Workflow
 
