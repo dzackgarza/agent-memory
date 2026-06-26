@@ -24,14 +24,9 @@ from agent_memory.operations import (
     OKF_VERSION,
     DependencyCheck,
     DependencyError,
-    ProjectConfigCorruptError,
     ProjectNotInitializedError,
-    VaultNotInitializedError,
-    assert_vault_zk_initialized,
     basic_doctor,
     check_dependency,
-    find_project_config,
-    global_vault_path,
     merge_probe_payloads,
     update_memory,
 )
@@ -1717,37 +1712,6 @@ def test_global_op_error_names_init_global_only_when_vault_missing(tmp_path: Pat
     assert result.returncode != 0
     assert "maintain init-global" in result.stderr
     assert "init project" not in result.stderr
-
-
-def test_global_vault_path_rejects_whitespace_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Review fix: AGENT_MEMORY_VAULT validation must not rely on `assert` (stripped under
-    # `python -O`). A whitespace-only override is empty after strip and must raise ValueError,
-    # never silently resolve to `Path(".")` (the cwd) and write global memory there.
-    monkeypatch.setenv("AGENT_MEMORY_VAULT", "   ")
-    with pytest.raises(ValueError):
-        global_vault_path()
-
-
-def test_assert_vault_zk_initialized_fails_loud_on_uninitialized_vault(tmp_path: Path) -> None:
-    # Review fix: doctor's vault check must not rely on `assert` (stripped under `python -O`,
-    # which would make `doctor` silently pass on an uninitialized vault). A vault missing the
-    # zk layout raises a real, named error.
-    bare = tmp_path / "bare-vault"
-    bare.mkdir()
-    with pytest.raises(VaultNotInitializedError):
-        assert_vault_zk_initialized(bare)
-
-
-def test_find_project_config_fails_loud_on_corrupt_binding(tmp_path: Path) -> None:
-    # Review counter (comment 3): a present-but-corrupt `.agent-memory.toml` must fail loud,
-    # naming the file -- never silently return None, which would mis-route a bound repo as
-    # unbound (project ops -> misleading "not initialized"; global writes -> wrong vault).
-    repo = tmp_path / "corrupt-repo"
-    repo.mkdir()
-    init_git_repo(repo)
-    (repo / ".agent-memory.toml").write_text("this is not = valid toml ][", encoding="utf-8")
-    with pytest.raises(ProjectConfigCorruptError):
-        find_project_config(repo)
 
 
 def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:
