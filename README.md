@@ -39,6 +39,19 @@ agent-memory init project --vault <vault>
 This writes `.agent-memory.toml` in the repository, adds an `AGENTS.md` pointer to the project memory key, and symlinks the repository `.agents` and `.hermes` paths to the same vault-owned project directory.
 Existing local `.agents` or `.hermes` contents are merged into that vault-owned project directory during initialization.
 
+### Global operations from an unbound directory
+
+Global-scope operations (`add --scope global`, `search --scope global`, and `doctor`) do not require the current directory to be a bound repository.
+Inside a bound repository they use that repository's configured vault for every scope.
+From an unbound directory they resolve the global vault from the `AGENT_MEMORY_VAULT` environment variable, falling back to the shipped default (`~/.agent-memory-vault`) when it is unset:
+
+```bash
+export AGENT_MEMORY_VAULT=/path/to/global-vault   # optional; defaults to ~/.agent-memory-vault
+agent-memory add --scope global --type advice --title "Cross-repo lesson" --content "..."
+```
+
+`project` and `both` scopes still require a bound repository, since both reaches project memory.
+
 ## Normal Workflow
 
 Create a memory:

@@ -1632,3 +1632,107 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     flagged = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "validate"))
     problems = [json_object(item) for item in json_array(flagged["problems"])]
     assert any(json_string(problem["kind"]) == "reference" for problem in problems)
+
+
+def unbound_dir(tmp_path: Path) -> Path:
+    # A directory with no project binding and no git repository at all, modeling the
+    # `$HOME`/unbound-repo case from issue #25 where global operations must still work.
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    return loose
+
+
+def test_global_add_and_search_run_without_project_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Issue #25: storing or searching a *global* memory must not require the cwd to be a
+    # bound project. The global vault is resolved from AGENT_MEMORY_VAULT (falling back to
+    # the shipped default) independent of any cwd `.agent-memory.toml`.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))
+    loose = unbound_dir(tmp_path)
+
+    added = parse_json_stdout(
+        run_agent_memory(
+            loose,
+            "add",
+            "--scope",
+            "global",
+            "--type",
+            "advice",
+            "--title",
+            "Unbound Global Note",
+            "--content",
+            "unbound-global-token-7a1c evidence body",
+        )
+    )
+    assert added["key"] == "global/advice/unbound-global-note"
+    assert (vault / "global" / "advice" / "unbound-global-note.md").is_file()
+
+    found = parse_json_stdout(run_agent_memory(loose, "search", "--scope", "global", "unbound-global-token-7a1c"))
+    assert "global/advice/unbound-global-note" in result_keys(found)
+
+
+def test_global_doctor_runs_without_project_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Issue #25: `doctor` must not crash from an unbound directory; it reports global vault
+    # and tool health and marks the absence of a project binding instead of raising.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))
+    loose = unbound_dir(tmp_path)
+
+    report = parse_json_stdout(run_agent_memory(loose, "doctor"))
+    assert report["vault"] == str(vault)
+    assert report["project_bound"] is False
+    assert report["project_id"] is None
+
+
+def test_global_op_error_names_init_global_only_when_vault_missing(tmp_path: Path) -> None:
+    # Issue #25: when the global vault genuinely does not exist, the error names that
+    # condition and the `maintain init-global` remedy only -- never `init project` in the
+    # unrelated cwd. Run as a real subprocess so an uncaught error surfaces as a nonzero
+    # exit with the message on stderr.
+    missing_vault = tmp_path / "no-such-vault"
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(missing_vault)
+    loose = unbound_dir(tmp_path)
+
+    result = run_agent_memory_subprocess(
+        loose,
+        "add",
+        "--scope",
+        "global",
+        "--type",
+        "advice",
+        "--title",
+        "Doomed",
+        "--content",
+        "body",
+        env=env,
+    )
+    assert result.returncode != 0
+    assert "maintain init-global" in result.stderr
+    assert "init project" not in result.stderr
+
+
+def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:
+    # Issue #22: a bare `search <term>` with no --scope searches both project and global.
+    workspace = initialized_workspace(tmp_path)
+    project_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Default Scope Project",
+        content="default-scope-token-5e2b project body",
+    )
+    global_note = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="advice",
+        title="Default Scope Global",
+        content="default-scope-token-5e2b global body",
+    )
+
+    defaulted = parse_json_stdout(run_agent_memory(workspace.repo, "search", "default-scope-token-5e2b"))
+    keys = result_keys(defaulted)
+    assert str(project_note["key"]) in keys
+    assert str(global_note["key"]) in keys
