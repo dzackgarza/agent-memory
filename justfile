@@ -21,6 +21,12 @@ test-ci:
     set -euo pipefail
     direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test-ci
 
+# Full-repo deferred-debt audit (complexity, dead code, duplication). Scheduled, not push-blocking.
+ambient:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/qc-tooling.just" -d "{{ justfile_directory() }}" ambient
+
 [private]
 _install-agent-memory:
     #!/usr/bin/env bash
