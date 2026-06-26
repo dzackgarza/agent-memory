@@ -178,6 +178,29 @@ class GlobalVaultNotInitializedError(RuntimeError):
         super().__init__(self.GUIDANCE.format(vault=vault))
 
 
+class VaultNotInitializedError(RuntimeError):
+    """Raised when a vault is missing the zk layout a healthy vault must have.
+
+    Replaces bare `assert`s in the doctor path: asserts are stripped under `python -O`,
+    so a diagnostic relying on them would silently pass on an uninitialized vault.
+    """
+
+
+class ProjectConfigCorruptError(RuntimeError):
+    """Raised when a present `.agent-memory.toml` cannot be parsed or validated.
+
+    A present-but-corrupt binding is a real error, not an unbound directory: it must fail
+    loud naming the file, never be silently treated as None (which would mis-route a bound
+    repo to the global/unbound path).
+    """
+
+    def __init__(self, config_path: Path) -> None:
+        super().__init__(
+            f"Project binding at {config_path} is corrupt and could not be parsed. "
+            "Fix the TOML/schema or remove the file."
+        )
+
+
 class DependencyError(RuntimeError):
     """Raised when a required external dependency is missing or failing."""
 
