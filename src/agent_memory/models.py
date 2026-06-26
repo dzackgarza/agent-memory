@@ -99,7 +99,10 @@ class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     vault: Path
-    project_id: str
+    # None for a global-only config built without a cwd project binding. Every project
+    # path reads this through operations.require_project_id, which fails loud if a global
+    # config ever reaches project-scoped code.
+    project_id: str | None = None
     project_root_strategy: ProjectRootStrategy
     global_scopes: tuple[str, ...]
     search_max_results: int

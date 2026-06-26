@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -157,6 +158,24 @@ class ProjectNotInitializedError(RuntimeError):
 
     def __init__(self, default_vault: Path) -> None:
         super().__init__(self.GUIDANCE.format(default_vault=default_vault))
+
+
+class GlobalVaultNotInitializedError(RuntimeError):
+    """Raised when a global-scope operation runs but the global vault does not exist.
+
+    Distinct from ProjectNotInitializedError: a global operation does not depend on the
+    cwd repo being bound, so the remedy is `maintain init-global` only -- never
+    `init project` in the unrelated current repository.
+    """
+
+    GUIDANCE = (
+        "Global memory vault not found at {vault}. Run `agent-memory maintain init-global "
+        "--vault {vault}` once to create it, or set AGENT_MEMORY_VAULT to an existing "
+        "global vault."
+    )
+
+    def __init__(self, vault: Path) -> None:
+        super().__init__(self.GUIDANCE.format(vault=vault))
 
 
 class DependencyError(RuntimeError):
@@ -361,7 +380,7 @@ def add_memory(
     content: str,
     cwd: Path,
 ) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_memory_scope(scope, cwd)
     slug = memory_slug(title)
     directory = memory_directory(config, scope, memory_type)
     path = directory / f"{slug}.md"
@@ -469,7 +488,7 @@ def delete_memory(key: str, cwd: Path) -> JsonObject:
 
 
 def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_search_scope(scope, cwd)
     key_matches = key_search_records(config, scope, query)
     exact_matches = exact_content_records(config, scope, query)
     fuzzy_matches = fuzzy_content_records(config, scope, query)
@@ -489,7 +508,7 @@ def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
 
 
 def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_search_scope(scope, cwd)
     return {
         "query": query,
         "scope": scope.value,
@@ -498,7 +517,7 @@ def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
 
 
 def search_content_exact(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_search_scope(scope, cwd)
     return {
         "query": query,
         "scope": scope.value,
@@ -513,7 +532,7 @@ def search_metadata(
     created_after: str | None,
     cwd: Path,
 ) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_search_scope(scope, cwd)
     created_after_datetime = parse_created_after(created_after)
     records = [
         metadata_search_record_json(record) for record in inspect_note_records(config, scope) if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)
@@ -610,7 +629,7 @@ def json_list(values: Sequence[JsonValue]) -> list[JsonValue]:
 
 
 def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_search_scope(scope, cwd)
     roots = search_roots(config, scope)
     per_root_tokens = config.search_max_tokens // len(roots)
     assert per_root_tokens > 0, "ranked content search token budget must cover every selected scope root"
@@ -632,7 +651,7 @@ def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObje
 
 
 def search_content_fuzzy(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_search_scope(scope, cwd)
     records = zk_search_scope(config, scope, query)
     return {
         "query": query,
@@ -876,7 +895,7 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
         tags=okf_tags(MemoryScope.GLOBAL, memory_type, ("promoted",)),
         timestamp=okf_timestamp(),
         scope=MemoryScope.GLOBAL,
-        origin_project_id=config.project_id,
+        origin_project_id=require_project_id(config),
     ).to_yaml_payload()
     write_memory(destination_path, moved_metadata, moved_document.body)
     append_index_link(
@@ -894,7 +913,7 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
         tags=okf_tags(MemoryScope.PROJECT, memory_type, ("promotion-pointer",)),
         timestamp=okf_timestamp(),
         scope=MemoryScope.PROJECT,
-        project_id=config.project_id,
+        project_id=require_project_id(config),
     ).to_yaml_payload()
     pointer_body = f"# {title}\n\nPromoted to [[{destination_key}]].\n"
     assert source_path.parent.is_dir(), "project memory parent must be a directory"
@@ -936,19 +955,44 @@ def basic_doctor(cwd: Path) -> JsonObject:
 
 def doctor(cwd: Path) -> JsonObject:
     basic = basic_doctor(cwd)
-    config = load_project_config(cwd)
+    config = find_project_config(cwd)
+    if config is None:
+        return unbound_doctor(basic)
     git_root = git_root_for(cwd)
-    project_dir = config.vault / "projects" / config.project_id
-    assert (config.vault / ".zk" / "config.toml").is_file(), "vault must be initialized with zk"
-    assert (config.vault / ".zk" / "templates" / "default.md").is_file(), "zk default template must exist"
+    project_id = require_project_id(config)
+    project_dir = config.vault / "projects" / project_id
+    assert_vault_zk_initialized(config.vault)
     return {
         "vault": str(config.vault),
-        "project_id": config.project_id,
+        "project_id": project_id,
         "project_root": str(git_root),
+        "project_bound": True,
         "agent_state": project_agent_state_records(git_root, project_dir),
         "tools": basic["tools"],
         "dependencies": basic["dependencies"],
     }
+
+
+def unbound_doctor(basic: JsonObject) -> JsonObject:
+    # `doctor` from an unbound directory reports global vault and tool health instead of
+    # crashing (issue #25). global_only_config() resolves the known global vault and names
+    # the init-global remedy if it is missing.
+    config = global_only_config()
+    assert_vault_zk_initialized(config.vault)
+    return {
+        "vault": str(config.vault),
+        "project_id": None,
+        "project_root": None,
+        "project_bound": False,
+        "agent_state": [],
+        "tools": basic["tools"],
+        "dependencies": basic["dependencies"],
+    }
+
+
+def assert_vault_zk_initialized(vault: Path) -> None:
+    assert (vault / ".zk" / "config.toml").is_file(), "vault must be initialized with zk"
+    assert (vault / ".zk" / "templates" / "default.md").is_file(), "zk default template must exist"
 
 
 def run_checked(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -1197,13 +1241,87 @@ def project_id_from_remote(remote: str) -> str:
     return f"github.com__{owner}__{repo}"
 
 
-def load_project_config(cwd: Path) -> ProjectConfig:
-    git_root = git_root_for(cwd)
+def find_project_config(cwd: Path) -> ProjectConfig | None:
+    # Return the cwd repo's project config, or None when the directory is not a git repo
+    # or its git root has no `.agent-memory.toml` binding. Global operations and `doctor`
+    # branch on this instead of crashing on an unbound directory (issue #25).
+    try:
+        git_root = git_root_for(cwd)
+    except subprocess.CalledProcessError:
+        return None
     config_path = git_root / ".agent-memory.toml"
     if not config_path.is_file():
-        raise ProjectNotInitializedError(starter_config().default_vault)
+        return None
     raw = ProjectConfigFile.model_validate(tomllib.loads(config_path.read_text(encoding="utf-8")))
     return ProjectConfig.from_file_payload(raw)
+
+
+def load_project_config(cwd: Path) -> ProjectConfig:
+    config = find_project_config(cwd)
+    if config is None:
+        raise ProjectNotInitializedError(starter_config().default_vault)
+    return config
+
+
+def require_project_id(config: ProjectConfig) -> str:
+    # Project-scoped paths read project_id through here, so a global-only config (whose
+    # project_id is None) fails loud if it ever reaches project code instead of silently
+    # composing a wrong vault path.
+    assert config.project_id is not None, "operation requires a bound project; global-only config has no project_id"
+    return config.project_id
+
+
+def global_vault_path() -> Path:
+    # The vault a scope-global operation targets when the cwd is unbound. Resolved from
+    # AGENT_MEMORY_VAULT when set, else the shipped default vault. Independent of any cwd
+    # project binding (issue #25).
+    override = os.environ.get("AGENT_MEMORY_VAULT")
+    if override is not None:
+        assert override, "AGENT_MEMORY_VAULT must not be empty when set"
+        return Path(override).expanduser()
+    return starter_config().default_vault
+
+
+def global_only_config() -> ProjectConfig:
+    # Config for operations whose scope is global only. The global vault is the known
+    # location, so no cwd project binding is required; project_id stays None because the
+    # global scope root never reads it.
+    starter = starter_config()
+    vault = global_vault_path()
+    if not (vault / ".agents" / "memories" / "config.toml").is_file():
+        raise GlobalVaultNotInitializedError(vault)
+    return ProjectConfig(
+        vault=vault,
+        project_id=None,
+        project_root_strategy="git-root",
+        global_scopes=starter.global_scopes,
+        search_max_results=starter.search_max_results,
+        search_max_tokens=starter.search_max_tokens,
+    )
+
+
+def config_for_memory_scope(scope: MemoryScope, cwd: Path) -> ProjectConfig:
+    # A bound repo's configured vault is authoritative for every scope, including global,
+    # since its global memory lives in that same vault. Only an unbound directory falls
+    # back to the standalone global vault, and only for a global write (issue #25).
+    config = find_project_config(cwd)
+    if config is not None:
+        return config
+    if scope is MemoryScope.GLOBAL:
+        return global_only_config()
+    raise ProjectNotInitializedError(starter_config().default_vault)
+
+
+def config_for_search_scope(scope: SearchScope, cwd: Path) -> ProjectConfig:
+    # As above: prefer the cwd binding for any scope. An unbound directory can still run a
+    # global-only search against the standalone global vault; project and both need a
+    # binding because both reaches project memory (issue #25).
+    config = find_project_config(cwd)
+    if config is not None:
+        return config
+    if scope is SearchScope.GLOBAL:
+        return global_only_config()
+    raise ProjectNotInitializedError(starter_config().default_vault)
 
 
 def append_project_record(projects_file: Path, record: ProjectRecord) -> None:
@@ -1230,11 +1348,12 @@ def load_project_records(projects_file: Path) -> list[ProjectRecord]:
 
 
 def scope_root(config: ProjectConfig, scope: MemoryScope) -> Path:
-    roots = {
-        MemoryScope.PROJECT: config.vault / "projects" / config.project_id,
-        MemoryScope.GLOBAL: config.vault / "global",
-    }
-    return roots[scope]
+    # Branch instead of building both paths eagerly: the global root needs no project_id,
+    # so a global-only config (project_id is None) must not touch the project path.
+    if scope is MemoryScope.GLOBAL:
+        return config.vault / "global"
+    assert scope is MemoryScope.PROJECT, f"unsupported memory scope: {scope}"
+    return config.vault / "projects" / require_project_id(config)
 
 
 # Search scopes resolve to one or both memory scopes. The order for BOTH is a contract:
@@ -1275,7 +1394,7 @@ def note_metadata(
             tags=okf_tags(scope, memory_type, ()),
             timestamp=timestamp,
             scope=MemoryScope.PROJECT,
-            project_id=config.project_id,
+            project_id=require_project_id(config),
         ).to_yaml_payload()
     assert scope is MemoryScope.GLOBAL, f"unsupported note scope: {scope}"
     return GlobalNoteMetadata(
@@ -1447,7 +1566,7 @@ def inspect_overview(
     indexes = inspect_index_records(config, scope)
     return {
         "vault": str(config.vault),
-        "project_id": config.project_id,
+        "project_id": require_project_id(config),
         "scope": scope.value,
         "roots": json_list(inspect_root_keys(config, scope)),
         "totals": {
@@ -1869,7 +1988,7 @@ def load_card_system() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
 
 
 def project_plans_root(config: ProjectConfig, cards_config: CardSystemConfig) -> Path:
-    return config.vault / "projects" / config.project_id / cards_config.root
+    return config.vault / "projects" / require_project_id(config) / cards_config.root
 
 
 def all_plans_roots(config: ProjectConfig, cards_config: CardSystemConfig) -> list[Path]:

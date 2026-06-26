@@ -139,7 +139,7 @@ def delete_command(
 def search_default(
     query: Annotated[str, Parameter(help="Query text.")],
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both.")],
+    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
 ) -> None:
     """Return a curated report combining key, exact content, fuzzy, and ranked search."""
     emit(search_memories(scope=scope, query=query, cwd=Path.cwd()))
@@ -148,7 +148,7 @@ def search_default(
 def search_content_command(
     query: Annotated[str, Parameter(help="Content query text.")],
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both.")],
+    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
     mode: Annotated[
         ContentSearchMode,
         Parameter(help="Content search mode: exact, fuzzy, or ranked."),
@@ -167,7 +167,7 @@ def search_content_command(
 
 def search_metadata_command(
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both.")],
+    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
     memory_type: Annotated[MemoryType | None, Parameter(name="type", help="Filter by memory type.")] = None,
     tag: Annotated[str | None, Parameter(help="Filter by tag.")] = None,
     created_after: Annotated[
@@ -190,7 +190,7 @@ def search_metadata_command(
 def search_keys_command(
     query: Annotated[str, Parameter(help="Query text for memory keys and titles.")],
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both.")],
+    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
 ) -> None:
     """Search memory keys and titles."""
     emit(search_keys(scope=scope, query=query, cwd=Path.cwd()))
