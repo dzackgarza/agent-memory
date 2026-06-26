@@ -15,7 +15,7 @@ from pathlib import Path
 
 import tomli_w
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agent_memory import iwe
 from agent_memory.cards.config import CardSystemConfig
@@ -1014,8 +1014,10 @@ def unbound_doctor(basic: JsonObject) -> JsonObject:
 
 
 def assert_vault_zk_initialized(vault: Path) -> None:
-    assert (vault / ".zk" / "config.toml").is_file(), "vault must be initialized with zk"
-    assert (vault / ".zk" / "templates" / "default.md").is_file(), "zk default template must exist"
+    if not (vault / ".zk" / "config.toml").is_file():
+        raise VaultNotInitializedError("vault must be initialized with zk")
+    if not (vault / ".zk" / "templates" / "default.md").is_file():
+        raise VaultNotInitializedError("zk default template must exist")
 
 
 def run_checked(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -1275,7 +1277,10 @@ def find_project_config(cwd: Path) -> ProjectConfig | None:
     config_path = git_root / ".agent-memory.toml"
     if not config_path.is_file():
         return None
-    raw = ProjectConfigFile.model_validate(tomllib.loads(config_path.read_text(encoding="utf-8")))
+    try:
+        raw = ProjectConfigFile.model_validate(tomllib.loads(config_path.read_text(encoding="utf-8")))
+    except (tomllib.TOMLDecodeError, ValidationError) as exc:
+        raise ProjectConfigCorruptError(config_path) from exc
     return ProjectConfig.from_file_payload(raw)
 
 
@@ -1300,7 +1305,8 @@ def global_vault_path() -> Path:
     # project binding (issue #25).
     override = os.environ.get("AGENT_MEMORY_VAULT")
     if override is not None:
-        assert override, "AGENT_MEMORY_VAULT must not be empty when set"
+        if not override.strip():
+            raise ValueError("AGENT_MEMORY_VAULT must not be empty when set")
         return Path(override).expanduser()
     return starter_config().default_vault
 
