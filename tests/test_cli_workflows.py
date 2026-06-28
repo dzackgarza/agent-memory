@@ -264,8 +264,8 @@ def result_keys(result: JsonObject) -> set[str]:
     return keys
 
 
-def load_project_config(repo: Path) -> dict[str, object]:
-    return tomllib.loads((repo / ".agent-memory.toml").read_text())
+def init_git_repo_without_remote(repo: Path) -> None:
+    subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
 
 
 def initialized_git_repo(tmp_path: Path) -> GitRepo:
@@ -432,20 +432,10 @@ def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
 def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
-    assert load_project_config(workspace.repo) == {
-        "vault": str(workspace.vault),
-        "project_id": workspace.project_id,
-        "project_root_strategy": "git-root",
-        "global_scopes": [
-            "global/decisions",
-            "global/traps",
-            "global/advice",
-            "global/context",
-            "global/references",
-        ],
-        "search_max_results": 10,
-        "search_max_tokens": 4000,
-    }
+    assert not (workspace.repo / ".agent-memory.toml").exists()
+    resolved = operations_load_project_config(workspace.repo)
+    assert resolved.vault == workspace.vault
+    assert resolved.project_id == workspace.project_id
     agents_pointer = (workspace.repo / "AGENTS.md").read_text()
     assert f"This repository uses the central agent memory vault at `{workspace.vault}`." in agents_pointer
     assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
@@ -504,8 +494,8 @@ def test_project_initialization_appends_https_remote_project_record(tmp_path: Pa
         capture_output=True,
     ).stdout.strip()
 
-    assert load_project_config(ssh_repo.path)["project_id"] == ssh_repo.project_id
-    assert load_project_config(https_repo)["project_id"] == "github.com__dzackgarza__https-memory"
+    assert operations_load_project_config(ssh_repo.path).project_id == ssh_repo.project_id
+    assert operations_load_project_config(https_repo).project_id == "github.com__dzackgarza__https-memory"
     project_records = tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"]
     assert project_records == [
         {
@@ -519,6 +509,66 @@ def test_project_initialization_appends_https_remote_project_record(tmp_path: Pa
             "remote": https_remote,
         },
     ]
+
+
+def test_init_project_with_explicit_project_id_preserves_no_origin_project_plan_scope(tmp_path: Path) -> None:
+    repo = tmp_path / "vendor"
+    repo.mkdir()
+    init_git_repo_without_remote(repo)
+    vault = tmp_path / "vault"
+    project_id = "vendor.local__agent-memory__vendored-tool"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+
+    initialized = parse_json_stdout(run_agent_memory(repo, "init", "project", "--vault", str(vault), "--project-id", project_id))
+    run_agent_memory(
+        repo,
+        "plan",
+        "add",
+        "--type",
+        "feature",
+        "--id",
+        "FEATURE-VENDOR",
+        "--set",
+        "title=Vendor",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "description=vendor plan scope",
+    )
+
+    plan_path = vault / "projects" / project_id / "plans" / "features" / "FEATURE-VENDOR" / "FEATURE-VENDOR.md"
+    assert initialized["project_id"] == project_id
+    assert not (repo / ".agent-memory.toml").exists()
+    assert plan_path.is_file()
+    assert not (vault / "global" / "plans" / "FEATURE-VENDOR.md").exists()
+
+
+def test_init_project_without_remote_or_project_id_fails_before_global_write(tmp_path: Path) -> None:
+    repo = tmp_path / "vendor"
+    repo.mkdir()
+    init_git_repo_without_remote(repo)
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+
+    result = run_agent_memory_subprocess(repo, "init", "project", "--vault", str(vault))
+
+    assert result.returncode != 0
+    assert not (repo / ".agent-memory.toml").exists()
+    assert tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"] == []
+
+
+def test_init_global_normalizes_literal_tilde_vault_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+
+    initialized = parse_json_stdout(run_agent_memory(cwd, "maintain", "init-global", "--vault", "~/.agent-memory-vault"))
+
+    assert initialized["vault"] == str(home / ".agent-memory-vault")
+    assert (home / ".agent-memory-vault" / ".agents" / "memories" / "config.toml").is_file()
+    assert not (cwd / "~").exists()
 
 
 def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> None:
