@@ -1736,3 +1736,225 @@ def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:
     keys = result_keys(defaulted)
     assert str(project_note["key"]) in keys
     assert str(global_note["key"]) in keys
+
+
+def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    # Configure the vault to require GPG signing and use a failing gpg program
+    subprocess.run(["git", "config", "commit.gpgsign", "true"], cwd=workspace.vault, check=True)
+    subprocess.run(["git", "config", "gpg.program", "false"], cwd=workspace.vault, check=True)
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        run_agent_memory(
+            workspace.repo,
+            "add",
+            "--scope",
+            "global",
+            "--type",
+            "trap",
+            "--title",
+            "Failing Commit Memory",
+            "--content",
+            "Should be rolled back",
+        )
+    assert "Vault commit failed" in exc_info.value.stderr
+    assert "gpg" in exc_info.value.stderr.lower() or "signing" in exc_info.value.stderr.lower()
+
+    # Note file should not exist
+    note_path = workspace.vault / "global" / "traps" / "failing-commit-memory.md"
+    assert not note_path.exists()
+
+    # index.md should not have the link
+    index_path = workspace.vault / "global" / "traps" / "index.md"
+    assert "Failing Commit Memory" not in index_path.read_text(encoding="utf-8")
+
+    # Vault git status is clean
+    status = subprocess.run(["git", "status", "--short"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    assert not status.stdout.strip()
+
+
+def test_add_commits_only_operation_pathspecs(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    # Manually create and stage an unrelated file in the vault
+    unrelated_file = workspace.vault / "unrelated.txt"
+    unrelated_file.write_text("unrelated content", encoding="utf-8")
+    subprocess.run(["git", "add", "unrelated.txt"], cwd=workspace.vault, check=True)
+
+    # Perform a successful add command
+    add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="trap",
+        title="Scoped Note",
+        content="some content",
+    )
+
+    # The unrelated file should still be staged (not committed)
+    status = subprocess.run(["git", "status", "--short"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    assert "A  unrelated.txt" in status.stdout
+
+
+def test_delete_malformed_note_without_frontmatter(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    # Write a frontmatter-less note
+    note_path = workspace.vault / "projects" / workspace.project_id / "memories" / "malformed.md"
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    note_path.write_text("No frontmatter here\njust plain text\n", encoding="utf-8")
+    
+    # Manually link it in the index.md
+    index_path = workspace.vault / "projects" / workspace.project_id / "memories" / "index.md"
+    index_path.write_text(index_path.read_text("utf-8") + "\n* [Malformed](malformed.md) - description\n", encoding="utf-8")
+    
+    # Commit the manual addition to keep vault clean
+    subprocess.run(["git", "add", "."], cwd=workspace.vault, check=True)
+    subprocess.run(["git", "commit", "-m", "Manual malformed note addition"], cwd=workspace.vault, check=True)
+
+    # Delete the malformed note using the CLI
+    run_agent_memory(
+        workspace.repo,
+        "delete",
+        f"projects/{workspace.project_id}/memories/malformed",
+    )
+
+    # Malformed file should be gone
+    assert not note_path.exists()
+
+    # The link should be gone from index.md
+    assert "Malformed" not in index_path.read_text(encoding="utf-8")
+
+
+def test_init_project_idempotent_when_vault_dir_exists(tmp_path: Path) -> None:
+    git_repo = initialized_git_repo(tmp_path)
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    
+    # Manually create the vault project directory beforehand
+    project_dir = vault / "projects" / git_repo.project_id
+    project_dir.mkdir(parents=True)
+    
+    # Initialize project memory (should reconcile instead of crashing with FileExistsError)
+    run_agent_memory(git_repo.path, "init", "project", "--vault", str(vault))
+    
+    # Assert binding was created
+    assert (git_repo.path / ".agent-memory.toml").exists()
+    
+    # Rerun the initialization (should be idempotent and exit 0)
+    run_agent_memory(git_repo.path, "init", "project", "--vault", str(vault))
+
+
+def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    
+    # Scenario 1: plan add --help documents required fields & enums
+    help_result = run_agent_memory_subprocess(workspace.repo, "plan", "add", "--help")
+    assert "status" in help_result.stdout
+    assert "parents" in help_result.stdout
+    assert "successCriteria" in help_result.stdout
+    assert "needs-human-input" in help_result.stdout or "blocked" in help_result.stdout
+    
+    # Scenario 2: bad enum validation produces clean field-level error without traceback
+    invalid_enum = run_agent_memory_subprocess(
+        workspace.repo,
+        "plan",
+        "add",
+        "plan",
+        "PLAN-1",
+        "--set",
+        "status=bogus",
+        "--set",
+        "title=Title",
+        "--set",
+        "description=Desc",
+        "--set",
+        "successCriteria=Ships",
+        "--empty-set",
+        "parents",
+    )
+    assert invalid_enum.returncode != 0
+    assert "ValidationError" not in invalid_enum.stderr
+    assert "AssertionError" not in invalid_enum.stderr
+    assert "status" in invalid_enum.stderr
+    assert "bogus" in invalid_enum.stderr
+    
+    # Scenario 3: malformed --set input does not escape as Cyclopts AssertionError
+    malformed_set = run_agent_memory_subprocess(
+        workspace.repo,
+        "plan",
+        "add",
+        "plan",
+        "PLAN-2",
+        "--empty-set",
+        "parents",
+        "--set",
+        "status=needs-human-input",
+        "--set",
+        "description=...",
+        "--set",
+        "successCriteria=arrows -> criteria",
+    )
+    assert "AssertionError" not in malformed_set.stderr
+    
+    # Scenario 4: body file support
+    body_file = tmp_path / "body.md"
+    body_file.write_text("### Markdown body from file\nWith some content\n", encoding="utf-8")
+    
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "plan",
+        "PLAN-3",
+        "--empty-set",
+        "parents",
+        "--set",
+        "status=needs-human-input",
+        "--set",
+        "description=...",
+        "--set",
+        "successCriteria=criteria",
+        "--set",
+        "title=Plan 3",
+        "--body-file",
+        str(body_file),
+    )
+    card_file = workspace.vault / "projects" / workspace.project_id / "plans" / "PLAN-3" / "PLAN-3.md"
+    assert card_file.exists()
+    assert "Markdown body from file" in card_file.read_text(encoding="utf-8")
+
+
+def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    
+    # Scenario 1: add --type instead of --scope
+    r1 = run_agent_memory_subprocess(
+        workspace.repo,
+        "add",
+        "--type",
+        "plan",
+        "--title",
+        "X",
+        "--content",
+        "Y",
+    )
+    assert r1.returncode != 0
+    assert "Unknown option: --type" in r1.stderr
+    assert "Did you mean --scope?" in r1.stderr
+    
+    # Scenario 2: missing modes/arguments
+    r2 = run_agent_memory_subprocess(workspace.repo, "search", "content")
+    assert r2.returncode != 0
+    assert "requires an argument" in r2.stderr
+    assert "--mode" in r2.stderr
+    
+    # Scenario 3: invalid search mode
+    r3 = run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", "substring")
+    assert r3.returncode != 0
+    assert "exact" in r3.stderr
+    assert "fuzzy" in r3.stderr
+    
+    # Scenario 4: unknown commands list
+    r4 = run_agent_memory_subprocess(workspace.repo, "list")
+    assert r4.returncode != 0
+    assert "Unknown command \"list\"" in r4.stderr
+    assert "Available commands" in r4.stderr
+
