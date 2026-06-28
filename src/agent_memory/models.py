@@ -120,6 +120,7 @@ class ProjectConfig(BaseModel):
         )
 
     def to_toml_payload(self) -> dict[str, str | int | list[str]]:
+        assert self.project_id is not None, "project config file payload requires project_id"
         return {
             "vault": str(self.vault),
             "project_id": self.project_id,
