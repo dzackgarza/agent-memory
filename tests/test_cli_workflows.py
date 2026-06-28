@@ -25,6 +25,7 @@ from agent_memory.operations import (
     DependencyCheck,
     DependencyError,
     ProjectNotInitializedError,
+    VaultCommitError,
     basic_doctor,
     check_dependency,
     merge_probe_payloads,
@@ -1744,7 +1745,7 @@ def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
     subprocess.run(["git", "config", "commit.gpgsign", "true"], cwd=workspace.vault, check=True)
     subprocess.run(["git", "config", "gpg.program", "false"], cwd=workspace.vault, check=True)
 
-    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+    with pytest.raises(VaultCommitError) as exc_info:
         run_agent_memory(
             workspace.repo,
             "add",
@@ -1757,8 +1758,8 @@ def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
             "--content",
             "Should be rolled back",
         )
-    assert "Vault commit failed" in exc_info.value.stderr
-    assert "gpg" in exc_info.value.stderr.lower() or "signing" in exc_info.value.stderr.lower()
+    assert "Vault commit failed" in str(exc_info.value)
+    assert "gpg" in str(exc_info.value).lower() or "signing" in str(exc_info.value).lower()
 
     # Note file should not exist
     note_path = workspace.vault / "global" / "traps" / "failing-commit-memory.md"
@@ -1797,12 +1798,12 @@ def test_add_commits_only_operation_pathspecs(tmp_path: Path) -> None:
 def test_delete_malformed_note_without_frontmatter(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     # Write a frontmatter-less note
-    note_path = workspace.vault / "projects" / workspace.project_id / "memories" / "malformed.md"
+    note_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "malformed.md"
     note_path.parent.mkdir(parents=True, exist_ok=True)
     note_path.write_text("No frontmatter here\njust plain text\n", encoding="utf-8")
     
     # Manually link it in the index.md
-    index_path = workspace.vault / "projects" / workspace.project_id / "memories" / "index.md"
+    index_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
     index_path.write_text(index_path.read_text("utf-8") + "\n* [Malformed](malformed.md) - description\n", encoding="utf-8")
     
     # Commit the manual addition to keep vault clean
@@ -1813,7 +1814,7 @@ def test_delete_malformed_note_without_frontmatter(tmp_path: Path) -> None:
     run_agent_memory(
         workspace.repo,
         "delete",
-        f"projects/{workspace.project_id}/memories/malformed",
+        f"projects/{workspace.project_id}/decisions/malformed",
     )
 
     # Malformed file should be gone
