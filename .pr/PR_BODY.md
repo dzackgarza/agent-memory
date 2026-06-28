@@ -12,7 +12,7 @@ This PR owns the Config & Path Resolution implementation unit.
 
 - **Target issue set / subtree:** Epic #32 and children #18, #29, #38
 - **GitHub milestone:** Config & Path Resolution
-- **Issues to close on merge:** #18, #29, #38 when each fix lands with proof
+- **Issues to close on merge:** Closes #18, closes #29, closes #38
 - **Broader parent referenced only:** #32 epic
 
 ## Claim map
