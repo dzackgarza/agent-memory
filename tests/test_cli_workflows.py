@@ -264,10 +264,6 @@ def result_keys(result: JsonObject) -> set[str]:
     return keys
 
 
-def load_project_config(repo: Path) -> dict[str, object]:
-    return tomllib.loads((repo / ".agent-memory.toml").read_text())
-
-
 def init_git_repo_without_remote(repo: Path) -> None:
     subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
 
@@ -498,8 +494,8 @@ def test_project_initialization_appends_https_remote_project_record(tmp_path: Pa
         capture_output=True,
     ).stdout.strip()
 
-    assert load_project_config(ssh_repo.path)["project_id"] == ssh_repo.project_id
-    assert load_project_config(https_repo)["project_id"] == "github.com__dzackgarza__https-memory"
+    assert operations_load_project_config(ssh_repo.path).project_id == ssh_repo.project_id
+    assert operations_load_project_config(https_repo).project_id == "github.com__dzackgarza__https-memory"
     project_records = tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"]
     assert project_records == [
         {
