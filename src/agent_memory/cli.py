@@ -64,6 +64,7 @@ from agent_memory.operations import (
     search_memories,
     search_metadata,
     split_memory,
+    sync_vault,
     squash_memory,
     update_memory,
     update_plan_card,
@@ -88,6 +89,7 @@ search_app = app.command(App(name="search", help="Query memories by keys, conten
 inspect_app = app.command(App(name="inspect", help="Read-only vault navigation and analysis commands."))
 maintain_app = app.command(App(name="maintain", help="Vault setup and maintenance workflows."))
 plan_app = app.command(App(name="plan", help="Create, migrate, validate, and visualize vault-backed project plan cards."))
+sync_app = app.command(App(name="sync", help="Synchronize the configured memory vault with its git remote."))
 
 
 class CliUsageError(RuntimeError):
@@ -458,6 +460,11 @@ def plan_migrate_command(
     emit(migrate_plan_cards(source=source.expanduser(), cwd=Path.cwd()))
 
 
+def sync_run_command() -> None:
+    """Commit current vault changes, rebase from origin, and push the vault branch."""
+    emit(sync_vault(cwd=Path.cwd()))
+
+
 def register_commands() -> None:
     maintain_app.command(maintain_init_global, name="init-global")
     maintain_app.command(maintain_skill_command, name="skill")
@@ -494,6 +501,7 @@ def register_commands() -> None:
     plan_app.command(plan_validate_command, name="validate")
     plan_app.command(plan_dag_command, name="dag")
     plan_app.command(plan_migrate_command, name="migrate")
+    sync_app.command(sync_run_command, name="run")
     app.command(doctor_command, name="doctor")
 
 

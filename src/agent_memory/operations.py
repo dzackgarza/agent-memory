@@ -1155,6 +1155,46 @@ def commit_vault_changes(vault: Path, message: str, paths: list[Path] | None = N
             run_checked(["git", "commit", "-m", message], cwd=vault)
 
 
+def git_status_entries(repo: Path) -> tuple[str, ...]:
+    result = run_checked(["git", "status", "--short"], cwd=repo)
+    return tuple(line for line in result.stdout.splitlines() if line)
+
+
+def git_current_branch(repo: Path) -> str:
+    result = run_checked(["git", "branch", "--show-current"], cwd=repo)
+    branch = result.stdout.strip()
+    assert branch, f"git repository must be on a named branch: {repo}"
+    return branch
+
+
+def git_head(repo: Path) -> str:
+    return run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+
+
+def sync_vault(cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    vault = config.vault
+    branch = git_current_branch(vault)
+    remote = git_remote(vault)
+    status_before = git_status_entries(vault)
+    committed = bool(status_before)
+    if committed:
+        commit_vault_changes(vault, "Auto-sync vault changes")
+    run_checked(["git", "pull", "--rebase", "origin", branch], cwd=vault)
+    run_checked(["git", "push", "origin", branch], cwd=vault)
+    status_after = git_status_entries(vault)
+    assert not status_after, f"vault sync must leave a clean worktree: vault={vault}; status={status_after}"
+    return {
+        "vault": str(vault),
+        "remote": remote,
+        "branch": branch,
+        "committed": committed,
+        "pushed": True,
+        "head": git_head(vault),
+        "worktree_clean": True,
+    }
+
+
 def configure_vault_git(vault: Path) -> None:
     run_checked(["git", "config", "--local", "core.hooksPath", ""], cwd=vault)
     run_checked(["git", "config", "user.name", VAULT_GIT_USER_NAME], cwd=vault)
