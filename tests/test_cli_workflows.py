@@ -417,6 +417,17 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert "* [References](references/index.md) - Global reference memories." in global_index
 
 
+def test_maintain_skill_prints_vault_maintenance_entrypoint(tmp_path: Path) -> None:
+    result = run_agent_memory(tmp_path, "maintain", "skill", "vault-maintenance")
+
+    assert "name: vault-maintenance" in result.stdout
+    assert "references/check-vault-state.md" in result.stdout
+    assert "references/repair-vault-errors.md" in result.stdout
+    assert "references/commit-vault-work.md" in result.stdout
+    assert "committed at all times" in result.stdout
+    assert "ephemeral error state" in result.stdout
+
+
 def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
     vault = tmp_path / "module-vault"
 
@@ -442,6 +453,8 @@ def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path
     assert f"This repository uses the central agent memory vault at `{workspace.vault}`." in agents_pointer
     assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
     assert 'agent-memory search --scope both "<task or subsystem>"' in agents_pointer
+    assert "agent-memory maintain skill vault-maintenance" in agents_pointer
+    assert "ephemeral error state" in agents_pointer
     pointer_add_types = re.findall(r"agent-memory add --scope project --type (\S+) ", agents_pointer)
     assert pointer_add_types, "agent pointer must demonstrate agent-memory add invocations"
     assert [MemoryType(token) for token in pointer_add_types] == list(MemoryType)
@@ -1908,6 +1921,8 @@ def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
         )
     assert "Vault commit failed" in str(exc_info.value)
     assert "gpg" in str(exc_info.value).lower() or "signing" in str(exc_info.value).lower()
+    assert "agent-memory maintain skill vault-maintenance" in str(exc_info.value)
+    assert "before retrying normal memory work" in str(exc_info.value)
 
     # Note file should not exist
     note_path = workspace.vault / "global" / "traps" / "failing-commit-memory.md"

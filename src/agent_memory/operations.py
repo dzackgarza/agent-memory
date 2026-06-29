@@ -65,6 +65,13 @@ VAULT_GIT_USER_NAME = "agent-memory"
 VAULT_GIT_USER_EMAIL = "agent-memory@localhost"
 ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
 PROJECT_AGENT_STATE_DIRECTORIES: tuple[str, ...] = (".agents", ".hermes")
+BUNDLED_SKILL_NAMES: tuple[str, ...] = ("vault-maintenance",)
+VAULT_MAINTENANCE_SKILL_COMMAND = "agent-memory maintain skill vault-maintenance"
+VAULT_MAINTENANCE_SKILL_HINT = (
+    "\nVault recovery is owned by the bundled vault-maintenance skill. "
+    f"Run `{VAULT_MAINTENANCE_SKILL_COMMAND}` and follow its referenced workflows "
+    "before retrying normal memory work."
+)
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.DECISION: "decisions",
@@ -187,6 +194,20 @@ class CardFieldError(ValueError):
 
 class MemoryOperationError(ValueError):
     """Raised when a memory operation is syntactically valid but incomplete."""
+
+
+def bundled_skill_text(name: str) -> str:
+    if name not in BUNDLED_SKILL_NAMES:
+        names = ", ".join(BUNDLED_SKILL_NAMES)
+        raise MemoryOperationError(f"unknown bundled skill {name!r}; available skills: {names}")
+    skill_path = resources.files("agent_memory.defaults").joinpath("skills", name, "SKILL.md")
+    return skill_path.read_text(encoding="utf-8")
+
+
+def vault_commit_error_message(git_stderr: str) -> str:
+    detail = git_stderr.strip()
+    base = f"Vault commit failed: {detail}" if detail else "Vault commit failed"
+    return f"{base}{VAULT_MAINTENANCE_SKILL_HINT}"
 
 
 class MalformedMemoryError(ValueError):
@@ -452,10 +473,7 @@ def add_memory(
         index_zk_notebook(config.vault)
 
         git_stderr = e.stderr or ""
-        hint = ""
-        if "gpg" in git_stderr.lower() or "signing" in git_stderr.lower():
-            hint = "\nConfigure a signing key/agent for non-interactive use, or disable signing for the vault (git -C <vault> config commit.gpgsign false)."
-        raise VaultCommitError(f"Vault commit failed: {git_stderr.strip()}{hint}") from e
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
     return {"key": key, "path": str(path)}
 
@@ -549,7 +567,7 @@ def update_memory(
         )
     except subprocess.CalledProcessError as e:
         git_stderr = e.stderr or ""
-        raise VaultCommitError(f"Vault commit failed: {git_stderr.strip()}") from e
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
     return {"key": transition.new_key, "path": str(transition.destination_path)}
 
@@ -575,7 +593,7 @@ def delete_memory(key: str, cwd: Path) -> JsonObject:
         commit_vault_changes(config.vault, commit_message, paths=[path, path.parent / "index.md"])
     except subprocess.CalledProcessError as e:
         git_stderr = e.stderr or ""
-        raise VaultCommitError(f"Vault commit failed: {git_stderr.strip()}") from e
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
     return {"deleted": key}
 
@@ -1221,6 +1239,9 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         f"{add_examples}"
         "```\n\n"
         "Use `agent-memory retrieve <key>`, `agent-memory update <key>`, and `agent-memory delete <key>` for memory CRUD.\n\n"
+        "The vault should be committed at all times. Treat staged or unstaged vault changes as an ephemeral error state. "
+        f"Before normal memory work resumes, load the bundled vault-maintenance skill with `{VAULT_MAINTENANCE_SKILL_COMMAND}` "
+        "and follow its referenced check, repair, and commit workflows.\n\n"
         "Move reusable lessons during maintenance with:\n\n"
         "```bash\n"
         "agent-memory maintain move <key> --to global/advice\n"
@@ -2281,10 +2302,7 @@ def add_plan_card(
                 except OSError:
                     break
         git_stderr = e.stderr or ""
-        hint = ""
-        if "gpg" in git_stderr.lower() or "signing" in git_stderr.lower():
-            hint = "\nConfigure a signing key/agent for non-interactive use, or disable signing for the vault (git -C <vault> config commit.gpgsign false)."
-        raise VaultCommitError(f"Vault commit failed: {git_stderr.strip()}{hint}") from e
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
     return {"id": card_id, "path": str(path)}
 

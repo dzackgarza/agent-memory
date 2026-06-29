@@ -26,6 +26,7 @@ from agent_memory.models import (
     SearchScope,
 )
 from agent_memory.operations import (
+    BUNDLED_SKILL_NAMES,
     INSPECT_COMMAND_NAMES,
     CardFieldError,
     DependencyError,
@@ -38,6 +39,7 @@ from agent_memory.operations import (
     add_memory,
     add_plan_card,
     basic_doctor,
+    bundled_skill_text,
     delete_memory,
     delete_plan_card,
     init_global_vault,
@@ -97,6 +99,16 @@ def maintain_init_global(
 ) -> None:
     """Create the global IWE-backed memory vault once."""
     emit(init_global_vault(vault))
+
+
+def maintain_skill_command(
+    name: Annotated[
+        str,
+        Parameter(help=f"Bundled maintenance skill name. Available: {', '.join(BUNDLED_SKILL_NAMES)}."),
+    ],
+) -> None:
+    """Print a bundled maintenance skill entrypoint."""
+    print(bundled_skill_text(name), end="")
 
 
 def init_project_command(
@@ -448,6 +460,7 @@ def plan_migrate_command(
 
 def register_commands() -> None:
     maintain_app.command(maintain_init_global, name="init-global")
+    maintain_app.command(maintain_skill_command, name="skill")
     init_app.command(init_project_command, name="project")
     app.command(add_command, name="add")
     app.command(update_command, name="update")
