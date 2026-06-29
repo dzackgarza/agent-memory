@@ -243,6 +243,18 @@ def configure_vault_remote(vault: Path, remote: Path) -> str:
     return branch
 
 
+def configure_git_identity(repo: Path) -> None:
+    subprocess.run(["git", "config", "--local", "core.hooksPath", ""], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "agent-memory-test"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "agent-memory-test@localhost"],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
 def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> JsonObject:
     decoded: JsonValue = json.loads(result.stdout)
     return json_object(decoded)
@@ -1306,6 +1318,50 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
         "project_bound": True,
         "vault": str(workspace.vault),
     }
+
+
+def test_sync_run_pushes_conflict_branch_and_restores_main_when_rebase_conflicts(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    remote = initialized_bare_remote(tmp_path, "conflict-vault-remote.git")
+    branch = configure_vault_remote(workspace.vault, remote)
+    conflict_path = Path("global/references/auto-sync-conflict-proof.md")
+    local_conflict_file = workspace.vault / conflict_path
+    local_conflict_file.write_text("# Auto Sync Conflict Proof\n\nbase line\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(conflict_path)], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Seed auto-sync conflict proof"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "push", "origin", branch], cwd=workspace.vault, check=True, text=True, capture_output=True)
+
+    remote_clone = tmp_path / "remote-clone"
+    subprocess.run(["git", "clone", str(remote), str(remote_clone)], check=True, text=True, capture_output=True)
+    configure_git_identity(remote_clone)
+    (remote_clone / conflict_path).write_text("# Auto Sync Conflict Proof\n\nremote branch text\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(conflict_path)], cwd=remote_clone, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Remote conflicting vault edit"], cwd=remote_clone, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "push", "origin", branch], cwd=remote_clone, check=True, text=True, capture_output=True)
+
+    local_conflict_file.write_text("# Auto Sync Conflict Proof\n\nlocal branch text\n", encoding="utf-8")
+
+    result = parse_json_stdout(run_agent_memory(workspace.repo, "sync", "run"))
+
+    conflict_branch = json_string(result["conflict_branch"])
+    conflict_head = json_string(result["conflict_head"])
+    assert result == {
+        "branch": branch,
+        "committed": True,
+        "conflict_branch": conflict_branch,
+        "conflict_head": conflict_head,
+        "head": git_output(workspace.vault, "rev-parse", "HEAD"),
+        "pushed": False,
+        "remote": str(remote),
+        "status": "conflict_branch_pushed",
+        "vault": str(workspace.vault),
+        "worktree_clean": True,
+    }
+    assert git_status_lines(workspace.vault) == set()
+    assert git_output(workspace.vault, "rev-parse", "HEAD") == git_output(remote, "rev-parse", f"refs/heads/{branch}")
+    assert git_output(remote, "rev-parse", f"refs/heads/{conflict_branch}") == conflict_head
+    assert git_output(remote, "show", f"{branch}:{conflict_path}") == "# Auto Sync Conflict Proof\n\nremote branch text"
+    assert git_output(remote, "show", f"{conflict_branch}:{conflict_path}") == "# Auto Sync Conflict Proof\n\nlocal branch text"
 
 
 def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path) -> None:
