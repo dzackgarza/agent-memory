@@ -37,7 +37,6 @@ from agent_memory.models import (
     MemoryType,
     MetadataValue,
     ProjectConfig,
-    ProjectConfigFile,
     ProjectNoteMetadata,
     PromotedNoteMetadata,
     SearchScope,
@@ -243,7 +242,7 @@ def starter_config() -> StarterConfig:
     assert search_max_results > 0, "starter config search_max_results must be positive"
     assert search_max_tokens > 0, "starter config search_max_tokens must be positive"
     return StarterConfig(
-        default_vault=Path(default_vault).expanduser(),
+        default_vault=normalize_vault_path(Path(default_vault)),
         global_scopes=tuple(global_scopes),
         search_max_results=search_max_results,
         search_max_tokens=search_max_tokens,
@@ -294,7 +293,12 @@ class LinkRecord:
 LinkNeighborProvider = Callable[[ProjectConfig, str], tuple[str, ...]]
 
 
+def normalize_vault_path(vault: Path) -> Path:
+    return vault.expanduser().resolve(strict=False)
+
+
 def init_global_vault(vault: Path) -> JsonObject:
+    vault = normalize_vault_path(vault)
     vault.mkdir(parents=True)
     run_checked(["git", "init"], cwd=vault)
     configure_vault_git(vault)
@@ -337,12 +341,12 @@ def write_agent_memory_marker(vault: Path) -> None:
     write_new_file(marker_dir / "config.toml", tomli_w.dumps({"okf_version": OKF_VERSION}))
 
 
-def init_project(vault: Path, cwd: Path) -> JsonObject:
+def init_project(vault: Path, cwd: Path, project_id: str | None = None) -> JsonObject:
+    vault = normalize_vault_path(vault)
     assert (vault / ".agents" / "memories" / "config.toml").is_file(), "vault must be initialized with agent-memory metadata"
-    starter = starter_config()
     git_root = git_root_for(cwd)
-    remote = git_remote(git_root)
-    project_id = project_id_from_remote(remote)
+    remote = "" if project_id is not None else git_remote(git_root)
+    project_id = validate_project_id(project_id) if project_id is not None else project_id_from_remote(remote)
     project_dir = vault / "projects" / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
 
@@ -384,18 +388,6 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
             index_link_target,
             "Project memory bundle.",
         )
-
-    config = ProjectConfig(
-        vault=vault,
-        project_id=project_id,
-        project_root_strategy="git-root",
-        global_scopes=starter.global_scopes,
-        search_max_results=starter.search_max_results,
-        search_max_tokens=starter.search_max_tokens,
-    )
-
-    config_path = git_root / ".agent-memory.toml"
-    config_path.write_text(tomli_w.dumps(config.to_toml_payload()), encoding="utf-8")
 
     write_agents_pointer(git_root, vault, project_id)
     append_project_record(
@@ -1396,19 +1388,44 @@ def project_id_from_remote(remote: str) -> str:
     return f"github.com__{owner}__{repo}"
 
 
+def validate_project_id(project_id: str) -> str:
+    assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project_id), f"invalid project id: {project_id}"
+    return project_id
+
+
+def config_from_agent_state_link(git_root: Path) -> ProjectConfig | None:
+    starter = starter_config()
+    linked_project_dirs: list[Path] = []
+    for name in PROJECT_AGENT_STATE_DIRECTORIES:
+        repo_path = git_root / name
+        if repo_path.is_symlink():
+            linked_project_dirs.append(repo_path.resolve())
+    if not linked_project_dirs:
+        return None
+    project_dir = linked_project_dirs[0]
+    assert all(path == project_dir for path in linked_project_dirs), "agent state links must point at one project directory"
+    assert project_dir.parent.name == "projects", "agent state link must point at vault projects directory"
+    vault = project_dir.parent.parent
+    project_id = validate_project_id(project_dir.name)
+    assert (vault / ".agents" / "memories" / "config.toml").is_file(), "agent state link must point inside an initialized vault"
+    return ProjectConfig(
+        vault=normalize_vault_path(vault),
+        project_id=project_id,
+        project_root_strategy="git-root",
+        global_scopes=starter.global_scopes,
+        search_max_results=starter.search_max_results,
+        search_max_tokens=starter.search_max_tokens,
+    )
+
+
 def find_project_config(cwd: Path) -> ProjectConfig | None:
-    # Return the cwd repo's project config, or None when the directory is not a git repo
-    # or its git root has no `.agent-memory.toml` binding. Global operations and `doctor`
-    # branch on this instead of crashing on an unbound directory (issue #25).
+    # Return the cwd repo's vault-backed project binding, or None when the directory is
+    # not a git repo or lacks the agent-state symlink installed by init project.
     try:
         git_root = git_root_for(cwd)
     except subprocess.CalledProcessError:
         return None
-    config_path = git_root / ".agent-memory.toml"
-    if not config_path.is_file():
-        return None
-    raw = ProjectConfigFile.model_validate(tomllib.loads(config_path.read_text(encoding="utf-8")))
-    return ProjectConfig.from_file_payload(raw)
+    return config_from_agent_state_link(git_root)
 
 
 def load_project_config(cwd: Path) -> ProjectConfig:
@@ -1433,7 +1450,7 @@ def global_vault_path() -> Path:
     override = os.environ.get("AGENT_MEMORY_VAULT")
     if override is not None:
         assert override, "AGENT_MEMORY_VAULT must not be empty when set"
-        return Path(override).expanduser()
+        return normalize_vault_path(Path(override))
     return starter_config().default_vault
 
 

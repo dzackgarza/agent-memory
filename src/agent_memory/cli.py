@@ -101,9 +101,10 @@ def maintain_init_global(
 def init_project_command(
     *,
     vault: Annotated[Path, Parameter(help="Existing global memory vault for this repository.")],
+    project_id: Annotated[str | None, Parameter(help="Stable project id for repositories without an origin remote.")] = None,
 ) -> None:
     """Bind the current Git repository to the global memory vault."""
-    emit(init_project(vault=vault, cwd=Path.cwd()))
+    emit(init_project(vault=vault, cwd=Path.cwd(), project_id=project_id))
 
 
 def add_command(

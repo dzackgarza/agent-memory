@@ -119,7 +119,8 @@ class ProjectConfig(BaseModel):
             search_max_tokens=payload.search_max_tokens,
         )
 
-    def to_toml_payload(self) -> dict[str, str | None | int | list[str]]:
+    def to_toml_payload(self) -> dict[str, str | int | list[str]]:
+        assert self.project_id is not None, "project config file payload requires project_id"
         return {
             "vault": str(self.vault),
             "project_id": self.project_id,
