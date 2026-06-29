@@ -1987,6 +1987,65 @@ def test_links_rewrite_repoints_wikilink_target_to_external_url(tmp_path: Path) 
         assert external_url in rewritten
 
 
+def test_links_rewrite_map_repoints_many_wikilink_targets(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    externalized_target = "global/references/externalized-plan"
+    old_internal_target = "global/references/old-roadmap"
+    new_internal_target = "global/references/new-roadmap"
+    external_url = "https://github.com/dzackgarza/agent-memory/issues/43"
+    add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="reference",
+        title="New Roadmap",
+        content="This is the replacement in-vault roadmap.",
+    )
+    source = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Mapped Link Source",
+        content=f"Moved [[{externalized_target}]] and renamed [[{old_internal_target}]].",
+    )
+    source_key = project_memory_key(workspace, "decisions", "mapped-link-source")
+    source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "mapped-link-source.md"
+    index_path = source_path.parent / "index.md"
+    map_path = tmp_path / "link-rewrites.toml"
+    map_path.write_text(
+        "\n".join(
+            (
+                "[rewrites]",
+                f'"{externalized_target}" = "{external_url}"',
+                f'"{old_internal_target}" = "{new_internal_target}"',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_agent_memory_subprocess(workspace.repo, "links", "rewrite", "--map", str(map_path))
+
+    assert source["key"] == source_key
+    assert result.returncode == 0
+    assert parse_json_stdout(result) == {
+        "map": str(map_path),
+        "rewrites": [
+            {"from": externalized_target, "to": external_url},
+            {"from": old_internal_target, "to": new_internal_target},
+        ],
+        "rewritten": [
+            {"path": str(source_path), "replacements": 4},
+            {"path": str(index_path), "replacements": 2},
+        ],
+    }
+    for path in (source_path, index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{externalized_target}]]" not in rewritten
+        assert f"[[{old_internal_target}]]" not in rewritten
+        assert external_url in rewritten
+        assert f"[[{new_internal_target}]]" in rewritten
+
+
 def test_inspect_outline_and_recent_real_vault(tmp_path: Path) -> None:
     workspace, project_key, _global_key = linked_inspect_workspace(tmp_path)
     outline = inspect_json(workspace, "outline", project_key, "--format", "json")
