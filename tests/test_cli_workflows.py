@@ -1898,6 +1898,46 @@ def test_inspect_links_dedupes_reciprocal_index_links(tmp_path: Path) -> None:
     assert both["links"] == [decision_index_record]
 
 
+def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    existing = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="advice",
+        title="Existing Link Target",
+        content="This memory is a valid wiki target.",
+    )
+    source = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Broken Link Source",
+        content="Keep [[global/advice/existing-link-target]] but report [[global/advice/retired-link-target]].",
+    )
+    source_key = project_memory_key(workspace, "decisions", "broken-link-source")
+    source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "broken-link-source.md"
+    broken_target = "global/advice/retired-link-target"
+    broken_line = next(line_number for line_number, line in enumerate(source_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line)
+
+    result = run_agent_memory_subprocess(workspace.repo, "inspect", "links", "--broken", "--scope", "both", "--format", "json")
+
+    assert existing["key"] == "global/advice/existing-link-target"
+    assert source["key"] == source_key
+    assert result.returncode == 1
+    assert parse_json_stdout(result) == {
+        "scope": "both",
+        "broken_links": [
+            {
+                "line": broken_line,
+                "source_key": source_key,
+                "source_path": str(source_path),
+                "target": broken_target,
+                "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
+            }
+        ],
+    }
+
+
 def test_inspect_outline_and_recent_real_vault(tmp_path: Path) -> None:
     workspace, project_key, _global_key = linked_inspect_workspace(tmp_path)
     outline = inspect_json(workspace, "outline", project_key, "--format", "json")
