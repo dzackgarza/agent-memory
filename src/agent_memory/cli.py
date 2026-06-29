@@ -62,6 +62,7 @@ from agent_memory.operations import (
     move_memory,
     remove_sync_systemd_timer,
     retrieve_memory,
+    rewrite_wikilinks,
     search_content_exact,
     search_content_fuzzy,
     search_content_ranked,
@@ -96,6 +97,7 @@ inspect_app = app.command(App(name="inspect", help="Read-only vault navigation a
 maintain_app = app.command(App(name="maintain", help="Vault setup and maintenance workflows."))
 plan_app = app.command(App(name="plan", help="Create, migrate, validate, and visualize vault-backed project plan cards."))
 sync_app = app.command(App(name="sync", help="Synchronize the configured memory vault with its git remote."))
+links_app = app.command(App(name="links", help="Inspect and rewrite vault links."))
 
 
 class CliUsageError(RuntimeError):
@@ -304,6 +306,14 @@ def inspect_links_command(
         )
     )
     return None
+
+
+def links_rewrite_command(
+    from_target: Annotated[str, Parameter(name="from", help="Existing wikilink target key.")],
+    to_target: Annotated[str, Parameter(name="to", help="New wikilink target key or external URL.")],
+) -> None:
+    """Rewrite wikilink targets across the vault."""
+    emit(rewrite_wikilinks(from_target=from_target, to_target=to_target, cwd=Path.cwd()))
 
 
 def inspect_outline_command(
@@ -545,6 +555,7 @@ def register_commands() -> None:
     plan_app.command(plan_validate_command, name="validate")
     plan_app.command(plan_dag_command, name="dag")
     plan_app.command(plan_migrate_command, name="migrate")
+    links_app.command(links_rewrite_command, name="rewrite")
     sync_app.command(sync_run_command, name="run")
     sync_app.command(sync_status_command, name="status")
     sync_app.command(sync_install_command, name="install")

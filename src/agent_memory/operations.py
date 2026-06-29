@@ -2467,6 +2467,20 @@ def wikilink_key(raw_target: str) -> str:
     return key
 
 
+def wikilink_argument_key(raw_target: str) -> str:
+    stripped = raw_target.strip()
+    if stripped.startswith("[[") and stripped.endswith("]]"):
+        return wikilink_key(stripped[2:-2])
+    return wikilink_key(stripped)
+
+
+def wikilink_replacement(raw_target: str) -> str:
+    stripped = raw_target.strip()
+    if stripped.startswith(("http://", "https://")):
+        return stripped
+    return f"[[{wikilink_argument_key(stripped)}]]"
+
+
 def wikilink_target_path(config: ProjectConfig, key: str) -> Path:
     target_path = (config.vault / f"{key}.md").resolve()
     vault = config.vault.resolve()
@@ -2493,6 +2507,37 @@ def broken_wikilink_records(config: ProjectConfig, scope: SearchScope) -> list[J
                         }
                     )
     return records
+
+
+def rewrite_wikilinks_in_text(text: str, *, old_key: str, replacement: str) -> tuple[str, int]:
+    replacements = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal replacements
+        if wikilink_key(match.group(1)) != old_key:
+            return match.group(0)
+        replacements += 1
+        return replacement
+
+    return WIKILINK_PATTERN.sub(replace, text), replacements
+
+
+def rewrite_wikilinks(*, from_target: str, to_target: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    old_key = wikilink_argument_key(from_target)
+    replacement = wikilink_replacement(to_target)
+    records: list[JsonObject] = []
+    for path in inspect_markdown_paths(config, SearchScope.BOTH):
+        text = path.read_text(encoding="utf-8")
+        rewritten, replacements = rewrite_wikilinks_in_text(text, old_key=old_key, replacement=replacement)
+        if replacements:
+            path.write_text(rewritten, encoding="utf-8")
+            records.append({"path": str(path), "replacements": replacements})
+    return {
+        "from": old_key,
+        "to": to_target,
+        "rewritten": json_list(records),
+    }
 
 
 def incoming_link_keys(config: ProjectConfig, target_key: str) -> tuple[str, ...]:
