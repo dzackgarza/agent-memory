@@ -1146,6 +1146,41 @@ def test_maintain_move_memory_to_global_leaves_project_pointer(
     assert "* [Promotion Trap](promotion-trap.md) - Promoted to global/traps/promotion-trap." in (pointer.parent / "index.md").read_text()
 
 
+def test_maintain_move_memory_to_global_rewrites_inbound_wikilinks(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    target = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="trap",
+        title="Promotion Link Target",
+        content="promotion-link-target-16c75191 must become shared knowledge",
+    )
+    old_key = project_memory_key(workspace, "traps", "promotion-link-target")
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Promotion Backlink Source",
+        content=f"Review [[{old_key}]] before trusting the promotion path.",
+    )
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+    new_key = "global/traps/promotion-link-target"
+
+    moved = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "move", str(target["key"]), "--to", "global/traps"))
+
+    assert target["key"] == old_key
+    assert moved["key"] == new_key
+    assert moved["rewritten"] == [
+        {"path": str(backlink_index_path), "replacements": 1},
+        {"path": str(backlink_path), "replacements": 2},
+    ]
+    for path in (backlink_path, backlink_index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{old_key}]]" not in rewritten
+        assert f"[[{new_key}]]" in rewritten
+
+
 def test_project_commands_without_config_fail_with_first_time_setup_guidance(
     tmp_path: Path,
 ) -> None:
