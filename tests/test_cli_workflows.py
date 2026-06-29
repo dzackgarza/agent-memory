@@ -1320,6 +1320,37 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
     }
 
 
+def test_sync_status_reports_global_vault_from_unbound_directory(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    remote = initialized_bare_remote(tmp_path, "global-status-vault-remote.git")
+    branch = configure_vault_remote(vault, remote)
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+
+    result = run_agent_memory_subprocess(loose, "sync", "status", env=env)
+
+    assert result.returncode == 0
+    status = parse_json_stdout(result)
+    assert status == {
+        "git": {
+            "ahead": 0,
+            "behind": 0,
+            "branch": branch,
+            "changes": [],
+            "head": git_output(vault, "rev-parse", "HEAD"),
+            "remote": str(remote),
+            "upstream": f"origin/{branch}",
+            "worktree_clean": True,
+        },
+        "initialized": True,
+        "project_bound": False,
+        "vault": str(vault),
+    }
+
+
 def test_sync_run_pushes_conflict_branch_and_restores_main_when_rebase_conflicts(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     remote = initialized_bare_remote(tmp_path, "conflict-vault-remote.git")
