@@ -1916,8 +1916,10 @@ def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tm
     )
     source_key = project_memory_key(workspace, "decisions", "broken-link-source")
     source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "broken-link-source.md"
+    index_path = source_path.parent / "index.md"
     broken_target = "global/advice/retired-link-target"
-    broken_line = next(line_number for line_number, line in enumerate(source_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line)
+    source_lines = [line_number for line_number, line in enumerate(source_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line]
+    index_line = next(line_number for line_number, line in enumerate(index_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line)
 
     result = run_agent_memory_subprocess(workspace.repo, "inspect", "links", "--broken", "--scope", "both", "--format", "json")
 
@@ -1928,12 +1930,26 @@ def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tm
         "scope": "both",
         "broken_links": [
             {
-                "line": broken_line,
+                "line": source_lines[0],
                 "source_key": source_key,
                 "source_path": str(source_path),
                 "target": broken_target,
                 "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
-            }
+            },
+            {
+                "line": source_lines[1],
+                "source_key": source_key,
+                "source_path": str(source_path),
+                "target": broken_target,
+                "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
+            },
+            {
+                "line": index_line,
+                "source_key": f"projects/{workspace.project_id}/decisions/index",
+                "source_path": str(index_path),
+                "target": broken_target,
+                "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
+            },
         ],
     }
 

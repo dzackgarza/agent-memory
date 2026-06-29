@@ -68,6 +68,7 @@ class SyncSystemdPaths:
 
 OKF_VERSION = "0.1"
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+WIKILINK_PATTERN = re.compile(r"\[\[([^\]\n]+)\]\]")
 AGENTS_SECTION_START = "<!-- agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- agent-memory:end -->"
 ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
@@ -2259,6 +2260,21 @@ def inspect_links(
     }
 
 
+def inspect_broken_links(
+    *,
+    scope: SearchScope,
+    output_format: InspectOutputFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, "inspect links --broken currently emits JSON"
+    config = load_project_config(cwd)
+    records = broken_wikilink_records(config, scope)
+    return {
+        "scope": scope.value,
+        "broken_links": json_list(records),
+    }
+
+
 def inspect_outline(
     *,
     key: str,
@@ -2442,6 +2458,41 @@ def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
         assert target_path.is_relative_to(vault), f"markdown link leaves memory vault: {target}"
         keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
     return tuple(keys)
+
+
+def wikilink_key(raw_target: str) -> str:
+    key = raw_target.split("|", 1)[0].split("#", 1)[0].strip()
+    assert key, f"wikilink target must not be empty: {raw_target!r}"
+    assert not key.startswith(("http://", "https://")), f"wikilink target must be a vault key, not a URL: {raw_target!r}"
+    return key
+
+
+def wikilink_target_path(config: ProjectConfig, key: str) -> Path:
+    target_path = (config.vault / f"{key}.md").resolve()
+    vault = config.vault.resolve()
+    assert target_path.is_relative_to(vault), f"wikilink target leaves memory vault: {key}"
+    return target_path
+
+
+def broken_wikilink_records(config: ProjectConfig, scope: SearchScope) -> list[JsonObject]:
+    records: list[JsonObject] = []
+    for path in inspect_markdown_paths(config, scope):
+        source_key = memory_key(config.vault, path)
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            for match in WIKILINK_PATTERN.finditer(line):
+                target = wikilink_key(match.group(1))
+                target_path = wikilink_target_path(config, target)
+                if not target_path.is_file():
+                    records.append(
+                        {
+                            "line": line_number,
+                            "source_key": source_key,
+                            "source_path": str(path),
+                            "target": target,
+                            "target_path": str(target_path),
+                        }
+                    )
+    return records
 
 
 def incoming_link_keys(config: ProjectConfig, target_key: str) -> tuple[str, ...]:

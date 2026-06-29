@@ -46,6 +46,7 @@ from agent_memory.operations import (
     enable_sync_systemd_timer,
     init_global_vault,
     init_project,
+    inspect_broken_links,
     inspect_export,
     inspect_links,
     inspect_outline,
@@ -273,16 +274,26 @@ def inspect_tree_command(
 
 
 def inspect_links_command(
-    key: Annotated[str, Parameter(help="Memory key to inspect.")],
+    key: Annotated[str | None, Parameter(help="Memory key to inspect. Omit only with --broken.")] = None,
     *,
+    broken: Annotated[bool, Parameter(help="Report broken wikilinks across the selected scope.")] = False,
+    scope: Annotated[SearchScope, Parameter(help="Scope for --broken: project, global, or both.")] = SearchScope.BOTH,
     direction: Annotated[
         InspectLinkDirection,
         Parameter(help="Link direction: children, parents, or both."),
-    ],
-    depth: Annotated[int, Parameter(help="Number of graph levels to traverse.")],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
-) -> None:
+    ] = InspectLinkDirection.BOTH,
+    depth: Annotated[int, Parameter(help="Number of graph levels to traverse.")] = 1,
+    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
+) -> int | None:
     """Show graph neighbors for a memory key."""
+    if broken:
+        assert key is None, "inspect links --broken is vault-scoped and does not accept a memory key"
+        payload = inspect_broken_links(scope=scope, output_format=output_format, cwd=Path.cwd())
+        emit(payload)
+        broken_links = payload["broken_links"]
+        assert isinstance(broken_links, list), "broken link report must contain a list"
+        return 1 if broken_links else 0
+    assert key is not None, "inspect links requires a memory key unless --broken is set"
     emit(
         inspect_links(
             key=key,
@@ -292,6 +303,7 @@ def inspect_links_command(
             cwd=Path.cwd(),
         )
     )
+    return None
 
 
 def inspect_outline_command(
@@ -508,7 +520,7 @@ def register_commands() -> None:
     search_app.command(search_content_command, name="content")
     search_app.command(search_metadata_command, name="metadata")
     search_app.command(search_keys_command, name="keys")
-    inspect_commands: dict[str, Callable[..., None]] = {
+    inspect_commands: dict[str, Callable[..., object]] = {
         "overview": inspect_overview_command,
         "schema": inspect_schema_command,
         "paths": inspect_paths_command,
