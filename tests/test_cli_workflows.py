@@ -832,6 +832,54 @@ def test_project_memory_update_rewrites_inbound_wikilinks_on_key_change(tmp_path
         assert f"[[{new_key}]]" in rewritten
 
 
+def test_delete_requires_backlink_disposition_and_can_repoint_inbound_links(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    target = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Deleted Link Target",
+        content="deleted-link-target-ef4b0f93 moved to GitHub",
+    )
+    old_key = project_memory_key(workspace, "decisions", "deleted-link-target")
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Delete Backlink Source",
+        content=f"Follow [[{old_key}]] before removing local planning notes.",
+    )
+    target_path = Path(str(target["path"]))
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+    external_url = "https://github.com/dzackgarza/agent-memory/issues/23"
+
+    blocked = run_agent_memory_subprocess(workspace.repo, "delete", str(target["key"]))
+
+    assert target["key"] == old_key
+    assert blocked.returncode != 0
+    assert old_key in blocked.stderr
+    assert "--repoint" in blocked.stderr
+    assert "--orphan-ok" in blocked.stderr
+    assert target_path.is_file()
+    assert f"[[{old_key}]]" in backlink_path.read_text(encoding="utf-8")
+
+    deleted = parse_json_stdout(run_agent_memory(workspace.repo, "delete", str(target["key"]), "--repoint", external_url))
+
+    assert deleted == {
+        "deleted": old_key,
+        "repointed_to": external_url,
+        "rewritten": [
+            {"path": str(backlink_path), "replacements": 1},
+        ],
+    }
+    assert not target_path.exists()
+    for path in (backlink_path, backlink_index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{old_key}]]" not in rewritten
+        assert external_url in rewritten
+
+
 def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
