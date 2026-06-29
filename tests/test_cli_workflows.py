@@ -798,6 +798,40 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     assert "Traceback" not in no_update.stderr
 
 
+def test_project_memory_update_rewrites_inbound_wikilinks_on_key_change(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    target = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Rename Link Target",
+        content="rename-link-target-d1f8f6a1 keeps inbound backlinks coherent",
+    )
+    old_key = project_memory_key(workspace, "decisions", "rename-link-target")
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Rename Backlink Source",
+        content=f"Review [[{old_key}]] before trusting renamed decisions.",
+    )
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+    new_key = project_memory_key(workspace, "decisions", "rename-link-target-renamed")
+
+    renamed = parse_json_stdout(run_agent_memory(workspace.repo, "update", str(target["key"]), "--title", "Rename Link Target Renamed"))
+
+    assert target["key"] == old_key
+    assert renamed["key"] == new_key
+    assert renamed["rewritten"] == [
+        {"path": str(backlink_path), "replacements": 1},
+    ]
+    for path in (backlink_path, backlink_index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{old_key}]]" not in rewritten
+        assert f"[[{new_key}]]" in rewritten
+
+
 def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
