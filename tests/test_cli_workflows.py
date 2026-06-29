@@ -1337,11 +1337,15 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
     branch = configure_vault_remote(workspace.vault, remote)
     witness = workspace.vault / "global" / "references" / "auto-sync-status-proof.md"
     witness.write_text("# Auto Sync Status Proof\n\nsync status witness\n", encoding="utf-8")
+    env = agent_memory_env()
+    env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
 
-    status = parse_json_stdout(run_agent_memory(workspace.repo, "sync", "status"))
+    result = run_agent_memory_subprocess(workspace.repo, "sync", "status", env=env)
 
+    assert result.returncode == 0
+    status = parse_json_stdout(result)
     assert status == {
-        "auto_sync": expected_sync_auto_status(),
+        "auto_sync": expected_sync_auto_status(env),
         "git": {
             "ahead": 0,
             "behind": 0,
@@ -1353,7 +1357,7 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
             "worktree_clean": False,
         },
         "initialized": True,
-        "last_sync": expected_sync_state(),
+        "last_sync": expected_sync_state(env),
         "project_bound": True,
         "vault": str(workspace.vault),
     }
@@ -1368,6 +1372,7 @@ def test_sync_status_reports_global_vault_from_unbound_directory(tmp_path: Path)
     branch = configure_vault_remote(vault, remote)
     env = agent_memory_env()
     env["AGENT_MEMORY_VAULT"] = str(vault)
+    env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
 
     result = run_agent_memory_subprocess(loose, "sync", "status", env=env)
 
