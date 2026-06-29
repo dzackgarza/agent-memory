@@ -1160,11 +1160,12 @@ def git_status_entries(repo: Path) -> tuple[str, ...]:
     return tuple(line for line in result.stdout.splitlines() if line)
 
 
-def git_status_records(repo: Path) -> list[JsonObject]:
-    records: list[JsonObject] = []
+def git_status_records(repo: Path) -> list[JsonValue]:
+    records: list[JsonValue] = []
     for entry in git_status_entries(repo):
         assert len(entry) >= 4, f"unexpected git status entry shape: repo={repo}; entry={entry!r}"
-        records.append({"status": entry[:2], "path": entry[3:]})
+        record: JsonObject = {"status": entry[:2], "path": entry[3:]}
+        records.append(record)
     return records
 
 
