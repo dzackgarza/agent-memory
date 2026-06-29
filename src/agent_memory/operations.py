@@ -573,12 +573,17 @@ def update_memory(
     write_memory(transition.destination_path, transition.metadata, transition.body)
     sync_memory_transition_indexes(transition)
     index_zk_notebook(config.vault)
+    rewritten: list[JsonObject] = []
+    if transition.new_key != transition.old_key:
+        rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(transition.old_key, transition.new_key),))
+        index_zk_notebook(config.vault)
 
     paths = [
         transition.source_path,
         transition.destination_path,
         transition.source_path.parent / "index.md",
         transition.destination_path.parent / "index.md",
+        *rewritten_record_paths(rewritten),
     ]
     try:
         commit_vault_changes(
@@ -590,7 +595,10 @@ def update_memory(
         git_stderr = e.stderr or ""
         raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
-    return {"key": transition.new_key, "path": str(transition.destination_path)}
+    result: JsonObject = {"key": transition.new_key, "path": str(transition.destination_path)}
+    if transition.new_key != transition.old_key:
+        result["rewritten"] = json_list(rewritten)
+    return result
 
 
 def delete_memory(key: str, cwd: Path) -> JsonObject:
