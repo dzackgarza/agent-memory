@@ -2034,8 +2034,8 @@ def test_links_rewrite_map_repoints_many_wikilink_targets(tmp_path: Path) -> Non
             {"from": old_internal_target, "to": new_internal_target},
         ],
         "rewritten": [
-            {"path": str(source_path), "replacements": 4},
             {"path": str(index_path), "replacements": 2},
+            {"path": str(source_path), "replacements": 4},
         ],
     }
     for path in (source_path, index_path):

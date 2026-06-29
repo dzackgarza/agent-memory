@@ -309,11 +309,25 @@ def inspect_links_command(
 
 
 def links_rewrite_command(
-    from_target: Annotated[str, Parameter(name="from", help="Existing wikilink target key.")],
-    to_target: Annotated[str, Parameter(name="to", help="New wikilink target key or external URL.")],
+    from_target: Annotated[str | None, Parameter(name="from", help="Existing wikilink target key.")] = None,
+    to_target: Annotated[
+        str | None,
+        Parameter(name="to", help="New wikilink target key or external URL."),
+    ] = None,
+    map_path: Annotated[
+        Path | None,
+        Parameter(name="map", help="TOML mapping file with a [rewrites] table."),
+    ] = None,
 ) -> None:
     """Rewrite wikilink targets across the vault."""
-    emit(rewrite_wikilinks(from_target=from_target, to_target=to_target, cwd=Path.cwd()))
+    emit(
+        rewrite_wikilinks(
+            from_target=from_target,
+            to_target=to_target,
+            map_path=map_path,
+            cwd=Path.cwd(),
+        )
+    )
 
 
 def inspect_outline_command(

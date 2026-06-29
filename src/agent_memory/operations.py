@@ -66,6 +66,13 @@ class SyncSystemdPaths:
     timer_wants: Path
 
 
+@dataclass(frozen=True)
+class WikilinkRewrite:
+    from_key: str
+    to_target: str
+    replacement: str
+
+
 OKF_VERSION = "0.1"
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]\n]+)\]\]")
@@ -2481,6 +2488,14 @@ def wikilink_replacement(raw_target: str) -> str:
     return f"[[{wikilink_argument_key(stripped)}]]"
 
 
+def wikilink_rewrite(from_target: str, to_target: str) -> WikilinkRewrite:
+    return WikilinkRewrite(
+        from_key=wikilink_argument_key(from_target),
+        to_target=to_target,
+        replacement=wikilink_replacement(to_target),
+    )
+
+
 def wikilink_target_path(config: ProjectConfig, key: str) -> Path:
     target_path = (config.vault / f"{key}.md").resolve()
     vault = config.vault.resolve()
@@ -2522,21 +2537,63 @@ def rewrite_wikilinks_in_text(text: str, *, old_key: str, replacement: str) -> t
     return WIKILINK_PATTERN.sub(replace, text), replacements
 
 
-def rewrite_wikilinks(*, from_target: str, to_target: str, cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
-    old_key = wikilink_argument_key(from_target)
-    replacement = wikilink_replacement(to_target)
+def rewrite_wikilink_files(config: ProjectConfig, rewrites: Sequence[WikilinkRewrite]) -> list[JsonObject]:
     records: list[JsonObject] = []
     for path in inspect_markdown_paths(config, SearchScope.BOTH):
-        text = path.read_text(encoding="utf-8")
-        rewritten, replacements = rewrite_wikilinks_in_text(text, old_key=old_key, replacement=replacement)
+        rewritten = path.read_text(encoding="utf-8")
+        replacements = 0
+        for rewrite in rewrites:
+            rewritten, rewrite_replacements = rewrite_wikilinks_in_text(
+                rewritten,
+                old_key=rewrite.from_key,
+                replacement=rewrite.replacement,
+            )
+            replacements += rewrite_replacements
         if replacements:
             path.write_text(rewritten, encoding="utf-8")
             records.append({"path": str(path), "replacements": replacements})
+    return records
+
+
+def rewrite_record(rewrite: WikilinkRewrite) -> JsonObject:
+    return {"from": rewrite.from_key, "to": rewrite.to_target}
+
+
+def wikilink_rewrite_map(map_path: Path) -> tuple[WikilinkRewrite, ...]:
+    decoded = tomllib.loads(map_path.read_text(encoding="utf-8"))
+    rewrites = decoded["rewrites"]
+    assert isinstance(rewrites, dict), f"wikilink rewrite map must contain a [rewrites] table: {map_path}"
+    records: list[WikilinkRewrite] = []
+    for from_target, to_target in rewrites.items():
+        assert isinstance(from_target, str), f"wikilink rewrite source must be a string: {map_path}"
+        assert isinstance(to_target, str), f"wikilink rewrite destination must be a string: {map_path}; source={from_target}"
+        records.append(wikilink_rewrite(from_target, to_target))
+    assert records, f"wikilink rewrite map must contain at least one rewrite: {map_path}"
+    return tuple(records)
+
+
+def rewrite_wikilinks(
+    *,
+    from_target: str | None,
+    to_target: str | None,
+    map_path: Path | None,
+    cwd: Path,
+) -> JsonObject:
+    config = load_project_config(cwd)
+    if map_path is None:
+        assert from_target is not None and to_target is not None, "links rewrite requires --from and --to unless --map is supplied"
+        rewrite = wikilink_rewrite(from_target, to_target)
+        return {
+            "from": rewrite.from_key,
+            "to": rewrite.to_target,
+            "rewritten": json_list(rewrite_wikilink_files(config, (rewrite,))),
+        }
+    assert from_target is None and to_target is None, "links rewrite --map cannot be combined with --from or --to"
+    rewrites = wikilink_rewrite_map(map_path)
     return {
-        "from": old_key,
-        "to": to_target,
-        "rewritten": json_list(records),
+        "map": str(map_path),
+        "rewrites": json_list([rewrite_record(rewrite) for rewrite in rewrites]),
+        "rewritten": json_list(rewrite_wikilink_files(config, rewrites)),
     }
 
 
