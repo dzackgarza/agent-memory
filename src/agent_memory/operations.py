@@ -1194,6 +1194,12 @@ def git_head(repo: Path) -> str:
     return run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
 
 
+def sync_conflict_branch_name(branch: str, head: str) -> str:
+    safe_branch = re.sub(r"[^A-Za-z0-9._-]+", "-", branch).strip("-")
+    assert safe_branch, f"cannot build conflict branch from branch name: {branch!r}"
+    return f"agent-memory-sync-conflict-{safe_branch}-{head[:12]}"
+
+
 def sync_status(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     assert_vault_zk_initialized(config.vault)
@@ -1217,6 +1223,28 @@ def sync_status(cwd: Path) -> JsonObject:
     }
 
 
+def push_sync_conflict_branch(vault: Path, remote: str, branch: str, committed: bool, conflict_head: str) -> JsonObject:
+    conflict_branch = sync_conflict_branch_name(branch, conflict_head)
+    run_checked(["git", "rebase", "--abort"], cwd=vault)
+    run_checked(["git", "branch", conflict_branch, conflict_head], cwd=vault)
+    run_checked(["git", "push", "origin", f"{conflict_branch}:{conflict_branch}"], cwd=vault)
+    run_checked(["git", "reset", "--hard", f"origin/{branch}"], cwd=vault)
+    status_after = git_status_entries(vault)
+    assert not status_after, f"vault sync conflict recovery must leave a clean worktree: vault={vault}; status={status_after}"
+    return {
+        "vault": str(vault),
+        "remote": remote,
+        "branch": branch,
+        "committed": committed,
+        "pushed": False,
+        "head": git_head(vault),
+        "worktree_clean": True,
+        "status": "conflict_branch_pushed",
+        "conflict_branch": conflict_branch,
+        "conflict_head": conflict_head,
+    }
+
+
 def sync_vault(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     vault = config.vault
@@ -1226,7 +1254,11 @@ def sync_vault(cwd: Path) -> JsonObject:
     committed = bool(status_before)
     if committed:
         commit_vault_changes(vault, "Auto-sync vault changes")
-    run_checked(["git", "pull", "--rebase", "origin", branch], cwd=vault)
+    sync_head = git_head(vault)
+    run_checked(["git", "fetch", "origin", branch], cwd=vault)
+    rebase = run_checked_optional(["git", "rebase", f"origin/{branch}"], cwd=vault)
+    if rebase.returncode != 0:
+        return push_sync_conflict_branch(vault, remote, branch, committed, sync_head)
     run_checked(["git", "push", "origin", branch], cwd=vault)
     status_after = git_status_entries(vault)
     assert not status_after, f"vault sync must leave a clean worktree: vault={vault}; status={status_after}"
