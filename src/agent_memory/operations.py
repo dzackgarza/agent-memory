@@ -83,6 +83,7 @@ VAULT_MAINTENANCE_SKILL_HINT = (
 )
 SYNC_SYSTEMD_SERVICE_NAME = "agent-memory-sync.service"
 SYNC_SYSTEMD_TIMER_NAME = "agent-memory-sync.timer"
+SYNC_STATE_FILENAME = "sync-state.json"
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.DECISION: "decisions",
@@ -1102,6 +1103,7 @@ def doctor(cwd: Path) -> JsonObject:
         "project_bound": True,
         "agent_state": project_agent_state_records(git_root, project_dir),
         "auto_sync": sync_auto_status(),
+        "last_sync": sync_state(),
         "tools": basic["tools"],
         "dependencies": basic["dependencies"],
     }
@@ -1120,6 +1122,7 @@ def unbound_doctor(basic: JsonObject) -> JsonObject:
         "project_bound": False,
         "agent_state": [],
         "auto_sync": sync_auto_status(),
+        "last_sync": sync_state(),
         "tools": basic["tools"],
         "dependencies": basic["dependencies"],
     }
@@ -1234,6 +1237,74 @@ def sync_systemd_paths() -> SyncSystemdPaths:
         service=unit_dir / SYNC_SYSTEMD_SERVICE_NAME,
         timer=unit_dir / SYNC_SYSTEMD_TIMER_NAME,
     )
+
+
+def sync_state_path() -> Path:
+    xdg_state_home = os.environ.get("XDG_STATE_HOME")
+    if xdg_state_home is None:
+        state_home = Path.home() / ".local" / "state"
+    else:
+        assert xdg_state_home, "XDG_STATE_HOME must be non-empty when set; unset it to use ~/.local/state"
+        state_home = Path(xdg_state_home)
+    return state_home / "agent-memory" / SYNC_STATE_FILENAME
+
+
+def empty_sync_state(state_path: Path) -> JsonObject:
+    return {
+        "last_attempt": {"status": "never_run"},
+        "last_failure": {"status": "none"},
+        "last_success": {"status": "none"},
+        "state_path": str(state_path),
+    }
+
+
+def sync_state() -> JsonObject:
+    state_path = sync_state_path()
+    if not state_path.exists():
+        return empty_sync_state(state_path)
+    decoded = json.loads(state_path.read_text(encoding="utf-8"))
+    assert isinstance(decoded, dict), f"sync state file must contain a JSON object: {state_path}"
+    assert decoded["state_path"] == str(state_path), f"sync state path mismatch: {state_path}"
+    return decoded
+
+
+def sync_attempt_record(result: JsonObject) -> JsonObject:
+    pushed = result["pushed"]
+    assert isinstance(pushed, bool), "sync result must include pushed boolean"
+    if pushed:
+        status = "success"
+    else:
+        status_value = result["status"]
+        assert isinstance(status_value, str), "non-pushed sync result must include status"
+        status = status_value
+    return {"result": result, "status": status}
+
+
+def write_sync_state(result: JsonObject) -> JsonObject:
+    state_path = sync_state_path()
+    previous_state = sync_state()
+    previous_last_failure = previous_state["last_failure"]
+    assert isinstance(previous_last_failure, dict), "previous sync state last_failure must be an object"
+    previous_last_success = previous_state["last_success"]
+    assert isinstance(previous_last_success, dict), "previous sync state last_success must be an object"
+    attempt = sync_attempt_record(result)
+    pushed = result["pushed"]
+    assert isinstance(pushed, bool), "sync result must include pushed boolean"
+    if pushed:
+        last_success = attempt
+        last_failure = previous_last_failure
+    else:
+        last_success = previous_last_success
+        last_failure = attempt
+    state: JsonObject = {
+        "last_attempt": attempt,
+        "last_failure": last_failure,
+        "last_success": last_success,
+        "state_path": str(state_path),
+    }
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return state
 
 
 def sync_systemd_unit_names() -> JsonObject:
@@ -1360,6 +1431,7 @@ def sync_status(cwd: Path) -> JsonObject:
             "changes": changes,
         },
         "auto_sync": sync_auto_status(),
+        "last_sync": sync_state(),
     }
 
 
@@ -1398,11 +1470,13 @@ def sync_vault(cwd: Path) -> JsonObject:
     run_checked(["git", "fetch", "origin", branch], cwd=vault)
     rebase = run_checked_optional(["git", "rebase", f"origin/{branch}"], cwd=vault)
     if rebase.returncode != 0:
-        return push_sync_conflict_branch(vault, remote, branch, committed, sync_head)
+        result = push_sync_conflict_branch(vault, remote, branch, committed, sync_head)
+        write_sync_state(result)
+        return result
     run_checked(["git", "push", "origin", branch], cwd=vault)
     status_after = git_status_entries(vault)
     assert not status_after, f"vault sync must leave a clean worktree: vault={vault}; status={status_after}"
-    return {
+    result = {
         "vault": str(vault),
         "remote": remote,
         "branch": branch,
@@ -1411,6 +1485,8 @@ def sync_vault(cwd: Path) -> JsonObject:
         "head": git_head(vault),
         "worktree_clean": True,
     }
+    write_sync_state(result)
+    return result
 
 
 def configure_vault_git(vault: Path) -> None:
