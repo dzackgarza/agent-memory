@@ -24,6 +24,7 @@ from agent_memory.operations import (
     OKF_VERSION,
     DependencyCheck,
     DependencyError,
+    MemoryOperationError,
     ProjectNotInitializedError,
     VaultCommitError,
     basic_doctor,
@@ -1135,7 +1136,7 @@ def test_check_dependency_raises_for_failed_command(tmp_path: Path) -> None:
 
 def test_update_memory_requires_at_least_one_field(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    with pytest.raises(AssertionError) as excinfo:
+    with pytest.raises(MemoryOperationError) as excinfo:
         update_memory("nonexistent-key", None, None, None, workspace.repo)
     assert "update requires at least one of --title, --type, or --content" in str(excinfo.value)
 
@@ -1872,9 +1873,10 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         "parents",
     )
     assert invalid_enum.returncode != 0
+    assert "Validation failed" in invalid_enum.stderr
+    assert "Field 'status'" in invalid_enum.stderr
     assert "ValidationError" not in invalid_enum.stderr
     assert "AssertionError" not in invalid_enum.stderr
-    assert "status" in invalid_enum.stderr
     assert "bogus" in invalid_enum.stderr
 
     # Scenario 3: malformed --set input does not escape as Cyclopts AssertionError
@@ -1887,13 +1889,21 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         "--empty-set",
         "parents",
         "--set",
+        "title=Plan 2",
+        "--set",
         "status=needs-human-input",
         "--set",
         "description=...",
         "--set",
-        "successCriteria=arrows -> criteria",
+        "successCriteria=arrows",
+        "->",
+        "criteria",
     )
+    assert malformed_set.returncode != 0
+    assert "Unknown option: ->" in malformed_set.stderr
+    assert "->" in malformed_set.stderr
     assert "AssertionError" not in malformed_set.stderr
+    assert "Traceback" not in malformed_set.stderr
 
     # Scenario 4: body file support
     body_file = tmp_path / "body.md"

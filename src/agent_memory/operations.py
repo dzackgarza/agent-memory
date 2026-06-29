@@ -182,6 +182,21 @@ class VaultCommitError(RuntimeError):
     """Raised when a git commit fails in the global or project memory vault."""
 
 
+class CardFieldError(ValueError):
+    """Raised when a plan card field assignment is malformed for CLI input."""
+
+
+class MemoryOperationError(ValueError):
+    """Raised when a memory operation is syntactically valid but incomplete."""
+
+
+class MalformedMemoryError(ValueError):
+    """Raised when a vault Markdown file is not a valid memory document."""
+
+    def __init__(self, path: Path, detail: str) -> None:
+        super().__init__(f"Malformed memory file {path}: {detail}")
+
+
 class DependencyError(RuntimeError):
     """Raised when a required external dependency is missing or failing."""
 
@@ -518,7 +533,8 @@ def update_memory(
     content: str | None,
     cwd: Path,
 ) -> JsonObject:
-    assert title is not None or memory_type is not None or content is not None, "update requires at least one of --title, --type, or --content"
+    if title is None and memory_type is None and content is None:
+        raise MemoryOperationError("update requires at least one of --title, --type, or --content")
     config = load_project_config(cwd)
     transition = memory_transition(config, key, title, memory_type, content)
     if transition.new_key != transition.old_key:
@@ -551,15 +567,16 @@ def delete_memory(key: str, cwd: Path) -> JsonObject:
     path = config.vault / f"{key}.md"
     try:
         document = read_memory(path)
-        title = metadata_string(document.metadata, "title")
-        remove_index_link(path.parent / "index.md", title)
-        commit_message = f"Delete memory: {title}"
-        iwe.delete(config.vault, key)
-    except Exception:
+    except MalformedMemoryError:
         remove_index_link_by_target(path.parent / "index.md", path.name)
         if path.exists():
             path.unlink()
         commit_message = f"Delete memory: {key}"
+    else:
+        title = metadata_string(document.metadata, "title")
+        remove_index_link(path.parent / "index.md", title)
+        commit_message = f"Delete memory: {title}"
+        iwe.delete(config.vault, key)
 
     index_zk_notebook(config.vault)
     try:
@@ -1676,22 +1693,35 @@ def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
 
 def read_memory(path: Path) -> MemoryDocument:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    assert lines[0].strip() == "---", "memory must start with frontmatter"
-    closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    parsed = yaml.safe_load("".join(lines[1:closing_index]))
-    assert isinstance(parsed, dict), "frontmatter must be a mapping"
+    if not lines or lines[0].strip() != "---":
+        raise MalformedMemoryError(path, "memory must start with frontmatter")
+    try:
+        closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+    except StopIteration as e:
+        raise MalformedMemoryError(path, "frontmatter must end with a closing delimiter") from e
+    try:
+        parsed = yaml.safe_load("".join(lines[1:closing_index]))
+    except yaml.YAMLError as e:
+        raise MalformedMemoryError(path, "frontmatter must be valid YAML") from e
+    if not isinstance(parsed, dict):
+        raise MalformedMemoryError(path, "frontmatter must be a mapping")
     metadata: dict[str, MetadataValue] = {}
     for key, value in parsed.items():
-        assert isinstance(key, str), "frontmatter keys must be strings"
+        if not isinstance(key, str):
+            raise MalformedMemoryError(path, "frontmatter keys must be strings")
         if isinstance(value, datetime):
-            assert key == "timestamp", "only timestamp may be parsed as a YAML datetime"
-            assert value.tzinfo is not None, "timestamp must include timezone information"
+            if key != "timestamp":
+                raise MalformedMemoryError(path, "only timestamp may be parsed as a YAML datetime")
+            if value.tzinfo is None:
+                raise MalformedMemoryError(path, "timestamp must include timezone information")
             metadata[key] = value.isoformat().replace("+00:00", "Z")
         elif isinstance(value, list):
-            assert all(isinstance(item, str) for item in value), "frontmatter lists must contain strings"
+            if not all(isinstance(item, str) for item in value):
+                raise MalformedMemoryError(path, "frontmatter lists must contain strings")
             metadata[key] = value
         else:
-            assert isinstance(value, str | bool), "frontmatter values must be strings, booleans, datetimes, or string lists"
+            if not isinstance(value, str | bool):
+                raise MalformedMemoryError(path, "frontmatter values must be strings, booleans, datetimes, or string lists")
             metadata[key] = value
     body = "".join(lines[closing_index + 1 :])
     return MemoryDocument(metadata=metadata, body=body)
@@ -2170,10 +2200,10 @@ def parse_card_fields(
     fields: dict[str, object] = {}
     for assignment in assignments:
         if "=" not in assignment:
-            raise ValueError(f"field assignment must be key=value: {assignment}")
+            raise CardFieldError(f"field assignment must be key=value: {assignment}")
         key, value = assignment.split("=", 1)
         if key not in field_types:
-            raise ValueError(f"unknown field {key} for card type {type_name}")
+            raise CardFieldError(f"unknown field {key} for card type {type_name}")
         field_type = field_types[key]
         if field_type in ("string_list", "wikilink_list"):
             append_list_field(fields, key, value)
@@ -2183,7 +2213,7 @@ def parse_card_fields(
     if empty_set is not None:
         for key in empty_set:
             if key not in field_types:
-                raise ValueError(f"unknown field {key} for card type {type_name}")
+                raise CardFieldError(f"unknown field {key} for card type {type_name}")
             fields[key] = []
 
     return fields
