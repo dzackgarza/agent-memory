@@ -1351,6 +1351,36 @@ def test_sync_status_reports_global_vault_from_unbound_directory(tmp_path: Path)
     }
 
 
+def test_sync_run_commits_and_pushes_global_vault_from_unbound_directory(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    remote = initialized_bare_remote(tmp_path, "global-run-vault-remote.git")
+    branch = configure_vault_remote(vault, remote)
+    witness = vault / "global" / "references" / "global-auto-sync-run-proof.md"
+    witness.write_text("# Global Auto Sync Run Proof\n\nglobal sync run witness\n", encoding="utf-8")
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+
+    result = run_agent_memory_subprocess(loose, "sync", "run", env=env)
+
+    assert result.returncode == 0
+    payload = parse_json_stdout(result)
+    local_head = git_output(vault, "rev-parse", "HEAD")
+    assert payload == {
+        "branch": branch,
+        "committed": True,
+        "head": local_head,
+        "pushed": True,
+        "remote": str(remote),
+        "vault": str(vault),
+        "worktree_clean": True,
+    }
+    assert git_status_lines(vault) == set()
+    assert git_output(remote, "rev-parse", f"refs/heads/{branch}") == local_head
+
+
 def test_sync_run_pushes_conflict_branch_and_restores_main_when_rebase_conflicts(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     remote = initialized_bare_remote(tmp_path, "conflict-vault-remote.git")
