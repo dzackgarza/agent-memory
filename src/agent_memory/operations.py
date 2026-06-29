@@ -23,7 +23,7 @@ from agent_memory.cards.dag import PLAN_DAG_FILENAME, render_dag
 from agent_memory.cards.factory import build_card_models
 from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
-from agent_memory.cards.storage import card_type_for_id, create_card, delete_card, update_card
+from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, update_card
 from agent_memory.cards.validation import load_card_records, validate_cards
 from agent_memory.models import (
     GlobalNoteMetadata,
@@ -65,6 +65,13 @@ VAULT_GIT_USER_NAME = "agent-memory"
 VAULT_GIT_USER_EMAIL = "agent-memory@localhost"
 ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
 PROJECT_AGENT_STATE_DIRECTORIES: tuple[str, ...] = (".agents", ".hermes")
+BUNDLED_SKILL_NAMES: tuple[str, ...] = ("vault-maintenance",)
+VAULT_MAINTENANCE_SKILL_COMMAND = "agent-memory maintain skill vault-maintenance"
+VAULT_MAINTENANCE_SKILL_HINT = (
+    "\nVault recovery is owned by the bundled vault-maintenance skill. "
+    f"Run `{VAULT_MAINTENANCE_SKILL_COMMAND}` and follow its referenced workflows "
+    "before retrying normal memory work."
+)
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.DECISION: "decisions",
@@ -175,6 +182,39 @@ class GlobalVaultNotInitializedError(RuntimeError):
 
     def __init__(self, vault: Path) -> None:
         super().__init__(self.GUIDANCE.format(vault=vault))
+
+
+class VaultCommitError(RuntimeError):
+    """Raised when a git commit fails in the global or project memory vault."""
+
+
+class CardFieldError(ValueError):
+    """Raised when a plan card field assignment is malformed for CLI input."""
+
+
+class MemoryOperationError(ValueError):
+    """Raised when a memory operation is syntactically valid but incomplete."""
+
+
+def bundled_skill_text(name: str) -> str:
+    if name not in BUNDLED_SKILL_NAMES:
+        names = ", ".join(BUNDLED_SKILL_NAMES)
+        raise MemoryOperationError(f"unknown bundled skill {name!r}; available skills: {names}")
+    skill_path = resources.files("agent_memory.defaults").joinpath("skills", name, "SKILL.md")
+    return skill_path.read_text(encoding="utf-8")
+
+
+def vault_commit_error_message(git_stderr: str) -> str:
+    detail = git_stderr.strip()
+    base = f"Vault commit failed: {detail}" if detail else "Vault commit failed"
+    return f"{base}{VAULT_MAINTENANCE_SKILL_HINT}"
+
+
+class MalformedMemoryError(ValueError):
+    """Raised when a vault Markdown file is not a valid memory document."""
+
+    def __init__(self, path: Path, detail: str) -> None:
+        super().__init__(f"Malformed memory file {path}: {detail}")
 
 
 class DependencyError(RuntimeError):
@@ -329,30 +369,46 @@ def init_project(vault: Path, cwd: Path, project_id: str | None = None) -> JsonO
     remote = "" if project_id is not None else git_remote(git_root)
     project_id = validate_project_id(project_id) if project_id is not None else project_id_from_remote(remote)
     project_dir = vault / "projects" / project_id
-    project_dir.mkdir(parents=True)
-    write_new_file(
-        project_dir / "index.md",
-        render_memory(
-            {"okf_version": OKF_VERSION},
-            parent_index_body(
-                project_id,
-                directory_index_entries(
-                    MEMORY_TYPE_DIRECTORY_NAMES,
-                    index_descriptions(MemoryScope.PROJECT),
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    project_index = project_dir / "index.md"
+    if not project_index.exists():
+        project_index.write_text(
+            render_memory(
+                {"okf_version": OKF_VERSION},
+                parent_index_body(
+                    project_id,
+                    directory_index_entries(
+                        MEMORY_TYPE_DIRECTORY_NAMES,
+                        index_descriptions(MemoryScope.PROJECT),
+                    ),
                 ),
             ),
-        ),
-    )
+            encoding="utf-8",
+        )
+
     for directory in MEMORY_TYPE_DIRECTORY_NAMES:
-        (project_dir / directory).mkdir()
-    write_section_indexes(project_dir, MEMORY_TYPE_DIRECTORY_NAMES)
+        dir_path = project_dir / directory
+        dir_path.mkdir(exist_ok=True)
+        sec_index = dir_path / "index.md"
+        if not sec_index.exists():
+            sec_index.write_text(
+                render_memory({"okf_version": OKF_VERSION}, leaf_index_body(section_title(directory))),
+                encoding="utf-8",
+            )
+
     install_project_agent_state_links(git_root, project_dir)
-    append_index_link(
-        vault / "index.md",
-        project_id,
-        f"projects/{project_id}/index.md",
-        "Project memory bundle.",
-    )
+
+    index_link_target = f"projects/{project_id}/index.md"
+    vault_index = vault / "index.md"
+    vault_index_content = vault_index.read_text(encoding="utf-8") if vault_index.is_file() else ""
+    if f"({index_link_target})" not in vault_index_content:
+        append_index_link(
+            vault_index,
+            project_id,
+            index_link_target,
+            "Project memory bundle.",
+        )
 
     write_agents_pointer(git_root, vault, project_id)
     append_project_record(
@@ -360,7 +416,14 @@ def init_project(vault: Path, cwd: Path, project_id: str | None = None) -> JsonO
         {"project_id": project_id, "root": str(git_root), "remote": remote},
     )
     index_zk_notebook(vault)
-    commit_vault_changes(vault, f"Register project {project_id}")
+
+    paths = [
+        vault / "index.md",
+        vault / "_meta" / "projects.toml",
+        project_index,
+    ] + [project_dir / directory / "index.md" for directory in MEMORY_TYPE_DIRECTORY_NAMES]
+
+    commit_vault_changes(vault, f"Register project {project_id}", paths=paths)
     return {
         "project_id": project_id,
         "vault": str(vault),
@@ -383,10 +446,35 @@ def add_memory(
     description = okf_description(content)
     metadata = note_metadata(config, scope, memory_type, title, description)
     body = f"# {title}\n\n{content}\n"
+
+    # Track existing state for rollback
+    index_path = directory / "index.md"
+    index_existed = index_path.exists()
+    old_index_content = index_path.read_text(encoding="utf-8") if index_existed else None
+    path_existed = path.exists()
+
     write_new_memory(path, metadata, body)
-    append_index_link(directory / "index.md", title, path.name, description)
-    index_zk_notebook(config.vault)
-    commit_vault_changes(config.vault, f"Record {scope.value} {memory_type.value} memory: {title}")
+    append_index_link(index_path, title, path.name, description)
+
+    try:
+        index_zk_notebook(config.vault)
+        commit_vault_changes(config.vault, f"Record {scope.value} {memory_type.value} memory: {title}", paths=[path, index_path])
+    except subprocess.CalledProcessError as e:
+        # Rollback!
+        run_checked_optional(["git", "reset", "HEAD", "--", str(path.relative_to(config.vault)), str(index_path.relative_to(config.vault))], cwd=config.vault)
+        if index_existed and old_index_content is not None:
+            index_path.write_text(old_index_content, encoding="utf-8")
+        elif not index_existed and index_path.exists():
+            index_path.unlink()
+
+        if not path_existed and path.exists():
+            path.unlink()
+
+        index_zk_notebook(config.vault)
+
+        git_stderr = e.stderr or ""
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
+
     return {"key": key, "path": str(path)}
 
 
@@ -455,7 +543,8 @@ def update_memory(
     content: str | None,
     cwd: Path,
 ) -> JsonObject:
-    assert title is not None or memory_type is not None or content is not None, "update requires at least one of --title, --type, or --content"
+    if title is None and memory_type is None and content is None:
+        raise MemoryOperationError("update requires at least one of --title, --type, or --content")
     config = load_project_config(cwd)
     transition = memory_transition(config, key, title, memory_type, content)
     if transition.new_key != transition.old_key:
@@ -463,22 +552,49 @@ def update_memory(
     write_memory(transition.destination_path, transition.metadata, transition.body)
     sync_memory_transition_indexes(transition)
     index_zk_notebook(config.vault)
-    commit_vault_changes(
-        config.vault,
-        f"Update {transition.scope.value} {transition.memory_type.value} memory: {transition.new_title}",
-    )
+
+    paths = [
+        transition.source_path,
+        transition.destination_path,
+        transition.source_path.parent / "index.md",
+        transition.destination_path.parent / "index.md",
+    ]
+    try:
+        commit_vault_changes(
+            config.vault,
+            f"Update {transition.scope.value} {transition.memory_type.value} memory: {transition.new_title}",
+            paths=paths,
+        )
+    except subprocess.CalledProcessError as e:
+        git_stderr = e.stderr or ""
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
+
     return {"key": transition.new_key, "path": str(transition.destination_path)}
 
 
 def delete_memory(key: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     path = config.vault / f"{key}.md"
-    document = read_memory(path)
-    title = metadata_string(document.metadata, "title")
-    remove_index_link(path.parent / "index.md", title)
-    iwe.delete(config.vault, key)
+    try:
+        document = read_memory(path)
+    except MalformedMemoryError:
+        remove_index_link_by_target(path.parent / "index.md", path.name)
+        if path.exists():
+            path.unlink()
+        commit_message = f"Delete memory: {key}"
+    else:
+        title = metadata_string(document.metadata, "title")
+        remove_index_link(path.parent / "index.md", title)
+        commit_message = f"Delete memory: {title}"
+        iwe.delete(config.vault, key)
+
     index_zk_notebook(config.vault)
-    commit_vault_changes(config.vault, f"Delete memory: {title}")
+    try:
+        commit_vault_changes(config.vault, commit_message, paths=[path, path.parent / "index.md"])
+    except subprocess.CalledProcessError as e:
+        git_stderr = e.stderr or ""
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
+
     return {"deleted": key}
 
 
@@ -855,7 +971,8 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
         extracted_keys.append(affected_key)
     assert extracted_keys, "split must create at least one extracted memory"
     index_zk_notebook(config.vault)
-    commit_vault_changes(config.vault, f"Split memory section: {section}")
+    paths = list(set([memory_path_for_key(config, k) for k in affected_keys] + [memory_path_for_key(config, k).parent / "index.md" for k in affected_keys]))
+    commit_vault_changes(config.vault, f"Split memory section: {section}", paths=paths)
     return {"key": key, "section": section, "output": json_list(affected_keys), "extracted": json_list(extracted_keys)}
 
 
@@ -863,7 +980,11 @@ def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     affected_keys = iwe.inline(config.vault, key, reference)
     index_zk_notebook(config.vault)
-    commit_vault_changes(config.vault, f"Merge memory reference: {reference}")
+    # Build pathspecs without asserting existence -- iwe.inline deletes the
+    # reference file, so memory_path_for_key() would fail on the merged-away key.
+    affected_paths = [config.vault / f"{k}.md" for k in affected_keys]
+    paths = list(set(affected_paths + [p.parent / "index.md" for p in affected_paths]))
+    commit_vault_changes(config.vault, f"Merge memory reference: {reference}", paths=paths)
     return {"key": key, "reference": reference, "output": json_list(affected_keys)}
 
 
@@ -915,7 +1036,13 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     write_new_memory(source_path, pointer_metadata, pointer_body)
     replace_index_link(source_path.parent / "index.md", title, title, source_path.name, pointer_description)
     index_zk_notebook(config.vault)
-    commit_vault_changes(config.vault, f"Move memory {key} to {destination_key}")
+    paths = [
+        source_path,
+        destination_path,
+        source_path.parent / "index.md",
+        destination_path.parent / "index.md",
+    ]
+    commit_vault_changes(config.vault, f"Move memory {key} to {destination_key}", paths=paths)
     return {"key": destination_key, "path": str(destination_path)}
 
 
@@ -994,9 +1121,38 @@ def run_checked(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[s
     return subprocess.run(args, cwd=cwd, check=True, text=True, capture_output=True)
 
 
-def commit_vault_changes(vault: Path, message: str) -> None:
-    run_checked(["git", "add", "--all", "."], cwd=vault)
-    run_checked(["git", "commit", "-m", message], cwd=vault)
+def run_checked_optional(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, cwd=cwd, check=False, text=True, capture_output=True)
+
+
+def commit_vault_changes(vault: Path, message: str, paths: list[Path] | None = None) -> None:
+    if paths is not None:
+        rel_paths = [
+            str(path.relative_to(vault))
+            for path in paths
+            if path.exists()
+            or run_checked_optional(
+                ["git", "ls-files", "--error-unmatch", str(path.relative_to(vault))],
+                cwd=vault,
+            ).returncode
+            == 0
+        ]
+        if not rel_paths:
+            return
+        for path in paths:
+            rel_path = path.relative_to(vault)
+            if str(rel_path) in rel_paths:
+                run_checked(["git", "add", "--", str(rel_path)], cwd=vault)
+        # Skip commit if there are no cached changes for these paths
+        diff_res = run_checked_optional(["git", "diff", "--cached", "--quiet", "--", *rel_paths], cwd=vault)
+        if diff_res.returncode != 0:
+            run_checked(["git", "commit", "-m", message, "--", *rel_paths], cwd=vault)
+    else:
+        run_checked(["git", "add", "--all", "."], cwd=vault)
+        # Skip commit if there are no cached changes in the vault
+        diff_res = run_checked_optional(["git", "diff", "--cached", "--quiet"], cwd=vault)
+        if diff_res.returncode != 0:
+            run_checked(["git", "commit", "-m", message], cwd=vault)
 
 
 def configure_vault_git(vault: Path) -> None:
@@ -1083,6 +1239,9 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         f"{add_examples}"
         "```\n\n"
         "Use `agent-memory retrieve <key>`, `agent-memory update <key>`, and `agent-memory delete <key>` for memory CRUD.\n\n"
+        "The vault should be committed at all times. Treat staged or unstaged vault changes as an ephemeral error state. "
+        f"Before normal memory work resumes, load the bundled vault-maintenance skill with `{VAULT_MAINTENANCE_SKILL_COMMAND}` "
+        "and follow its referenced check, repair, and commit workflows.\n\n"
         "Move reusable lessons during maintenance with:\n\n"
         "```bash\n"
         "agent-memory maintain move <key> --to global/advice\n"
@@ -1191,6 +1350,21 @@ def remove_index_link(index_path: Path, title: str) -> None:
     lines, entry_start = locate_index_link(index_path, title)
     del lines[entry_start]
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def remove_index_link_by_target(index_path: Path, target: str) -> None:
+    if not index_path.is_file():
+        return
+    lines = index_path.read_text(encoding="utf-8").splitlines()
+    matching_indexes = []
+    for index, line in enumerate(lines):
+        striped = line.strip()
+        if (striped.startswith("* [") or striped.startswith("- [")) and f"]({target})" in striped:
+            matching_indexes.append(index)
+    if matching_indexes:
+        for idx in reversed(matching_indexes):
+            del lines[idx]
+        index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def metadata_string(metadata: dict[str, MetadataValue], key: str) -> str:
@@ -1346,7 +1520,12 @@ def config_for_search_scope(scope: SearchScope, cwd: Path) -> ProjectConfig:
 
 def append_project_record(projects_file: Path, record: ProjectRecord) -> None:
     records = load_project_records(projects_file)
-    records.append(record)
+    existing = next((r for r in records if r["project_id"] == record["project_id"]), None)
+    if existing is not None:
+        existing["root"] = record["root"]
+        existing["remote"] = record["remote"]
+    else:
+        records.append(record)
     projects_file.write_text(tomli_w.dumps({"projects": records}), encoding="utf-8")
 
 
@@ -1553,22 +1732,35 @@ def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
 
 def read_memory(path: Path) -> MemoryDocument:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    assert lines[0].strip() == "---", "memory must start with frontmatter"
-    closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    parsed = yaml.safe_load("".join(lines[1:closing_index]))
-    assert isinstance(parsed, dict), "frontmatter must be a mapping"
+    if not lines or lines[0].strip() != "---":
+        raise MalformedMemoryError(path, "memory must start with frontmatter")
+    try:
+        closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+    except StopIteration as e:
+        raise MalformedMemoryError(path, "frontmatter must end with a closing delimiter") from e
+    try:
+        parsed = yaml.safe_load("".join(lines[1:closing_index]))
+    except yaml.YAMLError as e:
+        raise MalformedMemoryError(path, "frontmatter must be valid YAML") from e
+    if not isinstance(parsed, dict):
+        raise MalformedMemoryError(path, "frontmatter must be a mapping")
     metadata: dict[str, MetadataValue] = {}
     for key, value in parsed.items():
-        assert isinstance(key, str), "frontmatter keys must be strings"
+        if not isinstance(key, str):
+            raise MalformedMemoryError(path, "frontmatter keys must be strings")
         if isinstance(value, datetime):
-            assert key == "timestamp", "only timestamp may be parsed as a YAML datetime"
-            assert value.tzinfo is not None, "timestamp must include timezone information"
+            if key != "timestamp":
+                raise MalformedMemoryError(path, "only timestamp may be parsed as a YAML datetime")
+            if value.tzinfo is None:
+                raise MalformedMemoryError(path, "timestamp must include timezone information")
             metadata[key] = value.isoformat().replace("+00:00", "Z")
         elif isinstance(value, list):
-            assert all(isinstance(item, str) for item in value), "frontmatter lists must contain strings"
+            if not all(isinstance(item, str) for item in value):
+                raise MalformedMemoryError(path, "frontmatter lists must contain strings")
             metadata[key] = value
         else:
-            assert isinstance(value, str | bool), "frontmatter values must be strings, booleans, datetimes, or string lists"
+            if not isinstance(value, str | bool):
+                raise MalformedMemoryError(path, "frontmatter values must be strings, booleans, datetimes, or string lists")
             metadata[key] = value
     body = "".join(lines[closing_index + 1 :])
     return MemoryDocument(metadata=metadata, body=body)
@@ -2035,27 +2227,54 @@ def append_list_field(fields: dict[str, object], key: str, value: str) -> None:
     bucket.append(value)
 
 
-def parse_card_fields(cards_config: CardSystemConfig, type_name: str, assignments: Sequence[str]) -> dict[str, object]:
+def parse_card_fields(
+    cards_config: CardSystemConfig,
+    type_name: str,
+    assignments: Sequence[str],
+    empty_set: Sequence[str] | None = None,
+) -> dict[str, object]:
     spec = next((card_type for card_type in cards_config.card_types if card_type.name == type_name), None)
     assert spec is not None, f"unknown card type: {type_name}"
     field_types = {field.name: field.type for field in spec.fields}
     fields: dict[str, object] = {}
     for assignment in assignments:
-        assert "=" in assignment, f"field assignment must be key=value: {assignment}"
+        if "=" not in assignment:
+            raise CardFieldError(f"field assignment must be key=value: {assignment}")
         key, value = assignment.split("=", 1)
-        assert key in field_types, f"unknown field {key} for card type {type_name}"
+        if key not in field_types:
+            raise CardFieldError(f"unknown field {key} for card type {type_name}")
         field_type = field_types[key]
         if field_type in ("string_list", "wikilink_list"):
             append_list_field(fields, key, value)
         else:
-            fields[key] = coerce_scalar_field(field_type, value)
+            try:
+                fields[key] = coerce_scalar_field(field_type, value)
+            except ValueError as e:
+                if field_type not in ("int", "number"):
+                    raise
+                raise CardFieldError(f"field {key} expects {field_type} value, got {value}") from e
+
+    if empty_set is not None:
+        for key in empty_set:
+            if key not in field_types:
+                raise CardFieldError(f"unknown field {key} for card type {type_name}")
+            fields[key] = []
+
     return fields
 
 
-def add_plan_card(type_name: str, card_id: str, parent_id: str | None, assignments: Sequence[str], body: str, cwd: Path) -> JsonObject:
+def add_plan_card(
+    type_name: str,
+    card_id: str,
+    parent_id: str | None,
+    assignments: Sequence[str],
+    body: str,
+    cwd: Path,
+    empty_set: Sequence[str] | None = None,
+) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system()
-    fields = parse_card_fields(cards_config, type_name, assignments)
+    fields = parse_card_fields(cards_config, type_name, assignments, empty_set=empty_set)
     path = create_card(
         project_plans_root(config, cards_config),
         cards_config,
@@ -2066,7 +2285,25 @@ def add_plan_card(type_name: str, card_id: str, parent_id: str | None, assignmen
         fields=fields,
         body=body,
     )
-    commit_vault_changes(config.vault, f"Add {type_name} card: {card_id}")
+
+    try:
+        commit_vault_changes(config.vault, f"Add {type_name} card: {card_id}", paths=[path])
+    except subprocess.CalledProcessError as e:
+        # Rollback!
+        run_checked_optional(["git", "reset", "HEAD", "--", str(path.relative_to(config.vault))], cwd=config.vault)
+        if path.exists():
+            path.unlink()
+            # Clean up empty parent directories if created
+            parent_dir = path.parent
+            while parent_dir != config.vault:
+                try:
+                    parent_dir.rmdir()
+                    parent_dir = parent_dir.parent
+                except OSError:
+                    break
+        git_stderr = e.stderr or ""
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
+
     return {"id": card_id, "path": str(path)}
 
 
@@ -2076,15 +2313,17 @@ def update_plan_card(card_id: str, assignments: Sequence[str], cwd: Path) -> Jso
     type_name = card_type_for_id(cards_config, card_id).name
     updates = parse_card_fields(cards_config, type_name, assignments)
     path = update_card(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
-    commit_vault_changes(config.vault, f"Update plan card: {card_id}")
+    commit_vault_changes(config.vault, f"Update plan card: {card_id}", paths=[path])
     return {"id": card_id, "path": str(path)}
 
 
 def delete_plan_card(card_id: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, _models = load_card_system()
-    delete_card(project_plans_root(config, cards_config), card_id)
-    commit_vault_changes(config.vault, f"Delete plan card: {card_id}")
+    plans_root = project_plans_root(config, cards_config)
+    path = find_card_path(plans_root, card_id)
+    path.unlink()
+    commit_vault_changes(config.vault, f"Delete plan card: {card_id}", paths=[path])
     return {"deleted": card_id}
 
 
@@ -2104,7 +2343,7 @@ def write_plan_dag(cwd: Path) -> JsonObject:
     plans_root.mkdir(parents=True, exist_ok=True)
     path = plans_root / PLAN_DAG_FILENAME
     path.write_text(render_dag(records), encoding="utf-8")
-    commit_vault_changes(config.vault, "Update plan DAG")
+    commit_vault_changes(config.vault, "Update plan DAG", paths=[path])
     return {"path": str(path)}
 
 
@@ -2112,5 +2351,5 @@ def migrate_plan_cards(source: Path, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system()
     paths = migrate_plans(source, project_plans_root(config, cards_config), cards_config, models)
-    commit_vault_changes(config.vault, f"Migrate {len(paths)} plan cards")
+    commit_vault_changes(config.vault, f"Migrate {len(paths)} plan cards", paths=paths)
     return {"migrated": json_list([str(path) for path in paths])}

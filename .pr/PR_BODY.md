@@ -1,32 +1,39 @@
 ## Implementation plan
 
-This PR owns the Config & Path Resolution implementation unit.
+This PR owns the CLI Robustness & Vault Integrity implementation unit.
 
-- [x] #38: add a failing CLI-boundary reproducer for a git repository with no origin remote so project-scoped plan storage cannot silently degrade to global scope.
-- [x] #38: implement stable no-origin project identity through an explicit init-time project id or existing registry binding, with loud failure when neither exists.
-- [x] #18: remove the runtime dependence on repo-local .agent-memory.toml where project identity and vault binding can be resolved from authoritative registry/symlink/global config state.
-- [x] #29: normalize vault paths at the config boundary so literal ~ paths are not materialized under cwd.
-- [x] Run `just test-ci` and update evidence below.
+- [x] #24: make vault writes atomic when `add` reaches git commit failure and preserve unrelated staged vault changes.
+- [x] #21: delete malformed/frontmatter-less memory notes without leaking parser assertions or leaving stale index links.
+- [x] #19: make project initialization reconcile an existing project vault directory.
+- [x] #20: document plan-card required fields/status values, cleanly report invalid plan field input, and add `--body-file`.
+- [x] #30: improve recurring CLI misuse diagnostics for command/option mistakes.
+- [x] Run `just test` and update evidence below.
 
 ## Scope
 
-- **Target issue set / subtree:** Epic #32 and children #18, #29, #38
-- **GitHub milestone:** Config & Path Resolution
-- **Issues to close on merge:** Closes #18, closes #29, closes #38
-- **Broader parent referenced only:** #32 epic
+- **Target issue set / subtree:** Epic #31 and children #24, #21, #20, #19, #30
+- **GitHub milestone:** CLI Robustness & Vault Integrity
+- **Issues to close on merge:** Closes #24, closes #21, closes #20, closes #19, closes #30
+- **Broader parent referenced only:** Refs #31 epic
 
 ## Claim map
 
-- [x] **#38 - no-origin project identity preserves project-scoped plan storage**
-  - Proof obligations claimed: no-origin repos initialize only with a stable explicit/existing identity; project plan cards land under the project vault area; missing identity fails before any global write.
-  - Evidence: red reproducer and green implementation commits on this branch; `just test-ci` passed.
-- [x] **#18 - config resolves without repo-local .agent-memory.toml**
-  - Proof obligations claimed: bound project config resolves from authoritative registry/symlink/global config state, not a checked-in repo-local TOML file.
-  - Evidence: red reproducer and green implementation commits on this branch; `just test-ci` passed.
-- [x] **#29 - vault paths are normalized at the boundary**
-  - Proof obligations claimed: default_vault and configured vault paths do not expose or materialize literal ~ directories under cwd.
-  - Evidence: red reproducer and green implementation commits on this branch; `just test-ci` passed.
+- [x] **#24 - atomic vault writes preserve clean state on commit failure**
+  - Proof obligations claimed: forced vault commit failure leaves no partial memory file and does not commit unrelated staged vault content.
+  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
+- [x] **#21 - malformed note deletion is typed and index-clean**
+  - Proof obligations claimed: deleting a frontmatter-less linked memory removes the file and index link through a typed malformed-memory path, without catching `AssertionError`.
+  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
+- [x] **#19 - project init reconciles existing vault directories**
+  - Proof obligations claimed: `init project` handles pre-existing project vault directories and remains idempotent.
+  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
+- [x] **#20 - plan add help and validation are discoverable**
+  - Proof obligations claimed: `plan add --help` lists required fields/status values, invalid field values produce clean field-level errors, and `--body-file` populates card bodies.
+  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
+- [x] **#30 - CLI misuse diagnostics are actionable**
+  - Proof obligations claimed: common command/option mistakes report concrete parser guidance without raw tracebacks or assertion class names.
+  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
 
 ## Exclusions / split conditions
 
-CLI command crash/atomicity hardening is out of scope and remains under CLI Robustness & Vault Integrity.
+Config & Path Resolution is out of scope and remains under epic #32.
