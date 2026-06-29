@@ -1463,6 +1463,29 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
     assert not timer_path.exists()
 
 
+def test_doctor_reports_sync_auto_status_after_systemd_install(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    xdg_config_home = tmp_path / "xdg-config"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    remote = initialized_bare_remote(tmp_path, "doctor-systemd-vault-remote.git")
+    configure_vault_remote(vault, remote)
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+    env["XDG_CONFIG_HOME"] = str(xdg_config_home)
+
+    installed = run_agent_memory_subprocess(loose, "sync", "install", "300", env=env)
+    doctor_result = run_agent_memory_subprocess(loose, "doctor", env=env)
+
+    assert installed.returncode == 0
+    assert doctor_result.returncode == 0
+    doctor = parse_json_stdout(doctor_result)
+    assert doctor["vault"] == str(vault)
+    assert doctor["project_bound"] is False
+    assert doctor["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300)
+
+
 def test_sync_run_pushes_conflict_branch_and_restores_main_when_rebase_conflicts(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     remote = initialized_bare_remote(tmp_path, "conflict-vault-remote.git")
