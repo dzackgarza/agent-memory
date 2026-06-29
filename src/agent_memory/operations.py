@@ -1160,6 +1160,14 @@ def git_status_entries(repo: Path) -> tuple[str, ...]:
     return tuple(line for line in result.stdout.splitlines() if line)
 
 
+def git_status_records(repo: Path) -> list[JsonObject]:
+    records: list[JsonObject] = []
+    for entry in git_status_entries(repo):
+        assert len(entry) >= 4, f"unexpected git status entry shape: repo={repo}; entry={entry!r}"
+        records.append({"status": entry[:2], "path": entry[3:]})
+    return records
+
+
 def git_current_branch(repo: Path) -> str:
     result = run_checked(["git", "branch", "--show-current"], cwd=repo)
     branch = result.stdout.strip()
@@ -1167,8 +1175,46 @@ def git_current_branch(repo: Path) -> str:
     return branch
 
 
+def git_upstream(repo: Path) -> str:
+    result = run_checked(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd=repo)
+    upstream = result.stdout.strip()
+    assert upstream, f"git repository must have an upstream branch: {repo}"
+    return upstream
+
+
+def git_ahead_behind(repo: Path) -> tuple[int, int]:
+    result = run_checked(["git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}"], cwd=repo)
+    parts = result.stdout.split()
+    assert len(parts) == 2, f"unexpected git ahead/behind output: repo={repo}; output={result.stdout!r}"
+    ahead, behind = (int(part) for part in parts)
+    return ahead, behind
+
+
 def git_head(repo: Path) -> str:
     return run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+
+
+def sync_status(cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    assert_vault_zk_initialized(config.vault)
+    vault = config.vault
+    changes = git_status_records(vault)
+    ahead, behind = git_ahead_behind(vault)
+    return {
+        "vault": str(vault),
+        "initialized": True,
+        "project_bound": True,
+        "git": {
+            "remote": git_remote(vault),
+            "branch": git_current_branch(vault),
+            "head": git_head(vault),
+            "upstream": git_upstream(vault),
+            "ahead": ahead,
+            "behind": behind,
+            "worktree_clean": not changes,
+            "changes": changes,
+        },
+    }
 
 
 def sync_vault(cwd: Path) -> JsonObject:

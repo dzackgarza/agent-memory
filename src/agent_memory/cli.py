@@ -64,6 +64,7 @@ from agent_memory.operations import (
     search_memories,
     search_metadata,
     split_memory,
+    sync_status,
     sync_vault,
     squash_memory,
     update_memory,
@@ -465,6 +466,11 @@ def sync_run_command() -> None:
     emit(sync_vault(cwd=Path.cwd()))
 
 
+def sync_status_command() -> None:
+    """Report the configured vault's current git synchronization state."""
+    emit(sync_status(cwd=Path.cwd()))
+
+
 def register_commands() -> None:
     maintain_app.command(maintain_init_global, name="init-global")
     maintain_app.command(maintain_skill_command, name="skill")
@@ -502,6 +508,7 @@ def register_commands() -> None:
     plan_app.command(plan_dag_command, name="dag")
     plan_app.command(plan_migrate_command, name="migrate")
     sync_app.command(sync_run_command, name="run")
+    sync_app.command(sync_status_command, name="status")
     app.command(doctor_command, name="doctor")
 
 
