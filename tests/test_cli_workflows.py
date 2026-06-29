@@ -650,8 +650,8 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     no_update = run_agent_memory_subprocess(workspace.repo, "update", retagged_key)
     assert no_update.returncode != 0
     assert "update requires at least one of --title, --type, or --content" in no_update.stderr
-    assert "AssertionError" in no_update.stderr
-    assert "Traceback" in no_update.stderr
+    assert "AssertionError" not in no_update.stderr
+    assert "Traceback" not in no_update.stderr
 
 
 def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
@@ -1025,8 +1025,8 @@ def test_project_commands_without_config_fail_with_first_time_setup_guidance(
     assert result.returncode != 0
     assert "No project memory config found" in result.stderr
     assert "agent-memory init project --vault" in result.stderr
-    assert "ProjectNotInitializedError" in result.stderr
-    assert "Traceback" in result.stderr
+    assert "ProjectNotInitializedError" not in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_startup_doctor_gate_reports_missing_dependency_before_command_logic(
@@ -1045,8 +1045,8 @@ def test_startup_doctor_gate_reports_missing_dependency_before_command_logic(
     assert result.returncode != 0
     assert "Missing required dependency: git" in result.stderr
     assert "Install instructions: run `just setup` from the agent-memory checkout" in result.stderr
-    assert "DependencyError" in result.stderr
-    assert "Traceback" in result.stderr
+    assert "DependencyError" not in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_startup_doctor_gate_reports_failed_dependency_output(tmp_path: Path) -> None:
@@ -1068,8 +1068,8 @@ def test_startup_doctor_gate_reports_failed_dependency_output(tmp_path: Path) ->
     assert "Command: git --version" in result.stderr
     assert "bad git stdout" in result.stderr
     assert "bad git stderr" in result.stderr
-    assert "DependencyError" in result.stderr
-    assert "Traceback" in result.stderr
+    assert "DependencyError" not in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_load_project_config_raises_project_not_initialized(tmp_path: Path) -> None:
@@ -1801,11 +1801,11 @@ def test_delete_malformed_note_without_frontmatter(tmp_path: Path) -> None:
     note_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "malformed.md"
     note_path.parent.mkdir(parents=True, exist_ok=True)
     note_path.write_text("No frontmatter here\njust plain text\n", encoding="utf-8")
-    
+
     # Manually link it in the index.md
     index_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
     index_path.write_text(index_path.read_text("utf-8") + "\n* [Malformed](malformed.md) - description\n", encoding="utf-8")
-    
+
     # Commit the manual addition to keep vault clean
     subprocess.run(["git", "add", "."], cwd=workspace.vault, check=True)
     subprocess.run(["git", "commit", "-m", "Manual malformed note addition"], cwd=workspace.vault, check=True)
@@ -1828,31 +1828,31 @@ def test_init_project_idempotent_when_vault_dir_exists(tmp_path: Path) -> None:
     git_repo = initialized_git_repo(tmp_path)
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
-    
+
     # Manually create the vault project directory beforehand
     project_dir = vault / "projects" / git_repo.project_id
     project_dir.mkdir(parents=True)
-    
+
     # Initialize project memory (should reconcile instead of crashing with FileExistsError)
     run_agent_memory(git_repo.path, "init", "project", "--vault", str(vault))
-    
+
     # Assert binding was created
     assert (git_repo.path / ".agent-memory.toml").exists()
-    
+
     # Rerun the initialization (should be idempotent and exit 0)
     run_agent_memory(git_repo.path, "init", "project", "--vault", str(vault))
 
 
 def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    
+
     # Scenario 1: plan add --help documents required fields & enums
     help_result = run_agent_memory_subprocess(workspace.repo, "plan", "add", "--help")
     assert "status" in help_result.stdout
     assert "parents" in help_result.stdout
     assert "successCriteria" in help_result.stdout
     assert "needs-human-input" in help_result.stdout or "blocked" in help_result.stdout
-    
+
     # Scenario 2: bad enum validation produces clean field-level error without traceback
     invalid_enum = run_agent_memory_subprocess(
         workspace.repo,
@@ -1876,7 +1876,7 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     assert "AssertionError" not in invalid_enum.stderr
     assert "status" in invalid_enum.stderr
     assert "bogus" in invalid_enum.stderr
-    
+
     # Scenario 3: malformed --set input does not escape as Cyclopts AssertionError
     malformed_set = run_agent_memory_subprocess(
         workspace.repo,
@@ -1894,11 +1894,11 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         "successCriteria=arrows -> criteria",
     )
     assert "AssertionError" not in malformed_set.stderr
-    
+
     # Scenario 4: body file support
     body_file = tmp_path / "body.md"
     body_file.write_text("### Markdown body from file\nWith some content\n", encoding="utf-8")
-    
+
     run_agent_memory(
         workspace.repo,
         "plan",
@@ -1925,7 +1925,7 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
 
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    
+
     # Scenario 1: add --type instead of --scope
     r1 = run_agent_memory_subprocess(
         workspace.repo,
@@ -1940,22 +1940,21 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     assert r1.returncode != 0
     assert "Unknown option: --type" in r1.stderr
     assert "Did you mean --scope?" in r1.stderr
-    
+
     # Scenario 2: missing modes/arguments
     r2 = run_agent_memory_subprocess(workspace.repo, "search", "content")
     assert r2.returncode != 0
     assert "requires an argument" in r2.stderr
     assert "--mode" in r2.stderr
-    
+
     # Scenario 3: invalid search mode
     r3 = run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", "substring")
     assert r3.returncode != 0
     assert "exact" in r3.stderr
     assert "fuzzy" in r3.stderr
-    
+
     # Scenario 4: unknown commands list
     r4 = run_agent_memory_subprocess(workspace.repo, "list")
     assert r4.returncode != 0
-    assert "Unknown command \"list\"" in r4.stderr
+    assert 'Unknown command "list"' in r4.stderr
     assert "Available commands" in r4.stderr
-

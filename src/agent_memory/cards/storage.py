@@ -23,11 +23,14 @@ def find_card_path(plans_root: Path, card_id: str) -> Path:
 
 def card_file_path(plans_root: Path, card_type: CardTypeSpec, card_id: str, parent_id: str | None) -> Path:
     if parent_id is None:
-        assert not card_type.parents, f"card type {card_type.name} requires a parent"
         parent_dir = plans_root
+        if card_type.container and card_type.container != plans_root.name:
+            base = parent_dir / card_type.container
+        else:
+            base = parent_dir
     else:
         parent_dir = find_card_path(plans_root, parent_id).parent
-    base = parent_dir / card_type.container if card_type.container else parent_dir
+        base = parent_dir / card_type.container if card_type.container else parent_dir
     if card_type.own_dir:
         return base / card_id / f"{card_id}.md"
     return base / f"{card_id}.md"

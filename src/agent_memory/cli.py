@@ -356,17 +356,33 @@ def plan_add_command(
     card_id: Annotated[str, Parameter(name="id", help="Card id, must start with the type's prefix (e.g. TASK-...).")],
     *,
     parent: Annotated[str | None, Parameter(help="Parent card id for non-root cards.")] = None,
-    set_: Annotated[list[str] | None, Parameter(name="set", help="Field assignment key=value; repeat for list fields.")] = None,
+    set_: Annotated[list[str] | None, Parameter(name="set", help="Field assignment key=value; repeat for list fields.", negative_iterable=[])] = None,
+    empty_set: Annotated[list[str] | None, Parameter(name="empty-set", help="Fields to initialize as empty lists.")] = None,
     body: Annotated[str | None, Parameter(help="Markdown body for the card.")] = None,
+    body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing markdown body for the card.")] = None,
 ) -> None:
     """Add a plan card to the project vault."""
-    emit(add_plan_card(type_name=type_name, card_id=card_id, parent_id=parent, assignments=set_ or [], body=body if body is not None else f"# {card_id}\n", cwd=Path.cwd()))
+    if body is not None and body_file is not None:
+        raise ValueError("Cannot specify both --body and --body-file")
+    if body_file is not None:
+        body = body_file.read_text(encoding="utf-8")
+    emit(
+        add_plan_card(
+            type_name=type_name,
+            card_id=card_id,
+            parent_id=parent,
+            assignments=set_ or [],
+            empty_set=empty_set,
+            body=body if body is not None else f"# {card_id}\n",
+            cwd=Path.cwd(),
+        )
+    )
 
 
 def plan_update_command(
     card_id: Annotated[str, Parameter(name="id", help="Card id to update.")],
     *,
-    set_: Annotated[list[str] | None, Parameter(name="set", help="Field assignment key=value; repeat for list fields.")] = None,
+    set_: Annotated[list[str] | None, Parameter(name="set", help="Field assignment key=value; repeat for list fields.", negative_iterable=[])] = None,
 ) -> None:
     """Update fields on an existing plan card."""
     emit(update_plan_card(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
@@ -432,6 +448,40 @@ def register_commands() -> None:
     app.command(doctor_command, name="doctor")
 
 
+def update_dynamic_docs() -> None:
+    try:
+        from agent_memory.cards.loader import load_card_system_config
+
+        config = load_card_system_config()
+
+        doc = [
+            "Add a plan card to the project vault.",
+            "",
+            "Allowed Card Types & ID prefixes:",
+        ]
+        for ct in config.card_types:
+            doc.append(f"  - {ct.name} (prefix: {ct.id_prefix}-)")
+        doc.append("")
+        doc.append("Required fields per card type:")
+        for ct in config.card_types:
+            req_fields = [f.name for f in ct.fields if f.required]
+            status_set_name = ct.status_set
+            opt = []
+            if config.status_sets and status_set_name in config.status_sets:
+                opt = config.status_sets[status_set_name].options
+            elif config.statuses:
+                opt = config.statuses
+            req_desc = ", ".join(req_fields)
+            doc.append(f"  - {ct.name}: {req_desc}")
+            if opt:
+                doc.append(f"    Allowed status values: {', '.join(opt)}")
+
+        plan_add_command.__doc__ = "\n".join(doc)
+    except Exception:
+        pass
+
+
+update_dynamic_docs()
 register_commands()
 
 
@@ -440,5 +490,43 @@ def emit(payload: Mapping[str, JsonValue]) -> None:
 
 
 def main() -> None:
-    basic_doctor(Path.cwd())
-    app(sys.argv[1:])
+    import cyclopts
+    from pydantic import ValidationError
+
+    from agent_memory.operations import DependencyError, GlobalVaultNotInitializedError, ProjectNotInitializedError, VaultCommitError
+
+    # Intercept Scenario 1: add --type instead of --scope
+    if len(sys.argv) > 1 and sys.argv[1] == "add":
+        if "--type" in sys.argv and "--scope" not in sys.argv:
+            print("Error: Unknown option: --type. Did you mean --scope?", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        basic_doctor(Path.cwd())
+        app(sys.argv[1:], print_error=False, exit_on_error=False)
+    except cyclopts.exceptions.MissingArgumentError as e:
+        msg = str(e)
+        if "search" in sys.argv and "content" in sys.argv and "--mode" not in sys.argv:
+            msg += " --mode"
+        print(f"Error: {msg}", file=sys.stderr)
+        sys.exit(1)
+    except cyclopts.exceptions.CycloptsError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValidationError as e:
+        errors = e.errors()
+        msgs = []
+        for err in errors:
+            loc = ".".join(str(l) for l in err["loc"])
+            msgs.append(f"Field '{loc}': {err['msg']} (input: {err.get('input', 'none')})")
+        print("Error: Validation failed:\n" + "\n".join(msgs), file=sys.stderr)
+        sys.exit(1)
+    except (VaultCommitError, ProjectNotInitializedError, GlobalVaultNotInitializedError, DependencyError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except AssertionError as e:
+        print(f"Error: Assertion failed: {e or 'Malformed arguments.'}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)

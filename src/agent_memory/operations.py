@@ -23,7 +23,7 @@ from agent_memory.cards.dag import PLAN_DAG_FILENAME, render_dag
 from agent_memory.cards.factory import build_card_models
 from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
-from agent_memory.cards.storage import card_type_for_id, create_card, delete_card, find_card_path, update_card
+from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, update_card
 from agent_memory.cards.validation import load_card_records, validate_cards
 from agent_memory.models import (
     GlobalNoteMetadata,
@@ -330,7 +330,7 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
     project_id = project_id_from_remote(remote)
     project_dir = vault / "projects" / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
-    
+
     project_index = project_dir / "index.md"
     if not project_index.exists():
         project_index.write_text(
@@ -346,7 +346,7 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
             ),
             encoding="utf-8",
         )
-        
+
     for directory in MEMORY_TYPE_DIRECTORY_NAMES:
         dir_path = project_dir / directory
         dir_path.mkdir(exist_ok=True)
@@ -356,9 +356,9 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
                 render_memory({"okf_version": OKF_VERSION}, leaf_index_body(section_title(directory))),
                 encoding="utf-8",
             )
-            
+
     install_project_agent_state_links(git_root, project_dir)
-    
+
     index_link_target = f"projects/{project_id}/index.md"
     vault_index = vault / "index.md"
     vault_index_content = vault_index.read_text(encoding="utf-8") if vault_index.is_file() else ""
@@ -378,23 +378,23 @@ def init_project(vault: Path, cwd: Path) -> JsonObject:
         search_max_results=starter.search_max_results,
         search_max_tokens=starter.search_max_tokens,
     )
-    
+
     config_path = git_root / ".agent-memory.toml"
     config_path.write_text(tomli_w.dumps(config.to_toml_payload()), encoding="utf-8")
-    
+
     write_agents_pointer(git_root, vault, project_id)
     append_project_record(
         vault / "_meta" / "projects.toml",
         {"project_id": project_id, "root": str(git_root), "remote": remote},
     )
     index_zk_notebook(vault)
-    
+
     paths = [
         vault / "index.md",
         vault / "_meta" / "projects.toml",
         project_index,
     ] + [project_dir / directory / "index.md" for directory in MEMORY_TYPE_DIRECTORY_NAMES]
-    
+
     commit_vault_changes(vault, f"Register project {project_id}", paths=paths)
     return {
         "project_id": project_id,
@@ -427,7 +427,7 @@ def add_memory(
 
     write_new_memory(path, metadata, body)
     append_index_link(index_path, title, path.name, description)
-    
+
     try:
         index_zk_notebook(config.vault)
         commit_vault_changes(config.vault, f"Record {scope.value} {memory_type.value} memory: {title}", paths=[path, index_path])
@@ -438,22 +438,17 @@ def add_memory(
             index_path.write_text(old_index_content, encoding="utf-8")
         elif not index_existed and index_path.exists():
             index_path.unlink()
-            
+
         if not path_existed and path.exists():
             path.unlink()
-            
+
         index_zk_notebook(config.vault)
-        
+
         git_stderr = e.stderr or ""
         hint = ""
         if "gpg" in git_stderr.lower() or "signing" in git_stderr.lower():
-            hint = (
-                "\nConfigure a signing key/agent for non-interactive use, or disable "
-                "signing for the vault (git -C <vault> config commit.gpgsign false)."
-            )
-        raise VaultCommitError(
-            f"Vault commit failed: {git_stderr.strip()}{hint}"
-        ) from e
+            hint = "\nConfigure a signing key/agent for non-interactive use, or disable signing for the vault (git -C <vault> config commit.gpgsign false)."
+        raise VaultCommitError(f"Vault commit failed: {git_stderr.strip()}{hint}") from e
 
     return {"key": key, "path": str(path)}
 
@@ -531,7 +526,7 @@ def update_memory(
     write_memory(transition.destination_path, transition.metadata, transition.body)
     sync_memory_transition_indexes(transition)
     index_zk_notebook(config.vault)
-    
+
     paths = [
         transition.source_path,
         transition.destination_path,
@@ -547,7 +542,7 @@ def update_memory(
     except subprocess.CalledProcessError as e:
         git_stderr = e.stderr or ""
         raise VaultCommitError(f"Vault commit failed: {git_stderr.strip()}") from e
-        
+
     return {"key": transition.new_key, "path": str(transition.destination_path)}
 
 
@@ -565,14 +560,14 @@ def delete_memory(key: str, cwd: Path) -> JsonObject:
         if path.exists():
             path.unlink()
         commit_message = f"Delete memory: {key}"
-        
+
     index_zk_notebook(config.vault)
     try:
         commit_vault_changes(config.vault, commit_message, paths=[path, path.parent / "index.md"])
     except subprocess.CalledProcessError as e:
         git_stderr = e.stderr or ""
         raise VaultCommitError(f"Vault commit failed: {git_stderr.strip()}") from e
-        
+
     return {"deleted": key}
 
 
@@ -958,7 +953,10 @@ def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     affected_keys = iwe.inline(config.vault, key, reference)
     index_zk_notebook(config.vault)
-    paths = list(set([memory_path_for_key(config, k) for k in affected_keys] + [memory_path_for_key(config, k).parent / "index.md" for k in affected_keys]))
+    # Build pathspecs without asserting existence -- iwe.inline deletes the
+    # reference file, so memory_path_for_key() would fail on the merged-away key.
+    affected_paths = [config.vault / f"{k}.md" for k in affected_keys]
+    paths = list(set(affected_paths + [p.parent / "index.md" for p in affected_paths]))
     commit_vault_changes(config.vault, f"Merge memory reference: {reference}", paths=paths)
     return {"key": key, "reference": reference, "output": json_list(affected_keys)}
 
@@ -1106,7 +1104,16 @@ def commit_vault_changes(vault: Path, message: str, paths: list[Path] | None = N
             if path.exists():
                 rel_path = path.relative_to(vault)
                 run_checked(["git", "add", str(rel_path)], cwd=vault)
-        rel_paths = [str(p.relative_to(vault)) for p in paths if p.exists() or run_checked_optional(["git", "ls-files", "--error-unmatch", str(p.relative_to(vault))], cwd=vault).returncode == 0]
+        rel_paths = [
+            str(p.relative_to(vault))
+            for p in paths
+            if p.exists()
+            or run_checked_optional(
+                ["git", "ls-files", "--error-unmatch", str(p.relative_to(vault))],
+                cwd=vault,
+            ).returncode
+            == 0
+        ]
         if rel_paths:
             # Skip commit if there are no cached changes for these paths
             diff_res = run_checked_optional(["git", "diff", "--cached", "--quiet", "--", *rel_paths], cwd=vault)
@@ -2151,27 +2158,49 @@ def append_list_field(fields: dict[str, object], key: str, value: str) -> None:
     bucket.append(value)
 
 
-def parse_card_fields(cards_config: CardSystemConfig, type_name: str, assignments: Sequence[str]) -> dict[str, object]:
+def parse_card_fields(
+    cards_config: CardSystemConfig,
+    type_name: str,
+    assignments: Sequence[str],
+    empty_set: Sequence[str] | None = None,
+) -> dict[str, object]:
     spec = next((card_type for card_type in cards_config.card_types if card_type.name == type_name), None)
     assert spec is not None, f"unknown card type: {type_name}"
     field_types = {field.name: field.type for field in spec.fields}
     fields: dict[str, object] = {}
     for assignment in assignments:
-        assert "=" in assignment, f"field assignment must be key=value: {assignment}"
+        if "=" not in assignment:
+            raise ValueError(f"field assignment must be key=value: {assignment}")
         key, value = assignment.split("=", 1)
-        assert key in field_types, f"unknown field {key} for card type {type_name}"
+        if key not in field_types:
+            raise ValueError(f"unknown field {key} for card type {type_name}")
         field_type = field_types[key]
         if field_type in ("string_list", "wikilink_list"):
             append_list_field(fields, key, value)
         else:
             fields[key] = coerce_scalar_field(field_type, value)
+
+    if empty_set is not None:
+        for key in empty_set:
+            if key not in field_types:
+                raise ValueError(f"unknown field {key} for card type {type_name}")
+            fields[key] = []
+
     return fields
 
 
-def add_plan_card(type_name: str, card_id: str, parent_id: str | None, assignments: Sequence[str], body: str, cwd: Path) -> JsonObject:
+def add_plan_card(
+    type_name: str,
+    card_id: str,
+    parent_id: str | None,
+    assignments: Sequence[str],
+    body: str,
+    cwd: Path,
+    empty_set: Sequence[str] | None = None,
+) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system()
-    fields = parse_card_fields(cards_config, type_name, assignments)
+    fields = parse_card_fields(cards_config, type_name, assignments, empty_set=empty_set)
     path = create_card(
         project_plans_root(config, cards_config),
         cards_config,
@@ -2182,7 +2211,7 @@ def add_plan_card(type_name: str, card_id: str, parent_id: str | None, assignmen
         fields=fields,
         body=body,
     )
-    
+
     try:
         commit_vault_changes(config.vault, f"Add {type_name} card: {card_id}", paths=[path])
     except subprocess.CalledProcessError as e:
@@ -2201,13 +2230,8 @@ def add_plan_card(type_name: str, card_id: str, parent_id: str | None, assignmen
         git_stderr = e.stderr or ""
         hint = ""
         if "gpg" in git_stderr.lower() or "signing" in git_stderr.lower():
-            hint = (
-                "\nConfigure a signing key/agent for non-interactive use, or disable "
-                "signing for the vault (git -C <vault> config commit.gpgsign false)."
-            )
-        raise VaultCommitError(
-            f"Vault commit failed: {git_stderr.strip()}{hint}"
-        ) from e
+            hint = "\nConfigure a signing key/agent for non-interactive use, or disable signing for the vault (git -C <vault> config commit.gpgsign false)."
+        raise VaultCommitError(f"Vault commit failed: {git_stderr.strip()}{hint}") from e
 
     return {"id": card_id, "path": str(path)}
 
