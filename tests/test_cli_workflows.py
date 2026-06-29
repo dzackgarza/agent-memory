@@ -1954,6 +1954,39 @@ def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tm
     }
 
 
+def test_links_rewrite_repoints_wikilink_target_to_external_url(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    old_target = "global/references/externalized-roadmap"
+    external_url = "https://github.com/dzackgarza/agent-memory/issues/23"
+    source = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Externalized Link Source",
+        content=f"Roadmap moved from [[{old_target}]] to GitHub.",
+    )
+    source_key = project_memory_key(workspace, "decisions", "externalized-link-source")
+    source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "externalized-link-source.md"
+    index_path = source_path.parent / "index.md"
+
+    result = run_agent_memory_subprocess(workspace.repo, "links", "rewrite", "--from", old_target, "--to", external_url)
+
+    assert source["key"] == source_key
+    assert result.returncode == 0
+    assert parse_json_stdout(result) == {
+        "from": old_target,
+        "to": external_url,
+        "rewritten": [
+            {"path": str(source_path), "replacements": 2},
+            {"path": str(index_path), "replacements": 1},
+        ],
+    }
+    for path in (source_path, index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{old_target}]]" not in rewritten
+        assert external_url in rewritten
+
+
 def test_inspect_outline_and_recent_real_vault(tmp_path: Path) -> None:
     workspace, project_key, _global_key = linked_inspect_workspace(tmp_path)
     outline = inspect_json(workspace, "outline", project_key, "--format", "json")
