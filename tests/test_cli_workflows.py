@@ -1381,6 +1381,88 @@ def test_sync_run_commits_and_pushes_global_vault_from_unbound_directory(tmp_pat
     assert git_output(remote, "rev-parse", f"refs/heads/{branch}") == local_head
 
 
+def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    xdg_config_home = tmp_path / "xdg-config"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+    env["XDG_CONFIG_HOME"] = str(xdg_config_home)
+    service_path = xdg_config_home / "systemd" / "user" / "agent-memory-sync.service"
+    timer_path = xdg_config_home / "systemd" / "user" / "agent-memory-sync.timer"
+
+    installed = run_agent_memory_subprocess(loose, "sync", "install", "300", env=env)
+
+    assert installed.returncode == 0
+    assert parse_json_stdout(installed) == {
+        "auto_sync": {
+            "installed": True,
+            "interval_seconds": 300,
+            "service_path": str(service_path),
+            "timer_path": str(timer_path),
+            "unit_names": {
+                "service": "agent-memory-sync.service",
+                "timer": "agent-memory-sync.timer",
+            },
+        },
+        "vault": str(vault),
+    }
+    service_lines = set(service_path.read_text(encoding="utf-8").splitlines())
+    assert {
+        "[Unit]",
+        "Description=Synchronize the agent-memory vault",
+        "[Service]",
+        "Type=oneshot",
+        f"WorkingDirectory={vault}",
+        f"Environment=AGENT_MEMORY_VAULT={vault}",
+        f"ExecStart={sys.executable} -m agent_memory sync run",
+    }.issubset(service_lines)
+    assert set(timer_path.read_text(encoding="utf-8").splitlines()) == {
+        "[Unit]",
+        "Description=Run agent-memory vault synchronization every 300 seconds",
+        "[Timer]",
+        "OnBootSec=300s",
+        "OnUnitActiveSec=300s",
+        "Persistent=true",
+        "Unit=agent-memory-sync.service",
+        "[Install]",
+        "WantedBy=timers.target",
+    }
+
+    status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
+
+    assert status["auto_sync"] == {
+        "installed": True,
+        "interval_seconds": 300,
+        "service_path": str(service_path),
+        "timer_path": str(timer_path),
+        "unit_names": {
+            "service": "agent-memory-sync.service",
+            "timer": "agent-memory-sync.timer",
+        },
+    }
+
+    removed = run_agent_memory_subprocess(loose, "sync", "remove", env=env)
+
+    assert removed.returncode == 0
+    assert parse_json_stdout(removed) == {
+        "auto_sync": {
+            "installed": False,
+            "service_path": str(service_path),
+            "timer_path": str(timer_path),
+            "unit_names": {
+                "service": "agent-memory-sync.service",
+                "timer": "agent-memory-sync.timer",
+            },
+        },
+        "vault": str(vault),
+    }
+    assert not service_path.exists()
+    assert not timer_path.exists()
+
+
 def test_sync_run_pushes_conflict_branch_and_restores_main_when_rebase_conflicts(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     remote = initialized_bare_remote(tmp_path, "conflict-vault-remote.git")
