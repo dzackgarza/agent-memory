@@ -1254,7 +1254,7 @@ def push_sync_conflict_branch(vault: Path, remote: str, branch: str, committed: 
 
 
 def sync_vault(cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
+    config, _project_bound = sync_config(cwd)
     vault = config.vault
     branch = git_current_branch(vault)
     remote = git_remote(vault)
