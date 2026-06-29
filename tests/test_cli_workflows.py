@@ -295,6 +295,23 @@ def expected_sync_auto_status(env: dict[str, str] | None = None, interval_second
     return status
 
 
+def expected_sync_state(
+    env: dict[str, str] | None = None,
+    last_attempt: JsonObject | None = None,
+    last_success: JsonObject | None = None,
+    last_failure: JsonObject | None = None,
+) -> JsonObject:
+    source_env = env if env is not None else os.environ
+    xdg_state_home = source_env.get("XDG_STATE_HOME")
+    state_home = Path(xdg_state_home) if xdg_state_home is not None else Path.home() / ".local" / "state"
+    return {
+        "last_attempt": last_attempt if last_attempt is not None else {"status": "never_run"},
+        "last_failure": last_failure if last_failure is not None else {"status": "none"},
+        "last_success": last_success if last_success is not None else {"status": "none"},
+        "state_path": str(state_home / "agent-memory" / "sync-state.json"),
+    }
+
+
 def json_records(payload: JsonObject, key: str) -> list[JsonObject]:
     return [json_object(record) for record in json_array(payload[key])]
 
@@ -1336,6 +1353,7 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
             "worktree_clean": False,
         },
         "initialized": True,
+        "last_sync": expected_sync_state(),
         "project_bound": True,
         "vault": str(workspace.vault),
     }
@@ -1368,6 +1386,7 @@ def test_sync_status_reports_global_vault_from_unbound_directory(tmp_path: Path)
             "worktree_clean": True,
         },
         "initialized": True,
+        "last_sync": expected_sync_state(env),
         "project_bound": False,
         "vault": str(vault),
     }
@@ -1384,13 +1403,14 @@ def test_sync_run_commits_and_pushes_global_vault_from_unbound_directory(tmp_pat
     witness.write_text("# Global Auto Sync Run Proof\n\nglobal sync run witness\n", encoding="utf-8")
     env = agent_memory_env()
     env["AGENT_MEMORY_VAULT"] = str(vault)
+    env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
 
     result = run_agent_memory_subprocess(loose, "sync", "run", env=env)
 
     assert result.returncode == 0
     payload = parse_json_stdout(result)
     local_head = git_output(vault, "rev-parse", "HEAD")
-    assert payload == {
+    expected_payload: JsonObject = {
         "branch": branch,
         "committed": True,
         "head": local_head,
@@ -1399,8 +1419,16 @@ def test_sync_run_commits_and_pushes_global_vault_from_unbound_directory(tmp_pat
         "vault": str(vault),
         "worktree_clean": True,
     }
+    assert payload == expected_payload
     assert git_status_lines(vault) == set()
     assert git_output(remote, "rev-parse", f"refs/heads/{branch}") == local_head
+    last_success: JsonObject = {"result": expected_payload, "status": "success"}
+
+    status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
+    doctor = parse_json_stdout(run_agent_memory_subprocess(loose, "doctor", env=env))
+
+    assert status["last_sync"] == expected_sync_state(env, last_attempt=last_success, last_success=last_success)
+    assert doctor["last_sync"] == expected_sync_state(env, last_attempt=last_success, last_success=last_success)
 
 
 def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp_path: Path) -> None:
