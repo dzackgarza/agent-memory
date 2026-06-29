@@ -1057,14 +1057,17 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     write_new_memory(source_path, pointer_metadata, pointer_body)
     replace_index_link(source_path.parent / "index.md", title, title, source_path.name, pointer_description)
     index_zk_notebook(config.vault)
+    rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, destination_key),))
+    index_zk_notebook(config.vault)
     paths = [
         source_path,
         destination_path,
         source_path.parent / "index.md",
         destination_path.parent / "index.md",
+        *rewritten_record_paths(rewritten),
     ]
     commit_vault_changes(config.vault, f"Move memory {key} to {destination_key}", paths=paths)
-    return {"key": destination_key, "path": str(destination_path)}
+    return {"key": destination_key, "path": str(destination_path), "rewritten": json_list(rewritten)}
 
 
 def check_dependency(dependency: DependencyCheck, cwd: Path) -> JsonObject:
@@ -2557,6 +2560,15 @@ def rewrite_wikilink_files(config: ProjectConfig, rewrites: Sequence[WikilinkRew
 
 def rewrite_record(rewrite: WikilinkRewrite) -> JsonObject:
     return {"from": rewrite.from_key, "to": rewrite.to_target}
+
+
+def rewritten_record_paths(records: Sequence[JsonObject]) -> list[Path]:
+    paths: list[Path] = []
+    for record in records:
+        path = record["path"]
+        assert isinstance(path, str), f"rewritten record path must be a string: {record}"
+        paths.append(Path(path))
+    return paths
 
 
 def wikilink_rewrite_map(map_path: Path) -> tuple[WikilinkRewrite, ...]:

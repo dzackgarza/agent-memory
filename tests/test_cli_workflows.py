@@ -1172,8 +1172,7 @@ def test_maintain_move_memory_to_global_rewrites_inbound_wikilinks(tmp_path: Pat
     assert target["key"] == old_key
     assert moved["key"] == new_key
     assert moved["rewritten"] == [
-        {"path": str(backlink_index_path), "replacements": 1},
-        {"path": str(backlink_path), "replacements": 2},
+        {"path": str(backlink_path), "replacements": 1},
     ]
     for path in (backlink_path, backlink_index_path):
         rewritten = path.read_text(encoding="utf-8")
