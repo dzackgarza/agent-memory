@@ -275,16 +275,24 @@ def json_string(value: JsonValue) -> str:
     return value
 
 
-def expected_sync_auto_status(env: dict[str, str] | None = None, interval_seconds: int | None = None) -> JsonObject:
+def expected_sync_auto_status(
+    env: dict[str, str] | None = None,
+    interval_seconds: int | None = None,
+    *,
+    enabled: bool = False,
+) -> JsonObject:
     source_env = env if env is not None else os.environ
     xdg_config_home = source_env.get("XDG_CONFIG_HOME")
     config_home = Path(xdg_config_home) if xdg_config_home is not None else Path.home() / ".config"
     service_path = config_home / "systemd" / "user" / "agent-memory-sync.service"
     timer_path = config_home / "systemd" / "user" / "agent-memory-sync.timer"
+    timer_wants_path = config_home / "systemd" / "user" / "timers.target.wants" / "agent-memory-sync.timer"
     status: JsonObject = {
+        "enabled": enabled,
         "installed": interval_seconds is not None,
         "service_path": str(service_path),
         "timer_path": str(timer_path),
+        "timer_wants_path": str(timer_wants_path),
         "unit_names": {
             "service": "agent-memory-sync.service",
             "timer": "agent-memory-sync.timer",
@@ -1449,6 +1457,7 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
     env["XDG_CONFIG_HOME"] = str(xdg_config_home)
     service_path = xdg_config_home / "systemd" / "user" / "agent-memory-sync.service"
     timer_path = xdg_config_home / "systemd" / "user" / "agent-memory-sync.timer"
+    timer_wants_path = xdg_config_home / "systemd" / "user" / "timers.target.wants" / "agent-memory-sync.timer"
 
     installed = run_agent_memory_subprocess(loose, "sync", "install", "300", env=env)
 
@@ -1485,6 +1494,35 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300)
 
+    enabled = run_agent_memory_subprocess(loose, "sync", "enable", env=env)
+
+    assert enabled.returncode == 0
+    assert parse_json_stdout(enabled) == {
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "vault": str(vault),
+    }
+    assert timer_wants_path.is_symlink()
+    assert timer_wants_path.resolve() == timer_path.resolve()
+    enabled_status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
+    assert enabled_status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300, enabled=True)
+
+    disabled = run_agent_memory_subprocess(loose, "sync", "disable", env=env)
+
+    assert disabled.returncode == 0
+    assert parse_json_stdout(disabled) == {
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300),
+        "vault": str(vault),
+    }
+    assert not timer_wants_path.exists()
+
+    enabled_again = run_agent_memory_subprocess(loose, "sync", "enable", env=env)
+
+    assert enabled_again.returncode == 0
+    assert parse_json_stdout(enabled_again) == {
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "vault": str(vault),
+    }
+
     removed = run_agent_memory_subprocess(loose, "sync", "remove", env=env)
 
     assert removed.returncode == 0
@@ -1494,6 +1532,7 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
     }
     assert not service_path.exists()
     assert not timer_path.exists()
+    assert not timer_wants_path.exists()
 
 
 def test_doctor_reports_sync_auto_status_after_systemd_install(tmp_path: Path) -> None:
