@@ -220,6 +220,29 @@ def git_tracked_files(repo: Path) -> set[str]:
     return set(result.stdout.splitlines())
 
 
+def git_output(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
+
+
+def initialized_bare_remote(tmp_path: Path, name: str) -> Path:
+    remote = tmp_path / name
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, text=True, capture_output=True)
+    return remote
+
+
+def configure_vault_remote(vault: Path, remote: Path) -> str:
+    branch = git_output(vault, "branch", "--show-current")
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "push", "-u", "origin", branch], cwd=vault, check=True, text=True, capture_output=True)
+    return branch
+
+
 def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> JsonObject:
     decoded: JsonValue = json.loads(result.stdout)
     return json_object(decoded)
@@ -1232,6 +1255,31 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
         {"name": "@probelabs/probe", "command": ["npx", "-y", "@probelabs/probe@latest", "--version"], "status": "ok"},
         {"name": "zk", "command": ["zk", "--version"], "status": "ok"},
     ]
+
+
+def test_sync_run_commits_and_pushes_vault_worktree_changes(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    remote = initialized_bare_remote(tmp_path, "vault-remote.git")
+    branch = configure_vault_remote(workspace.vault, remote)
+    witness = workspace.vault / "global" / "references" / "auto-sync-push-proof.md"
+    witness.write_text("# Auto Sync Push Proof\n\nsync push witness\n", encoding="utf-8")
+
+    result = parse_json_stdout(run_agent_memory(workspace.repo, "sync", "run"))
+
+    local_head = git_output(workspace.vault, "rev-parse", "HEAD")
+    remote_head = git_output(remote, "rev-parse", f"refs/heads/{branch}")
+    assert result == {
+        "branch": branch,
+        "committed": True,
+        "head": local_head,
+        "pushed": True,
+        "remote": str(remote),
+        "vault": str(workspace.vault),
+        "worktree_clean": True,
+    }
+    assert git_status_lines(workspace.vault) == set()
+    assert remote_head == local_head
+    assert git_output(workspace.vault, "show", "--no-patch", "--format=%s", "HEAD") == "Auto-sync vault changes"
 
 
 def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path) -> None:
