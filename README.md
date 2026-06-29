@@ -173,11 +173,16 @@ Maintenance commands are intentionally separate from normal agent CRUD/search wo
 
 ```bash
 agent-memory maintain init-global --vault <vault>
+agent-memory maintain skill vault-maintenance
 agent-memory maintain move <key> --to global/traps
 agent-memory maintain split <key> --section "Section Title"
 agent-memory maintain merge <key> --reference <other-key>
 agent-memory maintain squash <key> --depth 3
 ```
+
+The vault should be committed at all times.
+Treat staged or unstaged vault changes as an ephemeral error state.
+Use the bundled `vault-maintenance` skill for the sanctioned recovery path: checking vault state, repairing malformed or interrupted work, and committing validated vault changes.
 
 ## Dependencies
 

@@ -6,8 +6,13 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated
 
+import cyclopts
 from cyclopts import App, Parameter
+from pydantic import ValidationError
 
+from agent_memory.cards.config import CardSystemConfig
+from agent_memory.cards.loader import load_card_system_config
+from agent_memory.cards.storage import CardPlacementError
 from agent_memory.models import (
     ContentSearchMode,
     InspectExportFormat,
@@ -21,11 +26,20 @@ from agent_memory.models import (
     SearchScope,
 )
 from agent_memory.operations import (
+    BUNDLED_SKILL_NAMES,
     INSPECT_COMMAND_NAMES,
+    CardFieldError,
+    DependencyError,
+    GlobalVaultNotInitializedError,
     JsonValue,
+    MalformedMemoryError,
+    MemoryOperationError,
+    ProjectNotInitializedError,
+    VaultCommitError,
     add_memory,
     add_plan_card,
     basic_doctor,
+    bundled_skill_text,
     delete_memory,
     delete_plan_card,
     init_global_vault,
@@ -76,6 +90,10 @@ maintain_app = app.command(App(name="maintain", help="Vault setup and maintenanc
 plan_app = app.command(App(name="plan", help="Create, migrate, validate, and visualize vault-backed project plan cards."))
 
 
+class CliUsageError(RuntimeError):
+    """Raised when arguments are coherent CLI syntax but invalid together."""
+
+
 def maintain_init_global(
     vault: Annotated[Path, Parameter(help="Path to the global memory vault to initialize.")],
 ) -> None:
@@ -83,12 +101,23 @@ def maintain_init_global(
     emit(init_global_vault(vault))
 
 
+def maintain_skill_command(
+    name: Annotated[
+        str,
+        Parameter(help=f"Bundled maintenance skill name. Available: {', '.join(BUNDLED_SKILL_NAMES)}."),
+    ],
+) -> None:
+    """Print a bundled maintenance skill entrypoint."""
+    print(bundled_skill_text(name), end="")
+
+
 def init_project_command(
     *,
     vault: Annotated[Path, Parameter(help="Existing global memory vault for this repository.")],
+    project_id: Annotated[str | None, Parameter(help="Stable project id for repositories without an origin remote.")] = None,
 ) -> None:
     """Bind the current Git repository to the global memory vault."""
-    emit(init_project(vault=vault, cwd=Path.cwd()))
+    emit(init_project(vault=vault, cwd=Path.cwd(), project_id=project_id))
 
 
 def add_command(
@@ -356,17 +385,52 @@ def plan_add_command(
     card_id: Annotated[str, Parameter(name="id", help="Card id, must start with the type's prefix (e.g. TASK-...).")],
     *,
     parent: Annotated[str | None, Parameter(help="Parent card id for non-root cards.")] = None,
-    set_: Annotated[list[str] | None, Parameter(name="set", help="Field assignment key=value; repeat for list fields.")] = None,
+    set_: Annotated[
+        list[str] | None,
+        Parameter(
+            name="set",
+            help="Field assignment key=value; repeat for list fields.",
+            negative_iterable=[],
+            allow_leading_hyphen=True,
+        ),
+    ] = None,
+    empty_set: Annotated[list[str] | None, Parameter(name="empty-set", help="Fields to initialize as empty lists.")] = None,
     body: Annotated[str | None, Parameter(help="Markdown body for the card.")] = None,
+    body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing markdown body for the card.")] = None,
 ) -> None:
     """Add a plan card to the project vault."""
-    emit(add_plan_card(type_name=type_name, card_id=card_id, parent_id=parent, assignments=set_ or [], body=body if body is not None else f"# {card_id}\n", cwd=Path.cwd()))
+    if body is not None and body_file is not None:
+        raise CliUsageError("Cannot specify both --body and --body-file")
+    if body_file is not None:
+        try:
+            body = body_file.read_text(encoding="utf-8")
+        except OSError as e:
+            raise CliUsageError(f"Cannot read --body-file {body_file}: {e.strerror}") from e
+    emit(
+        add_plan_card(
+            type_name=type_name,
+            card_id=card_id,
+            parent_id=parent,
+            assignments=set_ or [],
+            empty_set=empty_set,
+            body=body if body is not None else f"# {card_id}\n",
+            cwd=Path.cwd(),
+        )
+    )
 
 
 def plan_update_command(
     card_id: Annotated[str, Parameter(name="id", help="Card id to update.")],
     *,
-    set_: Annotated[list[str] | None, Parameter(name="set", help="Field assignment key=value; repeat for list fields.")] = None,
+    set_: Annotated[
+        list[str] | None,
+        Parameter(
+            name="set",
+            help="Field assignment key=value; repeat for list fields.",
+            negative_iterable=[],
+            allow_leading_hyphen=True,
+        ),
+    ] = None,
 ) -> None:
     """Update fields on an existing plan card."""
     emit(update_plan_card(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
@@ -396,6 +460,7 @@ def plan_migrate_command(
 
 def register_commands() -> None:
     maintain_app.command(maintain_init_global, name="init-global")
+    maintain_app.command(maintain_skill_command, name="skill")
     init_app.command(init_project_command, name="project")
     app.command(add_command, name="add")
     app.command(update_command, name="update")
@@ -432,6 +497,31 @@ def register_commands() -> None:
     app.command(doctor_command, name="doctor")
 
 
+def field_help(config: CardSystemConfig, card_type_name: str, field_name: str, field_type: str) -> str:
+    if field_type == "status":
+        card_type = next(ct for ct in config.card_types if ct.name == card_type_name)
+        options = config.status_sets[card_type.status_set].options
+        return f"{field_name} ({field_type}; allowed: {', '.join(options)})"
+    return f"{field_name} ({field_type})"
+
+
+def plan_add_help_text(config: CardSystemConfig) -> str:
+    doc = [
+        "Add a plan card to the project vault.",
+        "",
+        "Allowed card types and id prefixes:",
+    ]
+    for card_type in config.card_types:
+        doc.append(f"  - {card_type.name} (prefix: {card_type.id_prefix}-)")
+    doc.append("")
+    doc.append("Required fields per card type:")
+    for card_type in config.card_types:
+        required_fields = [field_help(config, card_type.name, field.name, field.type) for field in card_type.fields if field.required]
+        doc.append(f"  - {card_type.name}: {', '.join(required_fields)}")
+    return "\n".join(doc)
+
+
+plan_add_command.__doc__ = plan_add_help_text(load_card_system_config())
 register_commands()
 
 
@@ -439,6 +529,51 @@ def emit(payload: Mapping[str, JsonValue]) -> None:
     print(json.dumps(payload, sort_keys=True))
 
 
+def add_command_scope_hint(arguments: list[str]) -> str | None:
+    if arguments and arguments[0] == "add" and "--type" in arguments and "--scope" not in arguments:
+        return "Unknown option: --type. Did you mean --scope?"
+    return None
+
+
+def missing_argument_message(error: cyclopts.exceptions.MissingArgumentError, arguments: list[str]) -> str:
+    message = str(error)
+    if len(arguments) >= 2 and arguments[:2] == ["search", "content"] and "--mode" not in arguments:
+        return f"{message} Missing required option: --mode (exact, fuzzy, or ranked)."
+    return message
+
+
 def main() -> None:
-    basic_doctor(Path.cwd())
-    app(sys.argv[1:])
+    scope_hint = add_command_scope_hint(sys.argv[1:])
+    if scope_hint is not None:
+        print(f"Error: {scope_hint}", file=sys.stderr)
+        raise SystemExit(1)
+
+    try:
+        basic_doctor(Path.cwd())
+        app(sys.argv[1:], print_error=False, exit_on_error=False)
+    except cyclopts.exceptions.MissingArgumentError as e:
+        print(f"Error: {missing_argument_message(e, sys.argv[1:])}", file=sys.stderr)
+        raise SystemExit(1)
+    except cyclopts.exceptions.CycloptsError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise SystemExit(1)
+    except ValidationError as e:
+        msgs = []
+        for err in e.errors():
+            loc = ".".join(str(l) for l in err["loc"])
+            msgs.append(f"Field '{loc}': {err['msg']} (input: {err['input']})")
+        print("Error: Validation failed:\n" + "\n".join(msgs), file=sys.stderr)
+        raise SystemExit(1)
+    except (
+        CardPlacementError,
+        CardFieldError,
+        CliUsageError,
+        MalformedMemoryError,
+        MemoryOperationError,
+        VaultCommitError,
+        ProjectNotInitializedError,
+        GlobalVaultNotInitializedError,
+        DependencyError,
+    ) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise SystemExit(1)

@@ -44,10 +44,10 @@ def test_parse_card_fields_accumulates_repeated_list_values() -> None:
 
 
 def test_parse_card_fields_rejects_unknown_field() -> None:
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         parse_card_fields(CONFIG, "widget", ["bogus=x"])
 
 
 def test_parse_card_fields_rejects_assignment_without_equals() -> None:
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         parse_card_fields(CONFIG, "widget", ["count"])
