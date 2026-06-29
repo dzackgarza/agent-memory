@@ -63,6 +63,7 @@ class SyncSystemdPaths:
     unit_dir: Path
     service: Path
     timer: Path
+    timer_wants: Path
 
 
 OKF_VERSION = "0.1"
@@ -1236,6 +1237,7 @@ def sync_systemd_paths() -> SyncSystemdPaths:
         unit_dir=unit_dir,
         service=unit_dir / SYNC_SYSTEMD_SERVICE_NAME,
         timer=unit_dir / SYNC_SYSTEMD_TIMER_NAME,
+        timer_wants=unit_dir / "timers.target.wants" / SYNC_SYSTEMD_TIMER_NAME,
     )
 
 
@@ -1326,19 +1328,33 @@ def sync_timer_interval_seconds(timer_path: Path) -> int:
     raise AssertionError(f"timer unit must contain OnUnitActiveSec: timer={timer_path}")
 
 
+def sync_timer_enabled(paths: SyncSystemdPaths) -> bool:
+    if paths.timer_wants.is_symlink():
+        assert paths.timer_wants.resolve() == paths.timer.resolve(), (
+            f"auto-sync timer enablement symlink points at the wrong unit; link={paths.timer_wants}; target={paths.timer_wants.resolve()}; expected={paths.timer}"
+        )
+        return True
+    assert not paths.timer_wants.exists(), f"auto-sync timer enablement path is not a symlink: {paths.timer_wants}"
+    return False
+
+
 def sync_auto_status() -> JsonObject:
     paths = sync_systemd_paths()
     service_exists = paths.service.is_file()
     timer_exists = paths.timer.is_file()
+    enabled = sync_timer_enabled(paths)
     assert service_exists == timer_exists, (
         "auto-sync systemd installation must contain both unit files; "
         f"service={paths.service} exists={service_exists}; timer={paths.timer} exists={timer_exists}; "
         "run `agent-memory sync remove` and then `agent-memory sync install <seconds>`"
     )
+    assert not enabled or timer_exists, f"auto-sync timer cannot be enabled without an installed timer unit; timer={paths.timer}; link={paths.timer_wants}"
     status: JsonObject = {
+        "enabled": enabled,
         "installed": service_exists,
         "service_path": str(paths.service),
         "timer_path": str(paths.timer),
+        "timer_wants_path": str(paths.timer_wants),
         "unit_names": sync_systemd_unit_names(),
     }
     if timer_exists:
@@ -1397,9 +1413,50 @@ def install_sync_systemd_timer(cwd: Path, interval_seconds: int) -> JsonObject:
     }
 
 
+def enable_sync_systemd_timer(cwd: Path) -> JsonObject:
+    config, _project_bound = sync_config(cwd)
+    assert_vault_zk_initialized(config.vault)
+    paths = sync_systemd_paths()
+    assert paths.service.is_file(), f"auto-sync service unit must be installed before enable: {paths.service}"
+    assert paths.timer.is_file(), f"auto-sync timer unit must be installed before enable: {paths.timer}"
+    if paths.timer_wants.is_symlink():
+        assert paths.timer_wants.resolve() == paths.timer.resolve(), (
+            f"auto-sync timer enablement symlink points at the wrong unit; link={paths.timer_wants}; target={paths.timer_wants.resolve()}; expected={paths.timer}"
+        )
+    else:
+        assert not paths.timer_wants.exists(), f"auto-sync timer enablement path is not a symlink: {paths.timer_wants}"
+        paths.timer_wants.parent.mkdir(parents=True, exist_ok=True)
+        paths.timer_wants.symlink_to(paths.timer)
+    return {
+        "vault": str(config.vault),
+        "auto_sync": sync_auto_status(),
+    }
+
+
+def disable_sync_systemd_paths(paths: SyncSystemdPaths) -> None:
+    if paths.timer_wants.is_symlink():
+        assert paths.timer_wants.resolve() == paths.timer.resolve(), (
+            f"auto-sync timer enablement symlink points at the wrong unit; link={paths.timer_wants}; target={paths.timer_wants.resolve()}; expected={paths.timer}"
+        )
+        paths.timer_wants.unlink()
+        return
+    assert not paths.timer_wants.exists(), f"auto-sync timer enablement path is not a symlink: {paths.timer_wants}"
+
+
+def disable_sync_systemd_timer(cwd: Path) -> JsonObject:
+    config, _project_bound = sync_config(cwd)
+    paths = sync_systemd_paths()
+    disable_sync_systemd_paths(paths)
+    return {
+        "vault": str(config.vault),
+        "auto_sync": sync_auto_status(),
+    }
+
+
 def remove_sync_systemd_timer(cwd: Path) -> JsonObject:
     config, _project_bound = sync_config(cwd)
     paths = sync_systemd_paths()
+    disable_sync_systemd_paths(paths)
     if paths.service.exists():
         paths.service.unlink()
     if paths.timer.exists():

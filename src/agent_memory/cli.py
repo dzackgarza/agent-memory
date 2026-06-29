@@ -42,6 +42,8 @@ from agent_memory.operations import (
     bundled_skill_text,
     delete_memory,
     delete_plan_card,
+    disable_sync_systemd_timer,
+    enable_sync_systemd_timer,
     init_global_vault,
     init_project,
     inspect_export,
@@ -480,6 +482,16 @@ def sync_install_command(
     emit(install_sync_systemd_timer(cwd=Path.cwd(), interval_seconds=interval_seconds))
 
 
+def sync_enable_command() -> None:
+    """Enable the installed user systemd timer for vault synchronization."""
+    emit(enable_sync_systemd_timer(cwd=Path.cwd()))
+
+
+def sync_disable_command() -> None:
+    """Disable the user systemd timer for vault synchronization."""
+    emit(disable_sync_systemd_timer(cwd=Path.cwd()))
+
+
 def sync_remove_command() -> None:
     """Remove the user systemd service and timer files for vault synchronization."""
     emit(remove_sync_systemd_timer(cwd=Path.cwd()))
@@ -524,6 +536,8 @@ def register_commands() -> None:
     sync_app.command(sync_run_command, name="run")
     sync_app.command(sync_status_command, name="status")
     sync_app.command(sync_install_command, name="install")
+    sync_app.command(sync_enable_command, name="enable")
+    sync_app.command(sync_disable_command, name="disable")
     sync_app.command(sync_remove_command, name="remove")
     app.command(doctor_command, name="doctor")
 
