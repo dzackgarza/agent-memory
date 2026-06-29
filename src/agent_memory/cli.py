@@ -53,10 +53,12 @@ from agent_memory.operations import (
     inspect_schema,
     inspect_stats,
     inspect_tree,
+    install_sync_systemd_timer,
     merge_memory,
     migrate_plan_cards,
     move_memory,
     retrieve_memory,
+    remove_sync_systemd_timer,
     search_content_exact,
     search_content_fuzzy,
     search_content_ranked,
@@ -471,6 +473,18 @@ def sync_status_command() -> None:
     emit(sync_status(cwd=Path.cwd()))
 
 
+def sync_install_command(
+    interval_seconds: Annotated[int, Parameter(name="seconds", help="Timer interval in positive seconds.")],
+) -> None:
+    """Install user systemd service and timer files for vault synchronization."""
+    emit(install_sync_systemd_timer(cwd=Path.cwd(), interval_seconds=interval_seconds))
+
+
+def sync_remove_command() -> None:
+    """Remove the user systemd service and timer files for vault synchronization."""
+    emit(remove_sync_systemd_timer(cwd=Path.cwd()))
+
+
 def register_commands() -> None:
     maintain_app.command(maintain_init_global, name="init-global")
     maintain_app.command(maintain_skill_command, name="skill")
@@ -509,6 +523,8 @@ def register_commands() -> None:
     plan_app.command(plan_migrate_command, name="migrate")
     sync_app.command(sync_run_command, name="run")
     sync_app.command(sync_status_command, name="status")
+    sync_app.command(sync_install_command, name="install")
+    sync_app.command(sync_remove_command, name="remove")
     app.command(doctor_command, name="doctor")
 
 

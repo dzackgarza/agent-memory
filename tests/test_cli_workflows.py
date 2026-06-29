@@ -275,6 +275,26 @@ def json_string(value: JsonValue) -> str:
     return value
 
 
+def expected_sync_auto_status(env: dict[str, str] | None = None, interval_seconds: int | None = None) -> JsonObject:
+    source_env = env if env is not None else os.environ
+    xdg_config_home = source_env.get("XDG_CONFIG_HOME")
+    config_home = Path(xdg_config_home) if xdg_config_home is not None else Path.home() / ".config"
+    service_path = config_home / "systemd" / "user" / "agent-memory-sync.service"
+    timer_path = config_home / "systemd" / "user" / "agent-memory-sync.timer"
+    status: JsonObject = {
+        "installed": interval_seconds is not None,
+        "service_path": str(service_path),
+        "timer_path": str(timer_path),
+        "unit_names": {
+            "service": "agent-memory-sync.service",
+            "timer": "agent-memory-sync.timer",
+        },
+    }
+    if interval_seconds is not None:
+        status["interval_seconds"] = interval_seconds
+    return status
+
+
 def json_records(payload: JsonObject, key: str) -> list[JsonObject]:
     return [json_object(record) for record in json_array(payload[key])]
 
@@ -1304,6 +1324,7 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
     status = parse_json_stdout(run_agent_memory(workspace.repo, "sync", "status"))
 
     assert status == {
+        "auto_sync": expected_sync_auto_status(),
         "git": {
             "ahead": 0,
             "behind": 0,
@@ -1335,6 +1356,7 @@ def test_sync_status_reports_global_vault_from_unbound_directory(tmp_path: Path)
     assert result.returncode == 0
     status = parse_json_stdout(result)
     assert status == {
+        "auto_sync": expected_sync_auto_status(env),
         "git": {
             "ahead": 0,
             "behind": 0,
@@ -1387,6 +1409,8 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
     xdg_config_home = tmp_path / "xdg-config"
     loose.mkdir()
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    remote = initialized_bare_remote(tmp_path, "systemd-vault-remote.git")
+    configure_vault_remote(vault, remote)
     env = agent_memory_env()
     env["AGENT_MEMORY_VAULT"] = str(vault)
     env["XDG_CONFIG_HOME"] = str(xdg_config_home)
@@ -1397,16 +1421,7 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert installed.returncode == 0
     assert parse_json_stdout(installed) == {
-        "auto_sync": {
-            "installed": True,
-            "interval_seconds": 300,
-            "service_path": str(service_path),
-            "timer_path": str(timer_path),
-            "unit_names": {
-                "service": "agent-memory-sync.service",
-                "timer": "agent-memory-sync.timer",
-            },
-        },
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300),
         "vault": str(vault),
     }
     service_lines = set(service_path.read_text(encoding="utf-8").splitlines())
@@ -1419,44 +1434,29 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
         f"Environment=AGENT_MEMORY_VAULT={vault}",
         f"ExecStart={sys.executable} -m agent_memory sync run",
     }.issubset(service_lines)
-    assert set(timer_path.read_text(encoding="utf-8").splitlines()) == {
+    assert timer_path.read_text(encoding="utf-8").splitlines() == [
         "[Unit]",
         "Description=Run agent-memory vault synchronization every 300 seconds",
+        "",
         "[Timer]",
         "OnBootSec=300s",
         "OnUnitActiveSec=300s",
         "Persistent=true",
         "Unit=agent-memory-sync.service",
+        "",
         "[Install]",
         "WantedBy=timers.target",
-    }
+    ]
 
     status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
 
-    assert status["auto_sync"] == {
-        "installed": True,
-        "interval_seconds": 300,
-        "service_path": str(service_path),
-        "timer_path": str(timer_path),
-        "unit_names": {
-            "service": "agent-memory-sync.service",
-            "timer": "agent-memory-sync.timer",
-        },
-    }
+    assert status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300)
 
     removed = run_agent_memory_subprocess(loose, "sync", "remove", env=env)
 
     assert removed.returncode == 0
     assert parse_json_stdout(removed) == {
-        "auto_sync": {
-            "installed": False,
-            "service_path": str(service_path),
-            "timer_path": str(timer_path),
-            "unit_names": {
-                "service": "agent-memory-sync.service",
-                "timer": "agent-memory-sync.timer",
-            },
-        },
+        "auto_sync": expected_sync_auto_status(env),
         "vault": str(vault),
     }
     assert not service_path.exists()

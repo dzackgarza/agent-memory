@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tomllib
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -56,6 +58,13 @@ class DependencyCheck:
     install_instructions: str
 
 
+@dataclass(frozen=True)
+class SyncSystemdPaths:
+    unit_dir: Path
+    service: Path
+    timer: Path
+
+
 OKF_VERSION = "0.1"
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 AGENTS_SECTION_START = "<!-- agent-memory:start -->"
@@ -72,6 +81,8 @@ VAULT_MAINTENANCE_SKILL_HINT = (
     f"Run `{VAULT_MAINTENANCE_SKILL_COMMAND}` and follow its referenced workflows "
     "before retrying normal memory work."
 )
+SYNC_SYSTEMD_SERVICE_NAME = "agent-memory-sync.service"
+SYNC_SYSTEMD_TIMER_NAME = "agent-memory-sync.timer"
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.DECISION: "decisions",
@@ -1208,6 +1219,124 @@ def sync_config(cwd: Path) -> tuple[ProjectConfig, bool]:
     return global_only_config(), False
 
 
+def sync_systemd_paths() -> SyncSystemdPaths:
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config_home is None:
+        config_home = Path.home() / ".config"
+    else:
+        assert xdg_config_home, "XDG_CONFIG_HOME must be non-empty when set; unset it to use ~/.config"
+        config_home = Path(xdg_config_home)
+    unit_dir = config_home / "systemd" / "user"
+    return SyncSystemdPaths(
+        unit_dir=unit_dir,
+        service=unit_dir / SYNC_SYSTEMD_SERVICE_NAME,
+        timer=unit_dir / SYNC_SYSTEMD_TIMER_NAME,
+    )
+
+
+def sync_systemd_unit_names() -> JsonObject:
+    return {
+        "service": SYNC_SYSTEMD_SERVICE_NAME,
+        "timer": SYNC_SYSTEMD_TIMER_NAME,
+    }
+
+
+def sync_timer_interval_seconds(timer_path: Path) -> int:
+    for line in timer_path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if key == "OnUnitActiveSec":
+            assert separator == "=", f"timer interval line must contain '=': timer={timer_path}; line={line!r}"
+            assert value.endswith("s"), f"timer interval must be recorded in seconds: timer={timer_path}; value={value!r}"
+            interval = int(value[:-1])
+            assert interval > 0, f"timer interval must be positive: timer={timer_path}; value={value!r}"
+            return interval
+    raise AssertionError(f"timer unit must contain OnUnitActiveSec: timer={timer_path}")
+
+
+def sync_auto_status() -> JsonObject:
+    paths = sync_systemd_paths()
+    service_exists = paths.service.is_file()
+    timer_exists = paths.timer.is_file()
+    assert service_exists == timer_exists, (
+        "auto-sync systemd installation must contain both unit files; "
+        f"service={paths.service} exists={service_exists}; timer={paths.timer} exists={timer_exists}; "
+        "run `agent-memory sync remove` and then `agent-memory sync install <seconds>`"
+    )
+    status: JsonObject = {
+        "installed": service_exists,
+        "service_path": str(paths.service),
+        "timer_path": str(paths.timer),
+        "unit_names": sync_systemd_unit_names(),
+    }
+    if timer_exists:
+        status["interval_seconds"] = sync_timer_interval_seconds(paths.timer)
+    return status
+
+
+def render_sync_service(vault: Path) -> str:
+    command = shlex.join([sys.executable, "-m", "agent_memory", "sync", "run"])
+    vault_arg = shlex.quote(str(vault))
+    return "\n".join(
+        (
+            "[Unit]",
+            "Description=Synchronize the agent-memory vault",
+            "",
+            "[Service]",
+            "Type=oneshot",
+            f"WorkingDirectory={vault_arg}",
+            f"Environment=AGENT_MEMORY_VAULT={vault_arg}",
+            f"ExecStart={command}",
+            "",
+        )
+    )
+
+
+def render_sync_timer(interval_seconds: int) -> str:
+    assert interval_seconds > 0, f"sync timer interval must be positive seconds: {interval_seconds}"
+    return "\n".join(
+        (
+            "[Unit]",
+            f"Description=Run agent-memory vault synchronization every {interval_seconds} seconds",
+            "",
+            "[Timer]",
+            f"OnBootSec={interval_seconds}s",
+            f"OnUnitActiveSec={interval_seconds}s",
+            "Persistent=true",
+            f"Unit={SYNC_SYSTEMD_SERVICE_NAME}",
+            "",
+            "[Install]",
+            "WantedBy=timers.target",
+            "",
+        )
+    )
+
+
+def install_sync_systemd_timer(cwd: Path, interval_seconds: int) -> JsonObject:
+    config, _project_bound = sync_config(cwd)
+    assert_vault_zk_initialized(config.vault)
+    paths = sync_systemd_paths()
+    paths.unit_dir.mkdir(parents=True, exist_ok=True)
+    paths.service.write_text(render_sync_service(config.vault), encoding="utf-8")
+    paths.timer.write_text(render_sync_timer(interval_seconds), encoding="utf-8")
+    return {
+        "vault": str(config.vault),
+        "auto_sync": sync_auto_status(),
+    }
+
+
+def remove_sync_systemd_timer(cwd: Path) -> JsonObject:
+    config, _project_bound = sync_config(cwd)
+    paths = sync_systemd_paths()
+    if paths.service.exists():
+        paths.service.unlink()
+    if paths.timer.exists():
+        paths.timer.unlink()
+    return {
+        "vault": str(config.vault),
+        "auto_sync": sync_auto_status(),
+    }
+
+
 def sync_status(cwd: Path) -> JsonObject:
     config, project_bound = sync_config(cwd)
     assert_vault_zk_initialized(config.vault)
@@ -1228,6 +1357,7 @@ def sync_status(cwd: Path) -> JsonObject:
             "worktree_clean": not changes,
             "changes": changes,
         },
+        "auto_sync": sync_auto_status(),
     }
 
 
