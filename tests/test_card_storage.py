@@ -6,7 +6,14 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from agent_memory.cards import CardSystemConfig, build_card_models, load_card_system_config
-from agent_memory.cards.storage import create_card, delete_card, find_card_path, read_card, update_card
+from agent_memory.cards.storage import (
+    CardPlacementError,
+    create_card,
+    delete_card,
+    find_card_path,
+    read_card,
+    update_card,
+)
 
 
 def make_models() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
@@ -92,6 +99,43 @@ def test_create_child_with_missing_parent_fails(tmp_path: Path) -> None:
             fields={"title": "Orphan", "status": "in-progress", "description": "x", "successCriteria": ["y"]},
             body="# Orphan\n",
         )
+
+
+def test_parented_card_without_parent_fails_before_root_write(tmp_path: Path) -> None:
+    root = tmp_path / "plans"
+    config, models = make_models()
+    feature_path = create_card(
+        root,
+        config,
+        models,
+        type_name="feature",
+        card_id="FEATURE-PARENT",
+        parent_id=None,
+        fields={"title": "Parent feature", "status": "in-progress", "description": "parent"},
+        body="# Parent feature\n",
+    )
+
+    with pytest.raises(CardPlacementError):
+        create_card(
+            root,
+            config,
+            models,
+            type_name="plan",
+            card_id="PLAN-ORPHAN",
+            parent_id=None,
+            fields={
+                "title": "Orphan plan",
+                "status": "in-progress",
+                "description": "orphan",
+                "parents": ["[[FEATURE-PARENT]]"],
+                "successCriteria": ["ships"],
+            },
+            body="# Orphan plan\n",
+        )
+
+    assert feature_path == root / "features" / "FEATURE-PARENT" / "FEATURE-PARENT.md"
+    assert not (root / "plans" / "PLAN-ORPHAN" / "PLAN-ORPHAN.md").exists()
+    assert not (root / "PLAN-ORPHAN.md").exists()
 
 
 def test_create_rejects_invalid_field_values(tmp_path: Path) -> None:

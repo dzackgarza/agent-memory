@@ -1109,25 +1109,26 @@ def run_checked_optional(args: Sequence[str], cwd: Path) -> subprocess.Completed
 
 def commit_vault_changes(vault: Path, message: str, paths: list[Path] | None = None) -> None:
     if paths is not None:
-        for path in paths:
-            if path.exists():
-                rel_path = path.relative_to(vault)
-                run_checked(["git", "add", str(rel_path)], cwd=vault)
         rel_paths = [
-            str(p.relative_to(vault))
-            for p in paths
-            if p.exists()
+            str(path.relative_to(vault))
+            for path in paths
+            if path.exists()
             or run_checked_optional(
-                ["git", "ls-files", "--error-unmatch", str(p.relative_to(vault))],
+                ["git", "ls-files", "--error-unmatch", str(path.relative_to(vault))],
                 cwd=vault,
             ).returncode
             == 0
         ]
-        if rel_paths:
-            # Skip commit if there are no cached changes for these paths
-            diff_res = run_checked_optional(["git", "diff", "--cached", "--quiet", "--", *rel_paths], cwd=vault)
-            if diff_res.returncode != 0:
-                run_checked(["git", "commit", "-m", message, "--", *rel_paths], cwd=vault)
+        if not rel_paths:
+            return
+        for path in paths:
+            rel_path = path.relative_to(vault)
+            if str(rel_path) in rel_paths:
+                run_checked(["git", "add", "--", str(rel_path)], cwd=vault)
+        # Skip commit if there are no cached changes for these paths
+        diff_res = run_checked_optional(["git", "diff", "--cached", "--quiet", "--", *rel_paths], cwd=vault)
+        if diff_res.returncode != 0:
+            run_checked(["git", "commit", "-m", message, "--", *rel_paths], cwd=vault)
     else:
         run_checked(["git", "add", "--all", "."], cwd=vault)
         # Skip commit if there are no cached changes in the vault

@@ -1686,6 +1686,103 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     assert any(json_string(problem["kind"]) == "reference" for problem in problems)
 
 
+def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_content(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "--type",
+        "feature",
+        "--id",
+        "FEATURE-DELETE",
+        "--set",
+        "title=Delete feature",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "description=delete feature",
+        "--set",
+        "plans=[[PLAN-DELETE]]",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "--type",
+        "plan",
+        "--id",
+        "PLAN-DELETE",
+        "--parent",
+        "FEATURE-DELETE",
+        "--set",
+        "title=Delete plan",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "description=delete plan",
+        "--set",
+        "parents=[[FEATURE-DELETE]]",
+        "--set",
+        "successCriteria=deleted",
+        "--set",
+        "tags=FEATURE-DELETE",
+    )
+    plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DELETE" / "plans" / "PLAN-DELETE" / "PLAN-DELETE.md"
+    assert plan_path.is_file()
+
+    unrelated_rel = f"projects/{workspace.project_id}/staged-unrelated.md"
+    unrelated_path = workspace.vault / unrelated_rel
+    unrelated_path.write_text("# unrelated staged content\n", encoding="utf-8")
+    subprocess.run(["git", "add", unrelated_rel], cwd=workspace.vault, check=True, text=True, capture_output=True)
+
+    run_agent_memory(workspace.repo, "plan", "delete", "PLAN-DELETE")
+
+    plan_rel = str(plan_path.relative_to(workspace.vault))
+    assert not plan_path.exists()
+    assert "Delete plan card: PLAN-DELETE" in git_commit_subjects(workspace.vault)
+    assert f"A  {unrelated_rel}" in git_status_lines(workspace.vault)
+    assert plan_rel not in git_tracked_files(workspace.vault)
+    scoped_status = subprocess.run(
+        ["git", "-C", str(workspace.vault), "status", "--short", "--", plan_rel],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert scoped_status.stdout == ""
+
+
+def test_plan_add_parented_type_without_parent_fails_cleanly_before_root_write(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "plan",
+        "add",
+        "plan",
+        "PLAN-NO-PARENT",
+        "--set",
+        "title=No parent",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "description=missing placement parent",
+        "--set",
+        "parents=[[FEATURE-METADATA-ONLY]]",
+        "--set",
+        "successCriteria=blocked",
+        "--set",
+        "tags=FEATURE-METADATA-ONLY",
+    )
+
+    assert result.returncode != 0
+    assert "requires --parent" in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert "Traceback" not in result.stderr
+    root_plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "plans" / "PLAN-NO-PARENT" / "PLAN-NO-PARENT.md"
+    assert not root_plan_path.exists()
+    assert not any(workspace.vault.rglob("PLAN-NO-PARENT.md"))
+
+
 def unbound_dir(tmp_path: Path) -> Path:
     # A directory with no project binding and no git repository at all, modeling the
     # `$HOME`/unbound-repo case from issue #25 where global operations must still work.
@@ -1964,22 +2061,18 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         workspace.repo,
         "plan",
         "add",
-        "plan",
-        "PLAN-3",
-        "--empty-set",
-        "parents",
+        "feature",
+        "FEATURE-BODY",
         "--set",
-        "status=needs-human-input",
+        "status=in-progress",
         "--set",
         "description=...",
         "--set",
-        "successCriteria=criteria",
-        "--set",
-        "title=Plan 3",
+        "title=Feature body",
         "--body-file",
         str(body_file),
     )
-    card_file = workspace.vault / "projects" / workspace.project_id / "plans" / "PLAN-3" / "PLAN-3.md"
+    card_file = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-BODY" / "FEATURE-BODY.md"
     assert card_file.exists()
     assert "Markdown body from file" in card_file.read_text(encoding="utf-8")
 
