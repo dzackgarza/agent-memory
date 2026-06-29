@@ -1101,6 +1101,7 @@ def doctor(cwd: Path) -> JsonObject:
         "project_root": str(git_root),
         "project_bound": True,
         "agent_state": project_agent_state_records(git_root, project_dir),
+        "auto_sync": sync_auto_status(),
         "tools": basic["tools"],
         "dependencies": basic["dependencies"],
     }
@@ -1118,6 +1119,7 @@ def unbound_doctor(basic: JsonObject) -> JsonObject:
         "project_root": None,
         "project_bound": False,
         "agent_state": [],
+        "auto_sync": sync_auto_status(),
         "tools": basic["tools"],
         "dependencies": basic["dependencies"],
     }
