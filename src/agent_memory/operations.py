@@ -2226,7 +2226,12 @@ def parse_card_fields(
         if field_type in ("string_list", "wikilink_list"):
             append_list_field(fields, key, value)
         else:
-            fields[key] = coerce_scalar_field(field_type, value)
+            try:
+                fields[key] = coerce_scalar_field(field_type, value)
+            except ValueError as e:
+                if field_type not in ("int", "number"):
+                    raise
+                raise CardFieldError(f"field {key} expects {field_type} value, got {value}") from e
 
     if empty_set is not None:
         for key in empty_set:

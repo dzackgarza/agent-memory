@@ -390,7 +390,10 @@ def plan_add_command(
     if body is not None and body_file is not None:
         raise CliUsageError("Cannot specify both --body and --body-file")
     if body_file is not None:
-        body = body_file.read_text(encoding="utf-8")
+        try:
+            body = body_file.read_text(encoding="utf-8")
+        except OSError as e:
+            raise CliUsageError(f"Cannot read --body-file {body_file}: {e.strerror}") from e
     emit(
         add_plan_card(
             type_name=type_name,

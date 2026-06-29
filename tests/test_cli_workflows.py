@@ -2077,6 +2077,75 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     assert "Markdown body from file" in card_file.read_text(encoding="utf-8")
 
 
+def test_plan_add_invalid_numeric_field_fails_through_cli_boundary_without_writing_card(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "feature",
+        "FEATURE-NUMERIC",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "description=...",
+        "--set",
+        "title=Numeric parent",
+    )
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "plan",
+        "add",
+        "spec",
+        "SPEC-NUMERIC",
+        "--parent",
+        "FEATURE-NUMERIC",
+        "--set",
+        "title=Numeric boundary",
+        "--set",
+        "complexity=not-a-number",
+    )
+    card_file = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-NUMERIC" / "specs" / "SPEC-NUMERIC.md"
+
+    assert result.returncode != 0
+    assert result.stderr.startswith("Error: ")
+    assert "complexity" in result.stderr
+    assert "not-a-number" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "ValueError" not in result.stderr
+    assert not card_file.exists()
+
+
+def test_plan_add_missing_body_file_fails_through_cli_boundary_without_writing_card(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    missing_body = tmp_path / "missing-body.md"
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "plan",
+        "add",
+        "feature",
+        "FEATURE-MISSING-BODY",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "description=...",
+        "--set",
+        "title=Missing body file",
+        "--body-file",
+        str(missing_body),
+    )
+    card_file = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-MISSING-BODY" / "FEATURE-MISSING-BODY.md"
+
+    assert result.returncode != 0
+    assert result.stderr.startswith("Error: ")
+    assert str(missing_body) in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "FileNotFoundError" not in result.stderr
+    assert not card_file.exists()
+
+
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
