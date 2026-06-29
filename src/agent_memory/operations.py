@@ -1201,8 +1201,15 @@ def sync_conflict_branch_name(branch: str, head: str) -> str:
     return f"agent-memory-sync-conflict-{safe_branch}-{head[:12]}"
 
 
+def sync_config(cwd: Path) -> tuple[ProjectConfig, bool]:
+    config = find_project_config(cwd)
+    if config is not None:
+        return config, True
+    return global_only_config(), False
+
+
 def sync_status(cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
+    config, project_bound = sync_config(cwd)
     assert_vault_zk_initialized(config.vault)
     vault = config.vault
     changes = git_status_records(vault)
@@ -1210,7 +1217,7 @@ def sync_status(cwd: Path) -> JsonObject:
     return {
         "vault": str(vault),
         "initialized": True,
-        "project_bound": True,
+        "project_bound": project_bound,
         "git": {
             "remote": git_remote(vault),
             "branch": git_current_branch(vault),
