@@ -42,8 +42,11 @@ from agent_memory.operations import (
     bundled_skill_text,
     delete_memory,
     delete_plan_card,
+    disable_sync_systemd_timer,
+    enable_sync_systemd_timer,
     init_global_vault,
     init_project,
+    inspect_broken_links,
     inspect_export,
     inspect_links,
     inspect_outline,
@@ -53,10 +56,13 @@ from agent_memory.operations import (
     inspect_schema,
     inspect_stats,
     inspect_tree,
+    install_sync_systemd_timer,
     merge_memory,
     migrate_plan_cards,
     move_memory,
+    remove_sync_systemd_timer,
     retrieve_memory,
+    rewrite_wikilinks,
     search_content_exact,
     search_content_fuzzy,
     search_content_ranked,
@@ -65,6 +71,8 @@ from agent_memory.operations import (
     search_metadata,
     split_memory,
     squash_memory,
+    sync_status,
+    sync_vault,
     update_memory,
     update_plan_card,
     validate_plan_cards,
@@ -88,6 +96,8 @@ search_app = app.command(App(name="search", help="Query memories by keys, conten
 inspect_app = app.command(App(name="inspect", help="Read-only vault navigation and analysis commands."))
 maintain_app = app.command(App(name="maintain", help="Vault setup and maintenance workflows."))
 plan_app = app.command(App(name="plan", help="Create, migrate, validate, and visualize vault-backed project plan cards."))
+sync_app = app.command(App(name="sync", help="Synchronize the configured memory vault with its git remote."))
+links_app = app.command(App(name="links", help="Inspect and rewrite vault links."))
 
 
 class CliUsageError(RuntimeError):
@@ -160,9 +170,21 @@ def update_command(
 
 def delete_command(
     key: Annotated[str, Parameter(help="Memory key to delete.")],
+    *,
+    repoint: Annotated[
+        str | None,
+        Parameter(help="Rewrite inbound wikilinks to this key or external URL before deleting."),
+    ] = None,
+    orphan_ok: Annotated[
+        bool,
+        Parameter(
+            name="orphan-ok",
+            help="Allow deletion while leaving inbound wikilinks pointing at the deleted key.",
+        ),
+    ] = False,
 ) -> None:
     """Delete a memory and clean its index entry."""
-    emit(delete_memory(key=key, cwd=Path.cwd()))
+    emit(delete_memory(key=key, repoint=repoint, orphan_ok=orphan_ok, cwd=Path.cwd()))
 
 
 def search_default(
@@ -266,22 +288,55 @@ def inspect_tree_command(
 
 
 def inspect_links_command(
-    key: Annotated[str, Parameter(help="Memory key to inspect.")],
+    key: Annotated[str | None, Parameter(help="Memory key to inspect. Omit only with --broken.")] = None,
     *,
+    broken: Annotated[bool, Parameter(help="Report broken wikilinks across the selected scope.")] = False,
+    scope: Annotated[SearchScope, Parameter(help="Scope for --broken: project, global, or both.")] = SearchScope.BOTH,
     direction: Annotated[
         InspectLinkDirection,
         Parameter(help="Link direction: children, parents, or both."),
-    ],
-    depth: Annotated[int, Parameter(help="Number of graph levels to traverse.")],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
-) -> None:
+    ] = InspectLinkDirection.BOTH,
+    depth: Annotated[int, Parameter(help="Number of graph levels to traverse.")] = 1,
+    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
+) -> int | None:
     """Show graph neighbors for a memory key."""
+    if broken:
+        assert key is None, "inspect links --broken is vault-scoped and does not accept a memory key"
+        payload = inspect_broken_links(scope=scope, output_format=output_format, cwd=Path.cwd())
+        emit(payload)
+        broken_links = payload["broken_links"]
+        assert isinstance(broken_links, list), "broken link report must contain a list"
+        return 1 if broken_links else 0
+    assert key is not None, "inspect links requires a memory key unless --broken is set"
     emit(
         inspect_links(
             key=key,
             direction=direction,
             depth=depth,
             output_format=output_format,
+            cwd=Path.cwd(),
+        )
+    )
+    return None
+
+
+def links_rewrite_command(
+    from_target: Annotated[str | None, Parameter(name="from", help="Existing wikilink target key.")] = None,
+    to_target: Annotated[
+        str | None,
+        Parameter(name="to", help="New wikilink target key or external URL."),
+    ] = None,
+    map_path: Annotated[
+        Path | None,
+        Parameter(name="map", help="TOML mapping file with a [rewrites] table."),
+    ] = None,
+) -> None:
+    """Rewrite wikilink targets across the vault."""
+    emit(
+        rewrite_wikilinks(
+            from_target=from_target,
+            to_target=to_target,
+            map_path=map_path,
             cwd=Path.cwd(),
         )
     )
@@ -458,6 +513,38 @@ def plan_migrate_command(
     emit(migrate_plan_cards(source=source.expanduser(), cwd=Path.cwd()))
 
 
+def sync_run_command() -> None:
+    """Commit current vault changes, rebase from origin, and push the vault branch."""
+    emit(sync_vault(cwd=Path.cwd()))
+
+
+def sync_status_command() -> None:
+    """Report the configured vault's current git synchronization state."""
+    emit(sync_status(cwd=Path.cwd()))
+
+
+def sync_install_command(
+    interval_seconds: Annotated[int, Parameter(name="seconds", help="Timer interval in positive seconds.")],
+) -> None:
+    """Install user systemd service and timer files for vault synchronization."""
+    emit(install_sync_systemd_timer(cwd=Path.cwd(), interval_seconds=interval_seconds))
+
+
+def sync_enable_command() -> None:
+    """Enable the installed user systemd timer for vault synchronization."""
+    emit(enable_sync_systemd_timer(cwd=Path.cwd()))
+
+
+def sync_disable_command() -> None:
+    """Disable the user systemd timer for vault synchronization."""
+    emit(disable_sync_systemd_timer(cwd=Path.cwd()))
+
+
+def sync_remove_command() -> None:
+    """Remove the user systemd service and timer files for vault synchronization."""
+    emit(remove_sync_systemd_timer(cwd=Path.cwd()))
+
+
 def register_commands() -> None:
     maintain_app.command(maintain_init_global, name="init-global")
     maintain_app.command(maintain_skill_command, name="skill")
@@ -469,7 +556,7 @@ def register_commands() -> None:
     search_app.command(search_content_command, name="content")
     search_app.command(search_metadata_command, name="metadata")
     search_app.command(search_keys_command, name="keys")
-    inspect_commands: dict[str, Callable[..., None]] = {
+    inspect_commands: dict[str, Callable[..., object]] = {
         "overview": inspect_overview_command,
         "schema": inspect_schema_command,
         "paths": inspect_paths_command,
@@ -494,6 +581,13 @@ def register_commands() -> None:
     plan_app.command(plan_validate_command, name="validate")
     plan_app.command(plan_dag_command, name="dag")
     plan_app.command(plan_migrate_command, name="migrate")
+    links_app.command(links_rewrite_command, name="rewrite")
+    sync_app.command(sync_run_command, name="run")
+    sync_app.command(sync_status_command, name="status")
+    sync_app.command(sync_install_command, name="install")
+    sync_app.command(sync_enable_command, name="enable")
+    sync_app.command(sync_disable_command, name="disable")
+    sync_app.command(sync_remove_command, name="remove")
     app.command(doctor_command, name="doctor")
 
 

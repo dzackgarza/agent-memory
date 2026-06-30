@@ -220,6 +220,41 @@ def git_tracked_files(repo: Path) -> set[str]:
     return set(result.stdout.splitlines())
 
 
+def git_output(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
+
+
+def initialized_bare_remote(tmp_path: Path, name: str) -> Path:
+    remote = tmp_path / name
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, text=True, capture_output=True)
+    return remote
+
+
+def configure_vault_remote(vault: Path, remote: Path) -> str:
+    branch = git_output(vault, "branch", "--show-current")
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "push", "-u", "origin", branch], cwd=vault, check=True, text=True, capture_output=True)
+    return branch
+
+
+def configure_git_identity(repo: Path) -> None:
+    subprocess.run(["git", "config", "--local", "core.hooksPath", ""], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "agent-memory-test"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "agent-memory-test@localhost"],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
 def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> JsonObject:
     decoded: JsonValue = json.loads(result.stdout)
     return json_object(decoded)
@@ -238,6 +273,51 @@ def json_array(value: JsonValue) -> JsonArray:
 def json_string(value: JsonValue) -> str:
     assert isinstance(value, str)
     return value
+
+
+def expected_sync_auto_status(
+    env: dict[str, str] | None = None,
+    interval_seconds: int | None = None,
+    *,
+    enabled: bool = False,
+) -> JsonObject:
+    source_env = env if env is not None else os.environ
+    xdg_config_home = source_env.get("XDG_CONFIG_HOME")
+    config_home = Path(xdg_config_home) if xdg_config_home is not None else Path.home() / ".config"
+    service_path = config_home / "systemd" / "user" / "agent-memory-sync.service"
+    timer_path = config_home / "systemd" / "user" / "agent-memory-sync.timer"
+    timer_wants_path = config_home / "systemd" / "user" / "timers.target.wants" / "agent-memory-sync.timer"
+    status: JsonObject = {
+        "enabled": enabled,
+        "installed": interval_seconds is not None,
+        "service_path": str(service_path),
+        "timer_path": str(timer_path),
+        "timer_wants_path": str(timer_wants_path),
+        "unit_names": {
+            "service": "agent-memory-sync.service",
+            "timer": "agent-memory-sync.timer",
+        },
+    }
+    if interval_seconds is not None:
+        status["interval_seconds"] = interval_seconds
+    return status
+
+
+def expected_sync_state(
+    env: dict[str, str] | None = None,
+    last_attempt: JsonObject | None = None,
+    last_success: JsonObject | None = None,
+    last_failure: JsonObject | None = None,
+) -> JsonObject:
+    source_env = env if env is not None else os.environ
+    xdg_state_home = source_env.get("XDG_STATE_HOME")
+    state_home = Path(xdg_state_home) if xdg_state_home is not None else Path.home() / ".local" / "state"
+    return {
+        "last_attempt": last_attempt if last_attempt is not None else {"status": "never_run"},
+        "last_failure": last_failure if last_failure is not None else {"status": "none"},
+        "last_success": last_success if last_success is not None else {"status": "none"},
+        "state_path": str(state_home / "agent-memory" / "sync-state.json"),
+    }
 
 
 def json_records(payload: JsonObject, key: str) -> list[JsonObject]:
@@ -718,6 +798,89 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     assert "Traceback" not in no_update.stderr
 
 
+def test_project_memory_update_rewrites_inbound_wikilinks_on_key_change(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    target = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Rename Link Target",
+        content="rename-link-target-d1f8f6a1 keeps inbound backlinks coherent",
+    )
+    old_key = project_memory_key(workspace, "decisions", "rename-link-target")
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Rename Backlink Source",
+        content=f"Review [[{old_key}]] before trusting renamed decisions.",
+    )
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+    new_key = project_memory_key(workspace, "decisions", "rename-link-target-renamed")
+
+    renamed = parse_json_stdout(run_agent_memory(workspace.repo, "update", str(target["key"]), "--title", "Rename Link Target Renamed"))
+
+    assert target["key"] == old_key
+    assert renamed["key"] == new_key
+    assert renamed["rewritten"] == [
+        {"path": str(backlink_path), "replacements": 1},
+    ]
+    for path in (backlink_path, backlink_index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{old_key}]]" not in rewritten
+        assert f"[[{new_key}]]" in rewritten
+
+
+def test_delete_requires_backlink_disposition_and_can_repoint_inbound_links(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    target = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Deleted Link Target",
+        content="deleted-link-target-ef4b0f93 moved to GitHub",
+    )
+    old_key = project_memory_key(workspace, "decisions", "deleted-link-target")
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Delete Backlink Source",
+        content=f"Follow [[{old_key}]] before removing local planning notes.",
+    )
+    target_path = Path(str(target["path"]))
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+    external_url = "https://github.com/dzackgarza/agent-memory/issues/23"
+
+    blocked = run_agent_memory_subprocess(workspace.repo, "delete", str(target["key"]))
+
+    assert target["key"] == old_key
+    assert blocked.returncode != 0
+    assert old_key in blocked.stderr
+    assert "--repoint" in blocked.stderr
+    assert "--orphan-ok" in blocked.stderr
+    assert target_path.is_file()
+    assert f"[[{old_key}]]" in backlink_path.read_text(encoding="utf-8")
+
+    deleted = parse_json_stdout(run_agent_memory(workspace.repo, "delete", str(target["key"]), "--repoint", external_url))
+
+    assert deleted == {
+        "deleted": old_key,
+        "repointed_to": external_url,
+        "rewritten": [
+            {"path": str(backlink_path), "replacements": 1},
+        ],
+    }
+    assert not target_path.exists()
+    rewritten_backlink = backlink_path.read_text(encoding="utf-8")
+    assert f"[[{old_key}]]" not in rewritten_backlink
+    assert external_url in rewritten_backlink
+    rewritten_index = backlink_index_path.read_text(encoding="utf-8")
+    assert f"[[{old_key}]]" not in rewritten_index
+
+
 def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
@@ -958,6 +1121,82 @@ def test_maintain_split_merge_and_doctor_real_memory_graph(tmp_path: Path) -> No
     assert validation["project_root"] == str(workspace.repo)
 
 
+def test_maintain_split_rewrites_section_fragment_backlinks(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    source_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Split Fragment Source",
+        content="Introductory context.\n\n## Extracted Plan\nSplit details stay recoverable.",
+    )
+    source_key = project_memory_key(workspace, "decisions", "split-fragment-source")
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Split Fragment Backlink",
+        content=f"Follow [[{source_key}#Extracted Plan]] before extracting the section.",
+    )
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+
+    split = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
+
+    assert source_note["key"] == source_key
+    extracted_keys = {json_string(key) for key in json_array(split["extracted"])}
+    assert len(extracted_keys) == 1
+    extracted_key = next(iter(extracted_keys))
+    assert split["rewritten"] == [
+        {"path": str(backlink_index_path), "replacements": 1},
+        {"path": str(backlink_path), "replacements": 2},
+    ]
+    for path in (backlink_path, backlink_index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{source_key}#Extracted Plan]]" not in rewritten
+        assert f"[[{extracted_key}]]" in rewritten
+
+
+def test_maintain_merge_repoints_inbound_reference_wikilinks(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    source = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Merge Split Source",
+        content="Source shell.\n\n## Extracted Plan\nMerged reference details stay recoverable.",
+    )
+    source_key = project_memory_key(workspace, "decisions", "merge-split-source")
+    split = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
+    extracted_keys = {json_string(key) for key in json_array(split["extracted"])}
+    assert len(extracted_keys) == 1
+    reference_key = next(iter(extracted_keys))
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Merge Reference Backlink",
+        content=f"Read [[{reference_key}]] before merging the reference.",
+    )
+    reference_path = workspace.vault / f"{reference_key}.md"
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+
+    merged = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "merge", source_key, "--reference", reference_key))
+
+    replacement = f"[[{source_key}#Extracted Plan]]"
+    assert source["key"] == source_key
+    assert merged["rewritten"] == [
+        {"path": str(backlink_path), "replacements": 1},
+    ]
+    assert not reference_path.exists()
+    rewritten_backlink = backlink_path.read_text(encoding="utf-8")
+    assert f"[[{reference_key}]]" not in rewritten_backlink
+    assert replacement in rewritten_backlink
+    rewritten_index = backlink_index_path.read_text(encoding="utf-8")
+    assert f"[[{reference_key}]]" not in rewritten_index
+
+
 def test_init_project_replaces_existing_agents_memory_pointer(tmp_path: Path) -> None:
     workspace = initialized_workspace_with_agents(
         tmp_path,
@@ -1064,6 +1303,40 @@ def test_maintain_move_memory_to_global_leaves_project_pointer(
     assert "global/traps/promotion-trap" in pointer.read_text()
     assert "* [Promotion Trap](promotion-trap.md) - promote-signal-f88f0a72 must become shared knowledge" in (destination.parent / "index.md").read_text()
     assert "* [Promotion Trap](promotion-trap.md) - Promoted to global/traps/promotion-trap." in (pointer.parent / "index.md").read_text()
+
+
+def test_maintain_move_memory_to_global_rewrites_inbound_wikilinks(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    target = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="trap",
+        title="Promotion Link Target",
+        content="promotion-link-target-16c75191 must become shared knowledge",
+    )
+    old_key = project_memory_key(workspace, "traps", "promotion-link-target")
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Promotion Backlink Source",
+        content=f"Review [[{old_key}]] before trusting the promotion path.",
+    )
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+    new_key = "global/traps/promotion-link-target"
+
+    moved = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "move", str(target["key"]), "--to", "global/traps"))
+
+    assert target["key"] == old_key
+    assert moved["key"] == new_key
+    assert moved["rewritten"] == [
+        {"path": str(backlink_path), "replacements": 1},
+    ]
+    for path in (backlink_path, backlink_index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{old_key}]]" not in rewritten
+        assert f"[[{new_key}]]" in rewritten
 
 
 def test_project_commands_without_config_fail_with_first_time_setup_guidance(
@@ -1232,6 +1505,294 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
         {"name": "@probelabs/probe", "command": ["npx", "-y", "@probelabs/probe@latest", "--version"], "status": "ok"},
         {"name": "zk", "command": ["zk", "--version"], "status": "ok"},
     ]
+
+
+def test_sync_run_commits_and_pushes_vault_worktree_changes(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    remote = initialized_bare_remote(tmp_path, "vault-remote.git")
+    branch = configure_vault_remote(workspace.vault, remote)
+    witness = workspace.vault / "global" / "references" / "auto-sync-push-proof.md"
+    witness.write_text("# Auto Sync Push Proof\n\nsync push witness\n", encoding="utf-8")
+
+    result = parse_json_stdout(run_agent_memory(workspace.repo, "sync", "run"))
+
+    local_head = git_output(workspace.vault, "rev-parse", "HEAD")
+    remote_head = git_output(remote, "rev-parse", f"refs/heads/{branch}")
+    assert result == {
+        "branch": branch,
+        "committed": True,
+        "head": local_head,
+        "pushed": True,
+        "remote": str(remote),
+        "vault": str(workspace.vault),
+        "worktree_clean": True,
+    }
+    assert git_status_lines(workspace.vault) == set()
+    assert remote_head == local_head
+    assert git_output(workspace.vault, "show", "--no-patch", "--format=%s", "HEAD") == "Auto-sync vault changes"
+
+
+def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    remote = initialized_bare_remote(tmp_path, "status-vault-remote.git")
+    branch = configure_vault_remote(workspace.vault, remote)
+    witness = workspace.vault / "global" / "references" / "auto-sync-status-proof.md"
+    witness.write_text("# Auto Sync Status Proof\n\nsync status witness\n", encoding="utf-8")
+    env = agent_memory_env()
+    env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
+
+    result = run_agent_memory_subprocess(workspace.repo, "sync", "status", env=env)
+
+    assert result.returncode == 0
+    status = parse_json_stdout(result)
+    assert status == {
+        "auto_sync": expected_sync_auto_status(env),
+        "git": {
+            "ahead": 0,
+            "behind": 0,
+            "branch": branch,
+            "changes": [{"path": "global/references/auto-sync-status-proof.md", "status": "??"}],
+            "head": git_output(workspace.vault, "rev-parse", "HEAD"),
+            "remote": str(remote),
+            "upstream": f"origin/{branch}",
+            "worktree_clean": False,
+        },
+        "initialized": True,
+        "last_sync": expected_sync_state(env),
+        "project_bound": True,
+        "vault": str(workspace.vault),
+    }
+
+
+def test_sync_status_reports_global_vault_from_unbound_directory(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    remote = initialized_bare_remote(tmp_path, "global-status-vault-remote.git")
+    branch = configure_vault_remote(vault, remote)
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+    env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
+
+    result = run_agent_memory_subprocess(loose, "sync", "status", env=env)
+
+    assert result.returncode == 0
+    status = parse_json_stdout(result)
+    assert status == {
+        "auto_sync": expected_sync_auto_status(env),
+        "git": {
+            "ahead": 0,
+            "behind": 0,
+            "branch": branch,
+            "changes": [],
+            "head": git_output(vault, "rev-parse", "HEAD"),
+            "remote": str(remote),
+            "upstream": f"origin/{branch}",
+            "worktree_clean": True,
+        },
+        "initialized": True,
+        "last_sync": expected_sync_state(env),
+        "project_bound": False,
+        "vault": str(vault),
+    }
+
+
+def test_sync_run_commits_and_pushes_global_vault_from_unbound_directory(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    remote = initialized_bare_remote(tmp_path, "global-run-vault-remote.git")
+    branch = configure_vault_remote(vault, remote)
+    witness = vault / "global" / "references" / "global-auto-sync-run-proof.md"
+    witness.write_text("# Global Auto Sync Run Proof\n\nglobal sync run witness\n", encoding="utf-8")
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+    env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
+
+    result = run_agent_memory_subprocess(loose, "sync", "run", env=env)
+
+    assert result.returncode == 0
+    payload = parse_json_stdout(result)
+    local_head = git_output(vault, "rev-parse", "HEAD")
+    expected_payload: JsonObject = {
+        "branch": branch,
+        "committed": True,
+        "head": local_head,
+        "pushed": True,
+        "remote": str(remote),
+        "vault": str(vault),
+        "worktree_clean": True,
+    }
+    assert payload == expected_payload
+    assert git_status_lines(vault) == set()
+    assert git_output(remote, "rev-parse", f"refs/heads/{branch}") == local_head
+    last_success: JsonObject = {"result": expected_payload, "status": "success"}
+
+    status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
+    doctor = parse_json_stdout(run_agent_memory_subprocess(loose, "doctor", env=env))
+
+    assert status["last_sync"] == expected_sync_state(env, last_attempt=last_success, last_success=last_success)
+    assert doctor["last_sync"] == expected_sync_state(env, last_attempt=last_success, last_success=last_success)
+
+
+def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    xdg_config_home = tmp_path / "xdg-config"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    remote = initialized_bare_remote(tmp_path, "systemd-vault-remote.git")
+    configure_vault_remote(vault, remote)
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+    env["XDG_CONFIG_HOME"] = str(xdg_config_home)
+    service_path = xdg_config_home / "systemd" / "user" / "agent-memory-sync.service"
+    timer_path = xdg_config_home / "systemd" / "user" / "agent-memory-sync.timer"
+    timer_wants_path = xdg_config_home / "systemd" / "user" / "timers.target.wants" / "agent-memory-sync.timer"
+
+    installed = run_agent_memory_subprocess(loose, "sync", "install", "300", env=env)
+
+    assert installed.returncode == 0
+    assert parse_json_stdout(installed) == {
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300),
+        "vault": str(vault),
+    }
+    service_lines = set(service_path.read_text(encoding="utf-8").splitlines())
+    assert {
+        "[Unit]",
+        "Description=Synchronize the agent-memory vault",
+        "[Service]",
+        "Type=oneshot",
+        f"WorkingDirectory={vault}",
+        f"Environment=AGENT_MEMORY_VAULT={vault}",
+        f"ExecStart={sys.executable} -m agent_memory sync run",
+    }.issubset(service_lines)
+    assert timer_path.read_text(encoding="utf-8").splitlines() == [
+        "[Unit]",
+        "Description=Run agent-memory vault synchronization every 300 seconds",
+        "",
+        "[Timer]",
+        "OnBootSec=300s",
+        "OnUnitActiveSec=300s",
+        "Persistent=true",
+        "Unit=agent-memory-sync.service",
+        "",
+        "[Install]",
+        "WantedBy=timers.target",
+    ]
+
+    status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
+
+    assert status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300)
+
+    enabled = run_agent_memory_subprocess(loose, "sync", "enable", env=env)
+
+    assert enabled.returncode == 0
+    assert parse_json_stdout(enabled) == {
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "vault": str(vault),
+    }
+    assert timer_wants_path.is_symlink()
+    assert timer_wants_path.resolve() == timer_path.resolve()
+    enabled_status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
+    assert enabled_status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300, enabled=True)
+
+    disabled = run_agent_memory_subprocess(loose, "sync", "disable", env=env)
+
+    assert disabled.returncode == 0
+    assert parse_json_stdout(disabled) == {
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300),
+        "vault": str(vault),
+    }
+    assert not timer_wants_path.exists()
+
+    enabled_again = run_agent_memory_subprocess(loose, "sync", "enable", env=env)
+
+    assert enabled_again.returncode == 0
+    assert parse_json_stdout(enabled_again) == {
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "vault": str(vault),
+    }
+
+    removed = run_agent_memory_subprocess(loose, "sync", "remove", env=env)
+
+    assert removed.returncode == 0
+    assert parse_json_stdout(removed) == {
+        "auto_sync": expected_sync_auto_status(env),
+        "vault": str(vault),
+    }
+    assert not service_path.exists()
+    assert not timer_path.exists()
+    assert not timer_wants_path.exists()
+
+
+def test_doctor_reports_sync_auto_status_after_systemd_install(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    xdg_config_home = tmp_path / "xdg-config"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    remote = initialized_bare_remote(tmp_path, "doctor-systemd-vault-remote.git")
+    configure_vault_remote(vault, remote)
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+    env["XDG_CONFIG_HOME"] = str(xdg_config_home)
+
+    installed = run_agent_memory_subprocess(loose, "sync", "install", "300", env=env)
+    doctor_result = run_agent_memory_subprocess(loose, "doctor", env=env)
+
+    assert installed.returncode == 0
+    assert doctor_result.returncode == 0
+    doctor = parse_json_stdout(doctor_result)
+    assert doctor["vault"] == str(vault)
+    assert doctor["project_bound"] is False
+    assert doctor["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300)
+
+
+def test_sync_run_pushes_conflict_branch_and_restores_main_when_rebase_conflicts(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    remote = initialized_bare_remote(tmp_path, "conflict-vault-remote.git")
+    branch = configure_vault_remote(workspace.vault, remote)
+    conflict_path = Path("global/references/auto-sync-conflict-proof.md")
+    local_conflict_file = workspace.vault / conflict_path
+    local_conflict_file.write_text("# Auto Sync Conflict Proof\n\nbase line\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(conflict_path)], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Seed auto-sync conflict proof"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "push", "origin", branch], cwd=workspace.vault, check=True, text=True, capture_output=True)
+
+    remote_clone = tmp_path / "remote-clone"
+    subprocess.run(["git", "clone", str(remote), str(remote_clone)], check=True, text=True, capture_output=True)
+    configure_git_identity(remote_clone)
+    (remote_clone / conflict_path).write_text("# Auto Sync Conflict Proof\n\nremote branch text\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(conflict_path)], cwd=remote_clone, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Remote conflicting vault edit"], cwd=remote_clone, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "push", "origin", branch], cwd=remote_clone, check=True, text=True, capture_output=True)
+
+    local_conflict_file.write_text("# Auto Sync Conflict Proof\n\nlocal branch text\n", encoding="utf-8")
+
+    result = parse_json_stdout(run_agent_memory(workspace.repo, "sync", "run"))
+
+    conflict_branch = json_string(result["conflict_branch"])
+    conflict_head = json_string(result["conflict_head"])
+    assert result == {
+        "branch": branch,
+        "committed": True,
+        "conflict_branch": conflict_branch,
+        "conflict_head": conflict_head,
+        "head": git_output(workspace.vault, "rev-parse", "HEAD"),
+        "pushed": False,
+        "remote": str(remote),
+        "status": "conflict_branch_pushed",
+        "vault": str(workspace.vault),
+        "worktree_clean": True,
+    }
+    assert git_status_lines(workspace.vault) == set()
+    assert git_output(workspace.vault, "rev-parse", "HEAD") == git_output(remote, "rev-parse", f"refs/heads/{branch}")
+    assert git_output(remote, "rev-parse", f"refs/heads/{conflict_branch}") == conflict_head
+    assert git_output(remote, "show", f"{branch}:{conflict_path}") == "# Auto Sync Conflict Proof\n\nremote branch text"
+    assert git_output(remote, "show", f"{conflict_branch}:{conflict_path}") == "# Auto Sync Conflict Proof\n\nlocal branch text"
 
 
 def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path) -> None:
@@ -1528,6 +2089,154 @@ def test_inspect_links_dedupes_reciprocal_index_links(tmp_path: Path) -> None:
         "json",
     )
     assert both["links"] == [decision_index_record]
+
+
+def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    existing = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="advice",
+        title="Existing Link Target",
+        content="This memory is a valid wiki target.",
+    )
+    source = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Broken Link Source",
+        content="Keep [[global/advice/existing-link-target]] but report [[global/advice/retired-link-target]].",
+    )
+    source_key = project_memory_key(workspace, "decisions", "broken-link-source")
+    source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "broken-link-source.md"
+    index_path = source_path.parent / "index.md"
+    broken_target = "global/advice/retired-link-target"
+    source_lines = [line_number for line_number, line in enumerate(source_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line]
+    index_line = next(line_number for line_number, line in enumerate(index_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line)
+
+    result = run_agent_memory_subprocess(workspace.repo, "inspect", "links", "--broken", "--scope", "both", "--format", "json")
+
+    assert existing["key"] == "global/advice/existing-link-target"
+    assert source["key"] == source_key
+    assert result.returncode == 1
+    assert parse_json_stdout(result) == {
+        "scope": "both",
+        "broken_links": [
+            {
+                "line": source_lines[0],
+                "source_key": source_key,
+                "source_path": str(source_path),
+                "target": broken_target,
+                "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
+            },
+            {
+                "line": source_lines[1],
+                "source_key": source_key,
+                "source_path": str(source_path),
+                "target": broken_target,
+                "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
+            },
+            {
+                "line": index_line,
+                "source_key": f"projects/{workspace.project_id}/decisions/index",
+                "source_path": str(index_path),
+                "target": broken_target,
+                "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
+            },
+        ],
+    }
+
+
+def test_links_rewrite_repoints_wikilink_target_to_external_url(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    old_target = "global/references/externalized-roadmap"
+    external_url = "https://github.com/dzackgarza/agent-memory/issues/23"
+    source = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Externalized Link Source",
+        content=f"Roadmap moved from [[{old_target}]] to GitHub.",
+    )
+    source_key = project_memory_key(workspace, "decisions", "externalized-link-source")
+    source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "externalized-link-source.md"
+    index_path = source_path.parent / "index.md"
+
+    result = run_agent_memory_subprocess(workspace.repo, "links", "rewrite", "--from", old_target, "--to", external_url)
+
+    assert source["key"] == source_key
+    assert result.returncode == 0
+    assert parse_json_stdout(result) == {
+        "from": old_target,
+        "to": external_url,
+        "rewritten": [
+            {"path": str(source_path), "replacements": 2},
+            {"path": str(index_path), "replacements": 1},
+        ],
+    }
+    for path in (source_path, index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{old_target}]]" not in rewritten
+        assert external_url in rewritten
+
+
+def test_links_rewrite_map_repoints_many_wikilink_targets(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    externalized_target = "global/references/externalized-plan"
+    old_internal_target = "global/references/old-roadmap"
+    new_internal_target = "global/references/new-roadmap"
+    external_url = "https://github.com/dzackgarza/agent-memory/issues/43"
+    add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="reference",
+        title="New Roadmap",
+        content="This is the replacement in-vault roadmap.",
+    )
+    source = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Mapped Link Source",
+        content=f"Moved [[{externalized_target}]] and renamed [[{old_internal_target}]].",
+    )
+    source_key = project_memory_key(workspace, "decisions", "mapped-link-source")
+    source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "mapped-link-source.md"
+    index_path = source_path.parent / "index.md"
+    map_path = tmp_path / "link-rewrites.toml"
+    map_path.write_text(
+        "\n".join(
+            (
+                "[rewrites]",
+                f'"{externalized_target}" = "{external_url}"',
+                f'"{old_internal_target}" = "{new_internal_target}"',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_agent_memory_subprocess(workspace.repo, "links", "rewrite", "--map", str(map_path))
+
+    assert source["key"] == source_key
+    assert result.returncode == 0
+    assert parse_json_stdout(result) == {
+        "map": str(map_path),
+        "rewrites": [
+            {"from": externalized_target, "to": external_url},
+            {"from": old_internal_target, "to": new_internal_target},
+        ],
+        "rewritten": [
+            {"path": str(index_path), "replacements": 2},
+            {"path": str(source_path), "replacements": 4},
+        ],
+    }
+    for path in (source_path, index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{externalized_target}]]" not in rewritten
+        assert f"[[{old_internal_target}]]" not in rewritten
+        assert external_url in rewritten
+        assert f"[[{new_internal_target}]]" in rewritten
 
 
 def test_inspect_outline_and_recent_real_vault(tmp_path: Path) -> None:

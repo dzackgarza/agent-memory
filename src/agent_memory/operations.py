@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tomllib
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -56,8 +58,25 @@ class DependencyCheck:
     install_instructions: str
 
 
+@dataclass(frozen=True)
+class SyncSystemdPaths:
+    unit_dir: Path
+    service: Path
+    timer: Path
+    timer_wants: Path
+
+
+@dataclass(frozen=True)
+class WikilinkRewrite:
+    from_key: str
+    to_target: str
+    replacement: str
+    from_fragment: str | None = None
+
+
 OKF_VERSION = "0.1"
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 AGENTS_SECTION_START = "<!-- agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- agent-memory:end -->"
 ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
@@ -72,6 +91,9 @@ VAULT_MAINTENANCE_SKILL_HINT = (
     f"Run `{VAULT_MAINTENANCE_SKILL_COMMAND}` and follow its referenced workflows "
     "before retrying normal memory work."
 )
+SYNC_SYSTEMD_SERVICE_NAME = "agent-memory-sync.service"
+SYNC_SYSTEMD_TIMER_NAME = "agent-memory-sync.timer"
+SYNC_STATE_FILENAME = "sync-state.json"
 
 MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.DECISION: "decisions",
@@ -552,12 +574,17 @@ def update_memory(
     write_memory(transition.destination_path, transition.metadata, transition.body)
     sync_memory_transition_indexes(transition)
     index_zk_notebook(config.vault)
+    rewritten: list[JsonObject] = []
+    if transition.new_key != transition.old_key:
+        rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(transition.old_key, transition.new_key),))
+        index_zk_notebook(config.vault)
 
     paths = [
         transition.source_path,
         transition.destination_path,
         transition.source_path.parent / "index.md",
         transition.destination_path.parent / "index.md",
+        *rewritten_record_paths(rewritten),
     ]
     try:
         commit_vault_changes(
@@ -569,11 +596,28 @@ def update_memory(
         git_stderr = e.stderr or ""
         raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
-    return {"key": transition.new_key, "path": str(transition.destination_path)}
+    result: JsonObject = {"key": transition.new_key, "path": str(transition.destination_path)}
+    if transition.new_key != transition.old_key:
+        result["rewritten"] = json_list(rewritten)
+    return result
 
 
-def delete_memory(key: str, cwd: Path) -> JsonObject:
+def delete_backlink_disposition_error(key: str, inbound_keys: Sequence[str]) -> str:
+    return f"delete would orphan inbound wikilinks for {key}; inbound={', '.join(inbound_keys)}; rerun with --repoint <key-or-url> or --orphan-ok"
+
+
+def delete_memory(
+    key: str,
+    cwd: Path,
+    repoint: str | None = None,
+    orphan_ok: bool = False,
+) -> JsonObject:
     config = load_project_config(cwd)
+    if repoint is not None and orphan_ok:
+        raise MemoryOperationError("delete accepts --repoint or --orphan-ok, not both")
+    inbound_keys = non_index_incoming_link_keys(config, key)
+    if inbound_keys and repoint is None and not orphan_ok:
+        raise MemoryOperationError(delete_backlink_disposition_error(key, inbound_keys))
     path = config.vault / f"{key}.md"
     try:
         document = read_memory(path)
@@ -588,14 +632,32 @@ def delete_memory(key: str, cwd: Path) -> JsonObject:
         commit_message = f"Delete memory: {title}"
         iwe.delete(config.vault, key)
 
+    rewritten: list[JsonObject] = []
+    if repoint is not None:
+        rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, repoint),))
     index_zk_notebook(config.vault)
     try:
-        commit_vault_changes(config.vault, commit_message, paths=[path, path.parent / "index.md"])
+        commit_vault_changes(
+            config.vault,
+            commit_message,
+            paths=[
+                path,
+                path.parent / "index.md",
+                *rewritten_record_paths(rewritten),
+                *rewritten_record_parent_index_paths(rewritten),
+            ],
+        )
     except subprocess.CalledProcessError as e:
         git_stderr = e.stderr or ""
         raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
-    return {"deleted": key}
+    result: JsonObject = {"deleted": key}
+    if repoint is not None:
+        result["repointed_to"] = repoint
+        result["rewritten"] = json_list(rewritten)
+    if orphan_ok:
+        result["orphaned"] = json_list(inbound_keys)
+    return result
 
 
 def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
@@ -970,22 +1032,47 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
         append_index_link(extracted_path.parent / "index.md", title, extracted_path.name, description)
         extracted_keys.append(affected_key)
     assert extracted_keys, "split must create at least one extracted memory"
+    assert len(extracted_keys) == 1, f"split section must create exactly one extracted memory: {extracted_keys}"
+    rewritten = rewrite_wikilink_files(
+        config,
+        (wikilink_rewrite(f"{key}#{section}", extracted_keys[0]),),
+    )
     index_zk_notebook(config.vault)
-    paths = list(set([memory_path_for_key(config, k) for k in affected_keys] + [memory_path_for_key(config, k).parent / "index.md" for k in affected_keys]))
+    paths = list(
+        set(
+            [memory_path_for_key(config, k) for k in affected_keys]
+            + [memory_path_for_key(config, k).parent / "index.md" for k in affected_keys]
+            + rewritten_record_paths(rewritten)
+            + rewritten_record_parent_index_paths(rewritten)
+        )
+    )
     commit_vault_changes(config.vault, f"Split memory section: {section}", paths=paths)
-    return {"key": key, "section": section, "output": json_list(affected_keys), "extracted": json_list(extracted_keys)}
+    return {
+        "key": key,
+        "section": section,
+        "output": json_list(affected_keys),
+        "extracted": json_list(extracted_keys),
+        "rewritten": json_list(rewritten),
+    }
 
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
+    reference_document = read_memory(memory_path_for_key(config, reference))
+    reference_title = metadata_string(reference_document.metadata, "title")
     affected_keys = iwe.inline(config.vault, key, reference)
+    rewritten = rewrite_wikilink_files(
+        config,
+        (wikilink_rewrite(reference, f"{key}#{reference_title}"),),
+        include_indexes=False,
+    )
     index_zk_notebook(config.vault)
     # Build pathspecs without asserting existence -- iwe.inline deletes the
     # reference file, so memory_path_for_key() would fail on the merged-away key.
     affected_paths = [config.vault / f"{k}.md" for k in affected_keys]
-    paths = list(set(affected_paths + [p.parent / "index.md" for p in affected_paths]))
+    paths = list(set(affected_paths + [p.parent / "index.md" for p in affected_paths] + rewritten_record_paths(rewritten) + rewritten_record_parent_index_paths(rewritten)))
     commit_vault_changes(config.vault, f"Merge memory reference: {reference}", paths=paths)
-    return {"key": key, "reference": reference, "output": json_list(affected_keys)}
+    return {"key": key, "reference": reference, "output": json_list(affected_keys), "rewritten": json_list(rewritten)}
 
 
 def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
@@ -1036,14 +1123,18 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     write_new_memory(source_path, pointer_metadata, pointer_body)
     replace_index_link(source_path.parent / "index.md", title, title, source_path.name, pointer_description)
     index_zk_notebook(config.vault)
+    rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, destination_key),))
+    index_zk_notebook(config.vault)
     paths = [
         source_path,
         destination_path,
         source_path.parent / "index.md",
         destination_path.parent / "index.md",
+        *rewritten_record_paths(rewritten),
+        *rewritten_record_parent_index_paths(rewritten),
     ]
     commit_vault_changes(config.vault, f"Move memory {key} to {destination_key}", paths=paths)
-    return {"key": destination_key, "path": str(destination_path)}
+    return {"key": destination_key, "path": str(destination_path), "rewritten": json_list(rewritten)}
 
 
 def check_dependency(dependency: DependencyCheck, cwd: Path) -> JsonObject:
@@ -1090,6 +1181,8 @@ def doctor(cwd: Path) -> JsonObject:
         "project_root": str(git_root),
         "project_bound": True,
         "agent_state": project_agent_state_records(git_root, project_dir),
+        "auto_sync": sync_auto_status(),
+        "last_sync": sync_state(),
         "tools": basic["tools"],
         "dependencies": basic["dependencies"],
     }
@@ -1107,6 +1200,8 @@ def unbound_doctor(basic: JsonObject) -> JsonObject:
         "project_root": None,
         "project_bound": False,
         "agent_state": [],
+        "auto_sync": sync_auto_status(),
+        "last_sync": sync_state(),
         "tools": basic["tools"],
         "dependencies": basic["dependencies"],
     }
@@ -1153,6 +1248,380 @@ def commit_vault_changes(vault: Path, message: str, paths: list[Path] | None = N
         diff_res = run_checked_optional(["git", "diff", "--cached", "--quiet"], cwd=vault)
         if diff_res.returncode != 0:
             run_checked(["git", "commit", "-m", message], cwd=vault)
+
+
+def git_status_entries(repo: Path) -> tuple[str, ...]:
+    result = run_checked(["git", "status", "--short"], cwd=repo)
+    return tuple(line for line in result.stdout.splitlines() if line)
+
+
+def git_status_records(repo: Path) -> list[JsonValue]:
+    records: list[JsonValue] = []
+    for entry in git_status_entries(repo):
+        assert len(entry) >= 4, f"unexpected git status entry shape: repo={repo}; entry={entry!r}"
+        record: JsonObject = {"status": entry[:2], "path": entry[3:]}
+        records.append(record)
+    return records
+
+
+def git_current_branch(repo: Path) -> str:
+    result = run_checked(["git", "branch", "--show-current"], cwd=repo)
+    branch = result.stdout.strip()
+    assert branch, f"git repository must be on a named branch: {repo}"
+    return branch
+
+
+def git_upstream(repo: Path) -> str:
+    result = run_checked(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd=repo)
+    upstream = result.stdout.strip()
+    assert upstream, f"git repository must have an upstream branch: {repo}"
+    return upstream
+
+
+def git_ahead_behind(repo: Path) -> tuple[int, int]:
+    result = run_checked(["git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}"], cwd=repo)
+    parts = result.stdout.split()
+    assert len(parts) == 2, f"unexpected git ahead/behind output: repo={repo}; output={result.stdout!r}"
+    ahead, behind = (int(part) for part in parts)
+    return ahead, behind
+
+
+def git_head(repo: Path) -> str:
+    return run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+
+
+def sync_conflict_branch_name(branch: str, head: str) -> str:
+    safe_branch = re.sub(r"[^A-Za-z0-9._-]+", "-", branch).strip("-")
+    assert safe_branch, f"cannot build conflict branch from branch name: {branch!r}"
+    return f"agent-memory-sync-conflict-{safe_branch}-{head[:12]}"
+
+
+def sync_config(cwd: Path) -> tuple[ProjectConfig, bool]:
+    config = find_project_config(cwd)
+    if config is not None:
+        return config, True
+    return global_only_config(), False
+
+
+def sync_systemd_paths() -> SyncSystemdPaths:
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config_home is None:
+        config_home = Path.home() / ".config"
+    else:
+        assert xdg_config_home, "XDG_CONFIG_HOME must be non-empty when set; unset it to use ~/.config"
+        config_home = Path(xdg_config_home)
+    unit_dir = config_home / "systemd" / "user"
+    return SyncSystemdPaths(
+        unit_dir=unit_dir,
+        service=unit_dir / SYNC_SYSTEMD_SERVICE_NAME,
+        timer=unit_dir / SYNC_SYSTEMD_TIMER_NAME,
+        timer_wants=unit_dir / "timers.target.wants" / SYNC_SYSTEMD_TIMER_NAME,
+    )
+
+
+def sync_state_path() -> Path:
+    xdg_state_home = os.environ.get("XDG_STATE_HOME")
+    if xdg_state_home is None:
+        state_home = Path.home() / ".local" / "state"
+    else:
+        assert xdg_state_home, "XDG_STATE_HOME must be non-empty when set; unset it to use ~/.local/state"
+        state_home = Path(xdg_state_home)
+    return state_home / "agent-memory" / SYNC_STATE_FILENAME
+
+
+def empty_sync_state(state_path: Path) -> JsonObject:
+    return {
+        "last_attempt": {"status": "never_run"},
+        "last_failure": {"status": "none"},
+        "last_success": {"status": "none"},
+        "state_path": str(state_path),
+    }
+
+
+def sync_state() -> JsonObject:
+    state_path = sync_state_path()
+    if not state_path.exists():
+        return empty_sync_state(state_path)
+    decoded = json.loads(state_path.read_text(encoding="utf-8"))
+    assert isinstance(decoded, dict), f"sync state file must contain a JSON object: {state_path}"
+    assert decoded["state_path"] == str(state_path), f"sync state path mismatch: {state_path}"
+    return decoded
+
+
+def sync_attempt_record(result: JsonObject) -> JsonObject:
+    pushed = result["pushed"]
+    assert isinstance(pushed, bool), "sync result must include pushed boolean"
+    if pushed:
+        status = "success"
+    else:
+        status_value = result["status"]
+        assert isinstance(status_value, str), "non-pushed sync result must include status"
+        status = status_value
+    return {"result": result, "status": status}
+
+
+def write_sync_state(result: JsonObject) -> JsonObject:
+    state_path = sync_state_path()
+    previous_state = sync_state()
+    previous_last_failure = previous_state["last_failure"]
+    assert isinstance(previous_last_failure, dict), "previous sync state last_failure must be an object"
+    previous_last_success = previous_state["last_success"]
+    assert isinstance(previous_last_success, dict), "previous sync state last_success must be an object"
+    attempt = sync_attempt_record(result)
+    pushed = result["pushed"]
+    assert isinstance(pushed, bool), "sync result must include pushed boolean"
+    if pushed:
+        last_success = attempt
+        last_failure = previous_last_failure
+    else:
+        last_success = previous_last_success
+        last_failure = attempt
+    state: JsonObject = {
+        "last_attempt": attempt,
+        "last_failure": last_failure,
+        "last_success": last_success,
+        "state_path": str(state_path),
+    }
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return state
+
+
+def sync_systemd_unit_names() -> JsonObject:
+    return {
+        "service": SYNC_SYSTEMD_SERVICE_NAME,
+        "timer": SYNC_SYSTEMD_TIMER_NAME,
+    }
+
+
+def sync_timer_interval_seconds(timer_path: Path) -> int:
+    for line in timer_path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if key == "OnUnitActiveSec":
+            assert separator == "=", f"timer interval line must contain '=': timer={timer_path}; line={line!r}"
+            assert value.endswith("s"), f"timer interval must be recorded in seconds: timer={timer_path}; value={value!r}"
+            interval = int(value[:-1])
+            assert interval > 0, f"timer interval must be positive: timer={timer_path}; value={value!r}"
+            return interval
+    raise AssertionError(f"timer unit must contain OnUnitActiveSec: timer={timer_path}")
+
+
+def sync_timer_enabled(paths: SyncSystemdPaths) -> bool:
+    if paths.timer_wants.is_symlink():
+        assert paths.timer_wants.resolve() == paths.timer.resolve(), (
+            f"auto-sync timer enablement symlink points at the wrong unit; link={paths.timer_wants}; target={paths.timer_wants.resolve()}; expected={paths.timer}"
+        )
+        return True
+    assert not paths.timer_wants.exists(), f"auto-sync timer enablement path is not a symlink: {paths.timer_wants}"
+    return False
+
+
+def sync_auto_status() -> JsonObject:
+    paths = sync_systemd_paths()
+    service_exists = paths.service.is_file()
+    timer_exists = paths.timer.is_file()
+    enabled = sync_timer_enabled(paths)
+    assert service_exists == timer_exists, (
+        "auto-sync systemd installation must contain both unit files; "
+        f"service={paths.service} exists={service_exists}; timer={paths.timer} exists={timer_exists}; "
+        "run `agent-memory sync remove` and then `agent-memory sync install <seconds>`"
+    )
+    assert not enabled or timer_exists, f"auto-sync timer cannot be enabled without an installed timer unit; timer={paths.timer}; link={paths.timer_wants}"
+    status: JsonObject = {
+        "enabled": enabled,
+        "installed": service_exists,
+        "service_path": str(paths.service),
+        "timer_path": str(paths.timer),
+        "timer_wants_path": str(paths.timer_wants),
+        "unit_names": sync_systemd_unit_names(),
+    }
+    if timer_exists:
+        status["interval_seconds"] = sync_timer_interval_seconds(paths.timer)
+    return status
+
+
+def render_sync_service(vault: Path) -> str:
+    command = shlex.join([sys.executable, "-m", "agent_memory", "sync", "run"])
+    vault_arg = shlex.quote(str(vault))
+    return "\n".join(
+        (
+            "[Unit]",
+            "Description=Synchronize the agent-memory vault",
+            "",
+            "[Service]",
+            "Type=oneshot",
+            f"WorkingDirectory={vault_arg}",
+            f"Environment=AGENT_MEMORY_VAULT={vault_arg}",
+            f"ExecStart={command}",
+            "",
+        )
+    )
+
+
+def render_sync_timer(interval_seconds: int) -> str:
+    assert interval_seconds > 0, f"sync timer interval must be positive seconds: {interval_seconds}"
+    return "\n".join(
+        (
+            "[Unit]",
+            f"Description=Run agent-memory vault synchronization every {interval_seconds} seconds",
+            "",
+            "[Timer]",
+            f"OnBootSec={interval_seconds}s",
+            f"OnUnitActiveSec={interval_seconds}s",
+            "Persistent=true",
+            f"Unit={SYNC_SYSTEMD_SERVICE_NAME}",
+            "",
+            "[Install]",
+            "WantedBy=timers.target",
+            "",
+        )
+    )
+
+
+def install_sync_systemd_timer(cwd: Path, interval_seconds: int) -> JsonObject:
+    config, _project_bound = sync_config(cwd)
+    assert_vault_zk_initialized(config.vault)
+    paths = sync_systemd_paths()
+    paths.unit_dir.mkdir(parents=True, exist_ok=True)
+    paths.service.write_text(render_sync_service(config.vault), encoding="utf-8")
+    paths.timer.write_text(render_sync_timer(interval_seconds), encoding="utf-8")
+    return {
+        "vault": str(config.vault),
+        "auto_sync": sync_auto_status(),
+    }
+
+
+def enable_sync_systemd_timer(cwd: Path) -> JsonObject:
+    config, _project_bound = sync_config(cwd)
+    assert_vault_zk_initialized(config.vault)
+    paths = sync_systemd_paths()
+    assert paths.service.is_file(), f"auto-sync service unit must be installed before enable: {paths.service}"
+    assert paths.timer.is_file(), f"auto-sync timer unit must be installed before enable: {paths.timer}"
+    if paths.timer_wants.is_symlink():
+        assert paths.timer_wants.resolve() == paths.timer.resolve(), (
+            f"auto-sync timer enablement symlink points at the wrong unit; link={paths.timer_wants}; target={paths.timer_wants.resolve()}; expected={paths.timer}"
+        )
+    else:
+        assert not paths.timer_wants.exists(), f"auto-sync timer enablement path is not a symlink: {paths.timer_wants}"
+        paths.timer_wants.parent.mkdir(parents=True, exist_ok=True)
+        paths.timer_wants.symlink_to(paths.timer)
+    return {
+        "vault": str(config.vault),
+        "auto_sync": sync_auto_status(),
+    }
+
+
+def disable_sync_systemd_paths(paths: SyncSystemdPaths) -> None:
+    if paths.timer_wants.is_symlink():
+        assert paths.timer_wants.resolve() == paths.timer.resolve(), (
+            f"auto-sync timer enablement symlink points at the wrong unit; link={paths.timer_wants}; target={paths.timer_wants.resolve()}; expected={paths.timer}"
+        )
+        paths.timer_wants.unlink()
+        return
+    assert not paths.timer_wants.exists(), f"auto-sync timer enablement path is not a symlink: {paths.timer_wants}"
+
+
+def disable_sync_systemd_timer(cwd: Path) -> JsonObject:
+    config, _project_bound = sync_config(cwd)
+    paths = sync_systemd_paths()
+    disable_sync_systemd_paths(paths)
+    return {
+        "vault": str(config.vault),
+        "auto_sync": sync_auto_status(),
+    }
+
+
+def remove_sync_systemd_timer(cwd: Path) -> JsonObject:
+    config, _project_bound = sync_config(cwd)
+    paths = sync_systemd_paths()
+    disable_sync_systemd_paths(paths)
+    if paths.service.exists():
+        paths.service.unlink()
+    if paths.timer.exists():
+        paths.timer.unlink()
+    return {
+        "vault": str(config.vault),
+        "auto_sync": sync_auto_status(),
+    }
+
+
+def sync_status(cwd: Path) -> JsonObject:
+    config, project_bound = sync_config(cwd)
+    assert_vault_zk_initialized(config.vault)
+    vault = config.vault
+    changes = git_status_records(vault)
+    ahead, behind = git_ahead_behind(vault)
+    return {
+        "vault": str(vault),
+        "initialized": True,
+        "project_bound": project_bound,
+        "git": {
+            "remote": git_remote(vault),
+            "branch": git_current_branch(vault),
+            "head": git_head(vault),
+            "upstream": git_upstream(vault),
+            "ahead": ahead,
+            "behind": behind,
+            "worktree_clean": not changes,
+            "changes": changes,
+        },
+        "auto_sync": sync_auto_status(),
+        "last_sync": sync_state(),
+    }
+
+
+def push_sync_conflict_branch(vault: Path, remote: str, branch: str, committed: bool, conflict_head: str) -> JsonObject:
+    conflict_branch = sync_conflict_branch_name(branch, conflict_head)
+    run_checked(["git", "rebase", "--abort"], cwd=vault)
+    run_checked(["git", "branch", conflict_branch, conflict_head], cwd=vault)
+    run_checked(["git", "push", "origin", f"{conflict_branch}:{conflict_branch}"], cwd=vault)
+    run_checked(["git", "reset", "--hard", f"origin/{branch}"], cwd=vault)
+    status_after = git_status_entries(vault)
+    assert not status_after, f"vault sync conflict recovery must leave a clean worktree: vault={vault}; status={status_after}"
+    return {
+        "vault": str(vault),
+        "remote": remote,
+        "branch": branch,
+        "committed": committed,
+        "pushed": False,
+        "head": git_head(vault),
+        "worktree_clean": True,
+        "status": "conflict_branch_pushed",
+        "conflict_branch": conflict_branch,
+        "conflict_head": conflict_head,
+    }
+
+
+def sync_vault(cwd: Path) -> JsonObject:
+    config, _project_bound = sync_config(cwd)
+    vault = config.vault
+    branch = git_current_branch(vault)
+    remote = git_remote(vault)
+    status_before = git_status_entries(vault)
+    committed = bool(status_before)
+    if committed:
+        commit_vault_changes(vault, "Auto-sync vault changes")
+    sync_head = git_head(vault)
+    run_checked(["git", "fetch", "origin", branch], cwd=vault)
+    rebase = run_checked_optional(["git", "rebase", f"origin/{branch}"], cwd=vault)
+    if rebase.returncode != 0:
+        result = push_sync_conflict_branch(vault, remote, branch, committed, sync_head)
+        write_sync_state(result)
+        return result
+    run_checked(["git", "push", "origin", branch], cwd=vault)
+    status_after = git_status_entries(vault)
+    assert not status_after, f"vault sync must leave a clean worktree: vault={vault}; status={status_after}"
+    result = {
+        "vault": str(vault),
+        "remote": remote,
+        "branch": branch,
+        "committed": committed,
+        "pushed": True,
+        "head": git_head(vault),
+        "worktree_clean": True,
+    }
+    write_sync_state(result)
+    return result
 
 
 def configure_vault_git(vault: Path) -> None:
@@ -1868,6 +2337,21 @@ def inspect_links(
     }
 
 
+def inspect_broken_links(
+    *,
+    scope: SearchScope,
+    output_format: InspectOutputFormat,
+    cwd: Path,
+) -> JsonObject:
+    assert output_format is InspectOutputFormat.JSON, "inspect links --broken currently emits JSON"
+    config = load_project_config(cwd)
+    records = broken_wikilink_records(config, scope)
+    return {
+        "scope": scope.value,
+        "broken_links": json_list(records),
+    }
+
+
 def inspect_outline(
     *,
     key: str,
@@ -2053,6 +2537,196 @@ def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
     return tuple(keys)
 
 
+def wikilink_key(raw_target: str) -> str:
+    key = raw_target.split("|", 1)[0].split("#", 1)[0].strip()
+    assert key, f"wikilink target must not be empty: {raw_target!r}"
+    assert not key.startswith(("http://", "https://")), f"wikilink target must be a vault key, not a URL: {raw_target!r}"
+    return key
+
+
+def wikilink_fragment(raw_target: str) -> str | None:
+    target = raw_target.split("|", 1)[0].strip()
+    if "#" not in target:
+        return None
+    fragment = " ".join(target.split("#", 1)[1].split())
+    assert fragment, f"wikilink fragment must not be empty: {raw_target!r}"
+    return fragment
+
+
+def outgoing_wikilink_keys(path: Path) -> tuple[str, ...]:
+    text = path.read_text(encoding="utf-8")
+    return tuple(wikilink_key(match.group(1)) for match in WIKILINK_PATTERN.finditer(text))
+
+
+def wikilink_argument_text(raw_target: str) -> str:
+    stripped = raw_target.strip()
+    if stripped.startswith("[[") and stripped.endswith("]]"):
+        return stripped[2:-2].strip()
+    return stripped
+
+
+def wikilink_argument_key(raw_target: str) -> str:
+    return wikilink_key(wikilink_argument_text(raw_target))
+
+
+def wikilink_argument_fragment(raw_target: str) -> str | None:
+    return wikilink_fragment(wikilink_argument_text(raw_target))
+
+
+def wikilink_argument_target(raw_target: str) -> str:
+    key = wikilink_argument_key(raw_target)
+    fragment = wikilink_argument_fragment(raw_target)
+    if fragment is None:
+        return key
+    return f"{key}#{fragment}"
+
+
+def wikilink_replacement(raw_target: str) -> str:
+    stripped = raw_target.strip()
+    if stripped.startswith(("http://", "https://")):
+        return stripped
+    return f"[[{wikilink_argument_target(stripped)}]]"
+
+
+def wikilink_rewrite(from_target: str, to_target: str) -> WikilinkRewrite:
+    return WikilinkRewrite(
+        from_key=wikilink_argument_key(from_target),
+        to_target=to_target,
+        replacement=wikilink_replacement(to_target),
+        from_fragment=wikilink_argument_fragment(from_target),
+    )
+
+
+def wikilink_target_path(config: ProjectConfig, key: str) -> Path:
+    target_path = (config.vault / f"{key}.md").resolve()
+    vault = config.vault.resolve()
+    assert target_path.is_relative_to(vault), f"wikilink target leaves memory vault: {key}"
+    return target_path
+
+
+def broken_wikilink_records(config: ProjectConfig, scope: SearchScope) -> list[JsonObject]:
+    records: list[JsonObject] = []
+    for path in inspect_markdown_paths(config, scope):
+        source_key = memory_key(config.vault, path)
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            for match in WIKILINK_PATTERN.finditer(line):
+                target = wikilink_key(match.group(1))
+                target_path = wikilink_target_path(config, target)
+                if not target_path.is_file():
+                    records.append(
+                        {
+                            "line": line_number,
+                            "source_key": source_key,
+                            "source_path": str(path),
+                            "target": target,
+                            "target_path": str(target_path),
+                        }
+                    )
+    return records
+
+
+def rewrite_wikilinks_in_text(
+    text: str,
+    *,
+    old_key: str,
+    replacement: str,
+    old_fragment: str | None = None,
+) -> tuple[str, int]:
+    replacements = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal replacements
+        if wikilink_key(match.group(1)) != old_key:
+            return match.group(0)
+        if old_fragment is not None and wikilink_fragment(match.group(1)) != old_fragment:
+            return match.group(0)
+        replacements += 1
+        return replacement
+
+    return WIKILINK_PATTERN.sub(replace, text), replacements
+
+
+def rewrite_wikilink_files(
+    config: ProjectConfig,
+    rewrites: Sequence[WikilinkRewrite],
+    *,
+    include_indexes: bool = True,
+) -> list[JsonObject]:
+    records: list[JsonObject] = []
+    for path in inspect_markdown_paths(config, SearchScope.BOTH):
+        if not include_indexes and path.name == "index.md":
+            continue
+        rewritten = path.read_text(encoding="utf-8")
+        replacements = 0
+        for rewrite in rewrites:
+            rewritten, rewrite_replacements = rewrite_wikilinks_in_text(
+                rewritten,
+                old_key=rewrite.from_key,
+                replacement=rewrite.replacement,
+                old_fragment=rewrite.from_fragment,
+            )
+            replacements += rewrite_replacements
+        if replacements:
+            path.write_text(rewritten, encoding="utf-8")
+            records.append({"path": str(path), "replacements": replacements})
+    return records
+
+
+def rewrite_record(rewrite: WikilinkRewrite) -> JsonObject:
+    return {"from": rewrite.from_key, "to": rewrite.to_target}
+
+
+def rewritten_record_paths(records: Sequence[JsonObject]) -> list[Path]:
+    paths: list[Path] = []
+    for record in records:
+        path = record["path"]
+        assert isinstance(path, str), f"rewritten record path must be a string: {record}"
+        paths.append(Path(path))
+    return paths
+
+
+def rewritten_record_parent_index_paths(records: Sequence[JsonObject]) -> list[Path]:
+    return [path.parent / "index.md" for path in rewritten_record_paths(records)]
+
+
+def wikilink_rewrite_map(map_path: Path) -> tuple[WikilinkRewrite, ...]:
+    decoded = tomllib.loads(map_path.read_text(encoding="utf-8"))
+    rewrites = decoded["rewrites"]
+    assert isinstance(rewrites, dict), f"wikilink rewrite map must contain a [rewrites] table: {map_path}"
+    records: list[WikilinkRewrite] = []
+    for from_target, to_target in rewrites.items():
+        assert isinstance(from_target, str), f"wikilink rewrite source must be a string: {map_path}"
+        assert isinstance(to_target, str), f"wikilink rewrite destination must be a string: {map_path}; source={from_target}"
+        records.append(wikilink_rewrite(from_target, to_target))
+    assert records, f"wikilink rewrite map must contain at least one rewrite: {map_path}"
+    return tuple(records)
+
+
+def rewrite_wikilinks(
+    *,
+    from_target: str | None,
+    to_target: str | None,
+    map_path: Path | None,
+    cwd: Path,
+) -> JsonObject:
+    config = load_project_config(cwd)
+    if map_path is None:
+        assert from_target is not None and to_target is not None, "links rewrite requires --from and --to unless --map is supplied"
+        rewrite = wikilink_rewrite(from_target, to_target)
+        return {
+            "from": rewrite.from_key,
+            "to": rewrite.to_target,
+            "rewritten": json_list(rewrite_wikilink_files(config, (rewrite,))),
+        }
+    assert from_target is None and to_target is None, "links rewrite --map cannot be combined with --from or --to"
+    rewrites = wikilink_rewrite_map(map_path)
+    return {
+        "map": str(map_path),
+        "rewrites": json_list([rewrite_record(rewrite) for rewrite in rewrites]),
+        "rewritten": json_list(rewrite_wikilink_files(config, rewrites)),
+    }
+
+
 def incoming_link_keys(config: ProjectConfig, target_key: str) -> tuple[str, ...]:
     keys: list[str] = []
     for path in inspect_markdown_paths(config, SearchScope.BOTH):
@@ -2060,6 +2734,19 @@ def incoming_link_keys(config: ProjectConfig, target_key: str) -> tuple[str, ...
         if source_key == target_key:
             continue
         if target_key in outgoing_link_keys(config, path):
+            keys.append(source_key)
+    return tuple(sorted(keys))
+
+
+def non_index_incoming_link_keys(config: ProjectConfig, target_key: str) -> tuple[str, ...]:
+    keys: list[str] = []
+    for path in inspect_markdown_paths(config, SearchScope.BOTH):
+        if path.name == "index.md":
+            continue
+        source_key = memory_key(config.vault, path)
+        if source_key == target_key:
+            continue
+        if target_key in outgoing_wikilink_keys(path):
             keys.append(source_key)
     return tuple(sorted(keys))
 

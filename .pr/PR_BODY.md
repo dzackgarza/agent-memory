@@ -1,39 +1,59 @@
-## Implementation plan
+## Milestone implementation PR — active claim map
 
-This PR owns the CLI Robustness & Vault Integrity implementation unit.
+This draft PR is the scoped execution surface for the Vault Synchronization and Integrity milestone.
+It is derived from the project plan record:
 
-- [x] #24: make vault writes atomic when `add` reaches git commit failure and preserve unrelated staged vault changes.
-- [x] #21: delete malformed/frontmatter-less memory notes without leaking parser assertions or leaving stale index links.
-- [x] #19: make project initialization reconcile an existing project vault directory.
-- [x] #20: document plan-card required fields/status values, cleanly report invalid plan field input, and add `--body-file`.
-- [x] #30: improve recurring CLI misuse diagnostics for command/option mistakes.
-- [x] Run `just test` and update evidence below.
+`projects/github.com__dzackgarza__agent-memory/plans/execute-pr-37-vault-synchronization-and-integrity`
 
-## Scope
+## Target issue set / subtree
 
-- **Target issue set / subtree:** Epic #31 and children #24, #21, #20, #19, #30
-- **GitHub milestone:** CLI Robustness & Vault Integrity
-- **Issues to close on merge:** Closes #24, closes #21, closes #20, closes #19, closes #30
-- **Broader parent referenced only:** Refs #31 epic
+- Parent issue: Refs #14
+- Claimed child/scope issues: #5, #6, #23
+- GitHub milestone: Vault Synchronization and Integrity
 
-## Claim map
+## Close / reference split
 
-- [x] **#24 - atomic vault writes preserve clean state on commit failure**
-  - Proof obligations claimed: forced vault commit failure leaves no partial memory file and does not commit unrelated staged vault content.
-  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
-- [x] **#21 - malformed note deletion is typed and index-clean**
-  - Proof obligations claimed: deleting a frontmatter-less linked memory removes the file and index link through a typed malformed-memory path, without catching `AssertionError`.
-  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
-- [x] **#19 - project init reconciles existing vault directories**
-  - Proof obligations claimed: `init project` handles pre-existing project vault directories and remains idempotent.
-  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
-- [x] **#20 - plan add help and validation are discoverable**
-  - Proof obligations claimed: `plan add --help` lists required fields/status values, invalid field values produce clean field-level errors, and `--body-file` populates card bodies.
-  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
-- [x] **#30 - CLI misuse diagnostics are actionable**
-  - Proof obligations claimed: common command/option mistakes report concrete parser guidance without raw tracebacks or assertion class names.
-  - Evidence: red reproducer and green implementation commits on this branch; `just test` passed.
+- Intended close candidates on merge: #5, #6, #23, but only for issues whose proof obligations land in this PR.
+- Parent #14 is referenced by default.
+  It may be closed only if final evidence proves the whole scoped subtree is complete.
+- If normalization is not implemented in this PR, #5 remains referenced only and must stay open.
+
+## Proof obligations claimed
+
+### #6 — Vault auto-sync with conflict-aware push workflow
+
+A user can initialize the vault, install auto-sync, inspect status, and remove auto-sync from the CLI. Normal vault changes are committed and pushed automatically.
+Remote-advanced or conflict cases either integrate safely or create an auditable branch plus PR with diagnostics rather than leaving the vault silently conflicted.
+`doctor` or a dedicated status surface reports the central vault path, remote, branch, worktree cleanliness, auto-sync install/enablement state, last sync success/failure, and `gh` availability when PR fallback is enabled.
+
+### #23 — Link integrity and bulk rewrite after structural reorganizations
+
+Broken `[[wikilink]]` references can be discovered with file/target evidence.
+Bulk rewrite can repoint references to another key or an external URL. Mapping-based rewrite handles many-to-many changes.
+Structural reorganization commands such as move/rename/delete/split/merge preserve inbound references or fail with an explicit backlink disposition path.
+
+### #5 — OKF frontmatter preservation during normalization
+
+If this PR introduces or changes normalization, it must preserve OKF metadata fields and reconcile duplicate/extra frontmatter into the canonical header or fail loudly naming the file and fields.
+If no normalization behavior lands here, #5 is not claimed and remains open.
+
+## Local execution plan
+
+1. Reconcile this branch with current `main` using forward commits, keeping the draft PR branch and public audit trail intact.
+2. Establish behavior-level proof for each claimed issue before implementation changes.
+3. Implement #6 and #23 as the core milestone workstreams.
+4. Decide #5 at the normalization boundary: implement and prove it only if normalization is actually touched; otherwise keep it as a referenced non-claim.
+5. Run the repo's declared validation gate and the PR review loop before marking ready.
+
+## Evidence required before ready-for-review
+
+- Local `just test` from the repository root.
+- PR checks green.
+- Issue-by-issue PR evidence note naming the command/output or test proving each closure candidate.
+- Review-thread scan showing no unresolved actionable threads.
 
 ## Exclusions / split conditions
 
-Config & Path Resolution is out of scope and remains under epic #32.
+- Excludes global agent work queue (#39), card schema system (#26/#35), and codebase health/slop remediation (#13/#36).
+- No silent fallbacks, mock sync, optional critical dependencies, or dirty-vault success paths.
+- If gitwatch conflict handling is not demonstrably safe and recoverable, implementation must use a first-class agent-memory sync workflow instead of depending on gitwatch.
