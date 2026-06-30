@@ -874,10 +874,11 @@ def test_delete_requires_backlink_disposition_and_can_repoint_inbound_links(tmp_
         ],
     }
     assert not target_path.exists()
-    for path in (backlink_path, backlink_index_path):
-        rewritten = path.read_text(encoding="utf-8")
-        assert f"[[{old_key}]]" not in rewritten
-        assert external_url in rewritten
+    rewritten_backlink = backlink_path.read_text(encoding="utf-8")
+    assert f"[[{old_key}]]" not in rewritten_backlink
+    assert external_url in rewritten_backlink
+    rewritten_index = backlink_index_path.read_text(encoding="utf-8")
+    assert f"[[{old_key}]]" not in rewritten_index
 
 
 def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:

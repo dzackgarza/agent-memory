@@ -601,8 +601,22 @@ def update_memory(
     return result
 
 
-def delete_memory(key: str, cwd: Path) -> JsonObject:
+def delete_backlink_disposition_error(key: str, inbound_keys: Sequence[str]) -> str:
+    return f"delete would orphan inbound wikilinks for {key}; inbound={', '.join(inbound_keys)}; rerun with --repoint <key-or-url> or --orphan-ok"
+
+
+def delete_memory(
+    key: str,
+    cwd: Path,
+    repoint: str | None = None,
+    orphan_ok: bool = False,
+) -> JsonObject:
     config = load_project_config(cwd)
+    if repoint is not None and orphan_ok:
+        raise MemoryOperationError("delete accepts --repoint or --orphan-ok, not both")
+    inbound_keys = non_index_incoming_link_keys(config, key)
+    if inbound_keys and repoint is None and not orphan_ok:
+        raise MemoryOperationError(delete_backlink_disposition_error(key, inbound_keys))
     path = config.vault / f"{key}.md"
     try:
         document = read_memory(path)
@@ -617,14 +631,27 @@ def delete_memory(key: str, cwd: Path) -> JsonObject:
         commit_message = f"Delete memory: {title}"
         iwe.delete(config.vault, key)
 
+    rewritten: list[JsonObject] = []
+    if repoint is not None:
+        rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, repoint),))
     index_zk_notebook(config.vault)
     try:
-        commit_vault_changes(config.vault, commit_message, paths=[path, path.parent / "index.md"])
+        commit_vault_changes(
+            config.vault,
+            commit_message,
+            paths=[path, path.parent / "index.md", *rewritten_record_paths(rewritten)],
+        )
     except subprocess.CalledProcessError as e:
         git_stderr = e.stderr or ""
         raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
-    return {"deleted": key}
+    result: JsonObject = {"deleted": key}
+    if repoint is not None:
+        result["repointed_to"] = repoint
+        result["rewritten"] = json_list(rewritten)
+    if orphan_ok:
+        result["orphaned"] = json_list(inbound_keys)
+    return result
 
 
 def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
@@ -2485,6 +2512,11 @@ def wikilink_key(raw_target: str) -> str:
     return key
 
 
+def outgoing_wikilink_keys(path: Path) -> tuple[str, ...]:
+    text = path.read_text(encoding="utf-8")
+    return tuple(wikilink_key(match.group(1)) for match in WIKILINK_PATTERN.finditer(text))
+
+
 def wikilink_argument_key(raw_target: str) -> str:
     stripped = raw_target.strip()
     if stripped.startswith("[[") and stripped.endswith("]]"):
@@ -2624,6 +2656,19 @@ def incoming_link_keys(config: ProjectConfig, target_key: str) -> tuple[str, ...
         if source_key == target_key:
             continue
         if target_key in outgoing_link_keys(config, path):
+            keys.append(source_key)
+    return tuple(sorted(keys))
+
+
+def non_index_incoming_link_keys(config: ProjectConfig, target_key: str) -> tuple[str, ...]:
+    keys: list[str] = []
+    for path in inspect_markdown_paths(config, SearchScope.BOTH):
+        if path.name == "index.md":
+            continue
+        source_key = memory_key(config.vault, path)
+        if source_key == target_key:
+            continue
+        if target_key in outgoing_wikilink_keys(path):
             keys.append(source_key)
     return tuple(sorted(keys))
 

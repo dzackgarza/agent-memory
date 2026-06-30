@@ -170,9 +170,21 @@ def update_command(
 
 def delete_command(
     key: Annotated[str, Parameter(help="Memory key to delete.")],
+    *,
+    repoint: Annotated[
+        str | None,
+        Parameter(help="Rewrite inbound wikilinks to this key or external URL before deleting."),
+    ] = None,
+    orphan_ok: Annotated[
+        bool,
+        Parameter(
+            name="orphan-ok",
+            help="Allow deletion while leaving inbound wikilinks pointing at the deleted key.",
+        ),
+    ] = False,
 ) -> None:
     """Delete a memory and clean its index entry."""
-    emit(delete_memory(key=key, cwd=Path.cwd()))
+    emit(delete_memory(key=key, repoint=repoint, orphan_ok=orphan_ok, cwd=Path.cwd()))
 
 
 def search_default(
