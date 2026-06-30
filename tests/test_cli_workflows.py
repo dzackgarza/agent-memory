@@ -1148,7 +1148,8 @@ def test_maintain_split_rewrites_section_fragment_backlinks(tmp_path: Path) -> N
     assert len(extracted_keys) == 1
     extracted_key = next(iter(extracted_keys))
     assert split["rewritten"] == [
-        {"path": str(backlink_path), "replacements": 1},
+        {"path": str(backlink_index_path), "replacements": 1},
+        {"path": str(backlink_path), "replacements": 2},
     ]
     for path in (backlink_path, backlink_index_path):
         rewritten = path.read_text(encoding="utf-8")
@@ -1189,10 +1190,11 @@ def test_maintain_merge_repoints_inbound_reference_wikilinks(tmp_path: Path) -> 
         {"path": str(backlink_path), "replacements": 1},
     ]
     assert not reference_path.exists()
-    for path in (backlink_path, backlink_index_path):
-        rewritten = path.read_text(encoding="utf-8")
-        assert f"[[{reference_key}]]" not in rewritten
-        assert replacement in rewritten
+    rewritten_backlink = backlink_path.read_text(encoding="utf-8")
+    assert f"[[{reference_key}]]" not in rewritten_backlink
+    assert replacement in rewritten_backlink
+    rewritten_index = backlink_index_path.read_text(encoding="utf-8")
+    assert f"[[{reference_key}]]" not in rewritten_index
 
 
 def test_init_project_replaces_existing_agents_memory_pointer(tmp_path: Path) -> None:

@@ -71,11 +71,12 @@ class WikilinkRewrite:
     from_key: str
     to_target: str
     replacement: str
+    from_fragment: str | None = None
 
 
 OKF_VERSION = "0.1"
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
-WIKILINK_PATTERN = re.compile(r"\[\[([^\]\n]+)\]\]")
+WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 AGENTS_SECTION_START = "<!-- agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- agent-memory:end -->"
 ZK_NOTEBOOK_DB_IGNORE = ".zk/notebook.db"
@@ -639,7 +640,12 @@ def delete_memory(
         commit_vault_changes(
             config.vault,
             commit_message,
-            paths=[path, path.parent / "index.md", *rewritten_record_paths(rewritten)],
+            paths=[
+                path,
+                path.parent / "index.md",
+                *rewritten_record_paths(rewritten),
+                *rewritten_record_parent_index_paths(rewritten),
+            ],
         )
     except subprocess.CalledProcessError as e:
         git_stderr = e.stderr or ""
@@ -1026,22 +1032,47 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
         append_index_link(extracted_path.parent / "index.md", title, extracted_path.name, description)
         extracted_keys.append(affected_key)
     assert extracted_keys, "split must create at least one extracted memory"
+    assert len(extracted_keys) == 1, f"split section must create exactly one extracted memory: {extracted_keys}"
+    rewritten = rewrite_wikilink_files(
+        config,
+        (wikilink_rewrite(f"{key}#{section}", extracted_keys[0]),),
+    )
     index_zk_notebook(config.vault)
-    paths = list(set([memory_path_for_key(config, k) for k in affected_keys] + [memory_path_for_key(config, k).parent / "index.md" for k in affected_keys]))
+    paths = list(
+        set(
+            [memory_path_for_key(config, k) for k in affected_keys]
+            + [memory_path_for_key(config, k).parent / "index.md" for k in affected_keys]
+            + rewritten_record_paths(rewritten)
+            + rewritten_record_parent_index_paths(rewritten)
+        )
+    )
     commit_vault_changes(config.vault, f"Split memory section: {section}", paths=paths)
-    return {"key": key, "section": section, "output": json_list(affected_keys), "extracted": json_list(extracted_keys)}
+    return {
+        "key": key,
+        "section": section,
+        "output": json_list(affected_keys),
+        "extracted": json_list(extracted_keys),
+        "rewritten": json_list(rewritten),
+    }
 
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
+    reference_document = read_memory(memory_path_for_key(config, reference))
+    reference_title = metadata_string(reference_document.metadata, "title")
     affected_keys = iwe.inline(config.vault, key, reference)
+    rewritten = rewrite_wikilink_files(
+        config,
+        (wikilink_rewrite(reference, f"{key}#{reference_title}"),),
+        include_indexes=False,
+    )
     index_zk_notebook(config.vault)
     # Build pathspecs without asserting existence -- iwe.inline deletes the
     # reference file, so memory_path_for_key() would fail on the merged-away key.
     affected_paths = [config.vault / f"{k}.md" for k in affected_keys]
-    paths = list(set(affected_paths + [p.parent / "index.md" for p in affected_paths]))
+    paths = list(set(affected_paths + [p.parent / "index.md" for p in affected_paths] + rewritten_record_paths(rewritten) + rewritten_record_parent_index_paths(rewritten)))
     commit_vault_changes(config.vault, f"Merge memory reference: {reference}", paths=paths)
-    return {"key": key, "reference": reference, "output": json_list(affected_keys)}
+    return {"key": key, "reference": reference, "output": json_list(affected_keys), "rewritten": json_list(rewritten)}
 
 
 def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
@@ -1100,6 +1131,7 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
         source_path.parent / "index.md",
         destination_path.parent / "index.md",
         *rewritten_record_paths(rewritten),
+        *rewritten_record_parent_index_paths(rewritten),
     ]
     commit_vault_changes(config.vault, f"Move memory {key} to {destination_key}", paths=paths)
     return {"key": destination_key, "path": str(destination_path), "rewritten": json_list(rewritten)}
@@ -2512,23 +2544,48 @@ def wikilink_key(raw_target: str) -> str:
     return key
 
 
+def wikilink_fragment(raw_target: str) -> str | None:
+    target = raw_target.split("|", 1)[0].strip()
+    if "#" not in target:
+        return None
+    fragment = " ".join(target.split("#", 1)[1].split())
+    assert fragment, f"wikilink fragment must not be empty: {raw_target!r}"
+    return fragment
+
+
 def outgoing_wikilink_keys(path: Path) -> tuple[str, ...]:
     text = path.read_text(encoding="utf-8")
     return tuple(wikilink_key(match.group(1)) for match in WIKILINK_PATTERN.finditer(text))
 
 
-def wikilink_argument_key(raw_target: str) -> str:
+def wikilink_argument_text(raw_target: str) -> str:
     stripped = raw_target.strip()
     if stripped.startswith("[[") and stripped.endswith("]]"):
-        return wikilink_key(stripped[2:-2])
-    return wikilink_key(stripped)
+        return stripped[2:-2].strip()
+    return stripped
+
+
+def wikilink_argument_key(raw_target: str) -> str:
+    return wikilink_key(wikilink_argument_text(raw_target))
+
+
+def wikilink_argument_fragment(raw_target: str) -> str | None:
+    return wikilink_fragment(wikilink_argument_text(raw_target))
+
+
+def wikilink_argument_target(raw_target: str) -> str:
+    key = wikilink_argument_key(raw_target)
+    fragment = wikilink_argument_fragment(raw_target)
+    if fragment is None:
+        return key
+    return f"{key}#{fragment}"
 
 
 def wikilink_replacement(raw_target: str) -> str:
     stripped = raw_target.strip()
     if stripped.startswith(("http://", "https://")):
         return stripped
-    return f"[[{wikilink_argument_key(stripped)}]]"
+    return f"[[{wikilink_argument_target(stripped)}]]"
 
 
 def wikilink_rewrite(from_target: str, to_target: str) -> WikilinkRewrite:
@@ -2536,6 +2593,7 @@ def wikilink_rewrite(from_target: str, to_target: str) -> WikilinkRewrite:
         from_key=wikilink_argument_key(from_target),
         to_target=to_target,
         replacement=wikilink_replacement(to_target),
+        from_fragment=wikilink_argument_fragment(from_target),
     )
 
 
@@ -2567,12 +2625,20 @@ def broken_wikilink_records(config: ProjectConfig, scope: SearchScope) -> list[J
     return records
 
 
-def rewrite_wikilinks_in_text(text: str, *, old_key: str, replacement: str) -> tuple[str, int]:
+def rewrite_wikilinks_in_text(
+    text: str,
+    *,
+    old_key: str,
+    replacement: str,
+    old_fragment: str | None = None,
+) -> tuple[str, int]:
     replacements = 0
 
     def replace(match: re.Match[str]) -> str:
         nonlocal replacements
         if wikilink_key(match.group(1)) != old_key:
+            return match.group(0)
+        if old_fragment is not None and wikilink_fragment(match.group(1)) != old_fragment:
             return match.group(0)
         replacements += 1
         return replacement
@@ -2580,9 +2646,16 @@ def rewrite_wikilinks_in_text(text: str, *, old_key: str, replacement: str) -> t
     return WIKILINK_PATTERN.sub(replace, text), replacements
 
 
-def rewrite_wikilink_files(config: ProjectConfig, rewrites: Sequence[WikilinkRewrite]) -> list[JsonObject]:
+def rewrite_wikilink_files(
+    config: ProjectConfig,
+    rewrites: Sequence[WikilinkRewrite],
+    *,
+    include_indexes: bool = True,
+) -> list[JsonObject]:
     records: list[JsonObject] = []
     for path in inspect_markdown_paths(config, SearchScope.BOTH):
+        if not include_indexes and path.name == "index.md":
+            continue
         rewritten = path.read_text(encoding="utf-8")
         replacements = 0
         for rewrite in rewrites:
@@ -2590,6 +2663,7 @@ def rewrite_wikilink_files(config: ProjectConfig, rewrites: Sequence[WikilinkRew
                 rewritten,
                 old_key=rewrite.from_key,
                 replacement=rewrite.replacement,
+                old_fragment=rewrite.from_fragment,
             )
             replacements += rewrite_replacements
         if replacements:
@@ -2609,6 +2683,10 @@ def rewritten_record_paths(records: Sequence[JsonObject]) -> list[Path]:
         assert isinstance(path, str), f"rewritten record path must be a string: {record}"
         paths.append(Path(path))
     return paths
+
+
+def rewritten_record_parent_index_paths(records: Sequence[JsonObject]) -> list[Path]:
+    return [path.parent / "index.md" for path in rewritten_record_paths(records)]
 
 
 def wikilink_rewrite_map(map_path: Path) -> tuple[WikilinkRewrite, ...]:
