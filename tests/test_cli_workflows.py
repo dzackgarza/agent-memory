@@ -1121,6 +1121,80 @@ def test_maintain_split_merge_and_doctor_real_memory_graph(tmp_path: Path) -> No
     assert validation["project_root"] == str(workspace.repo)
 
 
+def test_maintain_split_rewrites_section_fragment_backlinks(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    source_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Split Fragment Source",
+        content="Introductory context.\n\n## Extracted Plan\nSplit details stay recoverable.",
+    )
+    source_key = project_memory_key(workspace, "decisions", "split-fragment-source")
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Split Fragment Backlink",
+        content=f"Follow [[{source_key}#Extracted Plan]] before extracting the section.",
+    )
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+
+    split = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
+
+    assert source_note["key"] == source_key
+    extracted_keys = {json_string(key) for key in json_array(split["extracted"])}
+    assert len(extracted_keys) == 1
+    extracted_key = next(iter(extracted_keys))
+    assert split["rewritten"] == [
+        {"path": str(backlink_path), "replacements": 1},
+    ]
+    for path in (backlink_path, backlink_index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{source_key}#Extracted Plan]]" not in rewritten
+        assert f"[[{extracted_key}]]" in rewritten
+
+
+def test_maintain_merge_repoints_inbound_reference_wikilinks(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    source = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Merge Split Source",
+        content="Source shell.\n\n## Extracted Plan\nMerged reference details stay recoverable.",
+    )
+    source_key = project_memory_key(workspace, "decisions", "merge-split-source")
+    split = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
+    extracted_keys = {json_string(key) for key in json_array(split["extracted"])}
+    assert len(extracted_keys) == 1
+    reference_key = next(iter(extracted_keys))
+    backlink = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="advice",
+        title="Merge Reference Backlink",
+        content=f"Read [[{reference_key}]] before merging the reference.",
+    )
+    reference_path = workspace.vault / f"{reference_key}.md"
+    backlink_path = Path(str(backlink["path"]))
+    backlink_index_path = backlink_path.parent / "index.md"
+
+    merged = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "merge", source_key, "--reference", reference_key))
+
+    replacement = f"[[{source_key}#Extracted Plan]]"
+    assert source["key"] == source_key
+    assert merged["rewritten"] == [
+        {"path": str(backlink_path), "replacements": 1},
+    ]
+    assert not reference_path.exists()
+    for path in (backlink_path, backlink_index_path):
+        rewritten = path.read_text(encoding="utf-8")
+        assert f"[[{reference_key}]]" not in rewritten
+        assert replacement in rewritten
+
+
 def test_init_project_replaces_existing_agents_memory_pointer(tmp_path: Path) -> None:
     workspace = initialized_workspace_with_agents(
         tmp_path,
