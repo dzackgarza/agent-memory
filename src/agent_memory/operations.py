@@ -15,8 +15,10 @@ from datetime import date, datetime
 from importlib import resources
 from pathlib import Path
 
+import frontmatter
 import tomli_w
 import yaml
+from markdown_it import MarkdownIt
 from pydantic import BaseModel
 
 from agent_memory import iwe
@@ -75,7 +77,7 @@ class WikilinkRewrite:
 
 
 OKF_VERSION = "0.1"
-MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+MARKDOWN_PARSER = MarkdownIt("commonmark")
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 AGENTS_SECTION_START = "<!-- agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- agent-memory:end -->"
@@ -306,7 +308,7 @@ class NoteRecord:
     memory_type: MemoryType
     scope: MemoryScope
     tags: tuple[str, ...]
-    timestamp: str
+    timestamp: str | None
     document: MemoryDocument
 
 
@@ -509,9 +511,9 @@ def memory_transition(
 ) -> MemoryTransition:
     source_path = config.vault / f"{key}.md"
     document = read_memory(source_path)
-    old_title = metadata_string(document.metadata, "title")
-    scope = MemoryScope(metadata_string(document.metadata, "scope"))
-    old_type = MemoryType(metadata_string(document.metadata, "type"))
+    old_title = metadata_string(document.metadata, "title", source_path)
+    scope = MemoryScope(metadata_string(document.metadata, "scope", source_path))
+    old_type = MemoryType(metadata_string(document.metadata, "type", source_path))
     new_title = title if title is not None else old_title
     new_type = memory_type if memory_type is not None else old_type
     body = updated_memory_body(document.body, new_title, content)
@@ -627,7 +629,7 @@ def delete_memory(
             path.unlink()
         commit_message = f"Delete memory: {key}"
     else:
-        title = metadata_string(document.metadata, "title")
+        title = metadata_string(document.metadata, "title", path)
         remove_index_link(path.parent / "index.md", title)
         commit_message = f"Delete memory: {title}"
         iwe.delete(config.vault, key)
@@ -740,6 +742,7 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
     output = run_ripgrep_search(
         [
             "rg",
+            "--json",
             "--line-number",
             "--with-filename",
             "--fixed-strings",
@@ -749,15 +752,28 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
         cwd=config.vault,
     )
     records: list[JsonObject] = []
-    for line in output.splitlines():
-        path_text, line_number_text, text = line.split(":", 2)
-        path = Path(path_text).resolve()
+    for raw_match in output.splitlines():
+        payload = json.loads(raw_match)
+        if payload.get("type") != "match":
+            continue
+        data = payload["data"]
+        assert isinstance(data, dict), f"unexpected rg match payload: {payload}"
+        path_text = data["path"]["text"]
+        line_number = data["line_number"]
+        lines = data["lines"]["text"]
+        assert isinstance(path_text, str), f"unexpected rg path type: {payload}"
+        assert isinstance(line_number, int), f"unexpected rg line number: {payload}"
+        assert isinstance(lines, str), f"unexpected rg line text: {payload}"
+        path = Path(path_text)
+        if not path.is_absolute():
+            path = config.vault / path
+        path = path.resolve()
         records.append(
             {
                 "key": memory_key(config.vault, path),
                 "path": str(path),
-                "line": int(line_number_text),
-                "text": text,
+                "line": line_number,
+                "text": lines.rstrip(),
                 "source": "exact",
             }
         )
@@ -1015,10 +1031,11 @@ def squash_memory(key: str, depth: int, cwd: Path) -> str:
 
 def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    source_document = read_memory(memory_path_for_key(config, key))
-    source_title = metadata_string(source_document.metadata, "title")
-    memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
-    scope = MemoryScope(metadata_string(source_document.metadata, "scope"))
+    source_path = memory_path_for_key(config, key)
+    source_document = read_memory(source_path)
+    source_title = metadata_string(source_document.metadata, "title", source_path)
+    memory_type = MemoryType(metadata_string(source_document.metadata, "type", source_path))
+    scope = MemoryScope(metadata_string(source_document.metadata, "scope", source_path))
     affected_keys = iwe.extract(config.vault, key, section)
     extracted_keys: list[str] = []
     for affected_key in affected_keys:
@@ -1058,8 +1075,9 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    reference_document = read_memory(memory_path_for_key(config, reference))
-    reference_title = metadata_string(reference_document.metadata, "title")
+    reference_path = memory_path_for_key(config, reference)
+    reference_document = read_memory(reference_path)
+    reference_title = metadata_string(reference_document.metadata, "title", reference_path)
     affected_keys = iwe.inline(config.vault, key, reference)
     rewritten = rewrite_wikilink_files(
         config,
@@ -1085,9 +1103,9 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     assert destination_path.parent.is_dir(), "move destination directory must exist"
 
     source_document = read_memory(source_path)
-    memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
-    title = metadata_string(source_document.metadata, "title")
-    description = metadata_string(source_document.metadata, "description")
+    memory_type = MemoryType(metadata_string(source_document.metadata, "type", source_path))
+    title = metadata_string(source_document.metadata, "title", source_path)
+    description = metadata_string(source_document.metadata, "description", source_path)
     iwe.rename(config.vault, key, destination_key)
 
     moved_document = read_memory(destination_path)
@@ -1679,15 +1697,37 @@ def migrate_directory_contents(source: Path, destination: Path) -> None:
         shutil.move(str(child), str(target))
 
 
+def describe_non_symlink_path(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    if path.is_dir():
+        return "a regular directory"
+    if path.is_file():
+        return "a regular file"
+    return "not a symlink"
+
+
 def project_agent_state_records(git_root: Path, project_dir: Path) -> list[JsonValue]:
     records: list[JsonValue] = []
     for name in PROJECT_AGENT_STATE_DIRECTORIES:
         repo_path = git_root / name
         vault_path = project_dir
-        assert vault_path.is_dir(), f"project agent state directory is missing: {vault_path}"
-        assert repo_path.is_symlink(), f"project agent state path is not a symlink: {repo_path}"
-        assert repo_path.resolve() == vault_path.resolve(), f"project agent state path points outside the vault project: {repo_path}"
-        records.append({"name": name, "repo_path": str(repo_path), "vault_path": str(vault_path)})
+        issues: list[JsonValue] = []
+        if not vault_path.is_dir():
+            issues.append(f"vault project directory is missing: {vault_path}")
+        if not repo_path.is_symlink():
+            issues.append(f"{repo_path} must be a symlink into the vault project, but it is {describe_non_symlink_path(repo_path)}")
+        elif repo_path.resolve() != vault_path.resolve():
+            issues.append(f"{repo_path} points outside the vault project: it resolves to {repo_path.resolve()}")
+        records.append(
+            {
+                "name": name,
+                "repo_path": str(repo_path),
+                "vault_path": str(vault_path),
+                "ok": not issues,
+                "issues": issues,
+            }
+        )
     return records
 
 
@@ -1836,9 +1876,25 @@ def remove_index_link_by_target(index_path: Path, target: str) -> None:
         index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def metadata_string(metadata: dict[str, MetadataValue], key: str) -> str:
+def metadata_string(metadata: dict[str, MetadataValue], key: str, path: Path) -> str:
+    if key not in metadata:
+        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}")
     value = metadata[key]
-    assert isinstance(value, str), f"metadata field {key} must be a string"
+    if not isinstance(value, str):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a string")
+    return value
+
+
+def metadata_string_optional(metadata: dict[str, MetadataValue], key: str, path: Path) -> str | None:
+    if key not in metadata:
+        return None
+    value = metadata[key]
+    if not isinstance(value, str):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a string")
+    # An empty string reads as ABSENT: missing and empty are both "no value", so a blank
+    # optional field never reaches a consumer (e.g. parse_memory_timestamp) as "".
+    if value == "":
+        return None
     return value
 
 
@@ -2080,9 +2136,7 @@ def run_ripgrep_search(args: Sequence[str], cwd: Path) -> str:
     if result.returncode == 0:
         return result.stdout
     assert result.returncode == 1, f"ripgrep search failed with exit code {result.returncode}: {result.stderr}"
-    assert result.stdout == ""
-    assert result.stderr == ""
-    return ""
+    return result.stdout
 
 
 def search_roots(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
@@ -2108,20 +2162,23 @@ def inspect_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[Not
 
 def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
     document = read_memory(path)
-    stored_scope = MemoryScope(metadata_string(document.metadata, "scope"))
+    stored_scope = MemoryScope(metadata_string(document.metadata, "scope", path))
     layout_scope = MemoryScope(inspect_scope_for_path(config, path))
     assert stored_scope is layout_scope, "memory note metadata scope must match vault layout"
-    tags = document.metadata["tags"]
-    assert isinstance(tags, list), "memory tags must be a list"
-    assert all(isinstance(tag_value, str) for tag_value in tags), "memory tags must contain strings"
+    tags = document.metadata.get("tags")
+    if tags is None:
+        raise MalformedMemoryError(path, "frontmatter must include tags")
+    if not isinstance(tags, list):
+        raise MalformedMemoryError(path, "frontmatter tags must be a list")
+    # read_memory already guarantees every list item is a string.
     return NoteRecord(
         key=memory_key(config.vault, path),
         path=path,
-        title=metadata_string(document.metadata, "title"),
-        memory_type=MemoryType(metadata_string(document.metadata, "type")),
+        title=metadata_string(document.metadata, "title", path),
+        memory_type=MemoryType(metadata_string(document.metadata, "type", path)),
         scope=stored_scope,
         tags=tuple(tags),
-        timestamp=metadata_string(document.metadata, "timestamp"),
+        timestamp=metadata_string_optional(document.metadata, "timestamp", path),
         document=document,
     )
 
@@ -2135,7 +2192,7 @@ def note_record_matches_metadata(
     return (
         (memory_type is None or record.memory_type is memory_type)
         and (tag is None or tag in record.tags)
-        and (created_after is None or parse_memory_timestamp(record.timestamp) > created_after)
+        and (created_after is None or (record.timestamp is not None and parse_memory_timestamp(record.timestamp) > created_after))
     )
 
 
@@ -2200,17 +2257,15 @@ def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
 
 
 def read_memory(path: Path) -> MemoryDocument:
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
+    raw = path.read_text(encoding="utf-8")
+    if not raw.startswith("---"):
         raise MalformedMemoryError(path, "memory must start with frontmatter")
     try:
-        closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    except StopIteration as e:
-        raise MalformedMemoryError(path, "frontmatter must end with a closing delimiter") from e
-    try:
-        parsed = yaml.safe_load("".join(lines[1:closing_index]))
-    except yaml.YAMLError as e:
+        document = frontmatter.loads(raw)
+    except (ValueError, yaml.YAMLError) as e:
         raise MalformedMemoryError(path, "frontmatter must be valid YAML") from e
+    parsed = document.metadata
+    body = document.content
     if not isinstance(parsed, dict):
         raise MalformedMemoryError(path, "frontmatter must be a mapping")
     metadata: dict[str, MetadataValue] = {}
@@ -2231,7 +2286,6 @@ def read_memory(path: Path) -> MemoryDocument:
             if not isinstance(value, str | bool):
                 raise MalformedMemoryError(path, "frontmatter values must be strings, booleans, datetimes, or string lists")
             metadata[key] = value
-    body = "".join(lines[closing_index + 1 :])
     return MemoryDocument(metadata=metadata, body=body)
 
 
@@ -2397,8 +2451,8 @@ def inspect_recent(
     assert output_format is InspectOutputFormat.JSON, "inspect recent currently emits JSON"
     since_datetime = parse_memory_timestamp(since)
     config = load_project_config(cwd)
-    records = [record for record in inspect_note_records(config, scope) if parse_memory_timestamp(record.timestamp) > since_datetime]
-    records.sort(key=lambda record: record.timestamp, reverse=True)
+    records = [record for record in inspect_note_records(config, scope) if record.timestamp is not None and parse_memory_timestamp(record.timestamp) > since_datetime]
+    records.sort(key=lambda record: record.timestamp or "", reverse=True)
     return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records])}
 
 
@@ -2482,7 +2536,7 @@ def inspect_counts(values: Sequence[str]) -> JsonObject:
 
 
 def inspect_day_counts(records: Sequence[NoteRecord]) -> JsonObject:
-    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records)
+    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records if record.timestamp is not None)
     return {key: counts[key] for key in sorted(counts)}
 
 
@@ -2502,38 +2556,81 @@ def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
 
 
 def first_heading_title(markdown: str) -> str:
-    headings = [line[2:].strip() for line in markdown.splitlines() if line.startswith("# ")]
-    assert headings, "markdown document must contain a top-level heading"
-    title = headings[0]
-    assert title, "heading title must be nonempty"
-    return title
+    tokens = MARKDOWN_PARSER.parse(markdown)
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open" or token.tag != "h1":
+            continue
+        assert index + 1 < len(tokens), "markdown heading must have body content"
+        body = tokens[index + 1]
+        assert body.type == "inline", "markdown heading body must be inline"
+        title = body.content.strip()
+        assert title, "heading title must be nonempty"
+        return title
+    assert False, "markdown document must contain a top-level heading"
 
 
 def markdown_headings(markdown: str) -> tuple[JsonObject, ...]:
+    tokens = MARKDOWN_PARSER.parse(markdown)
     headings: list[JsonObject] = []
-    for line_number, line in enumerate(markdown.splitlines(), start=1):
-        stripped = line.lstrip()
-        marker_length = len(stripped) - len(stripped.lstrip("#"))
-        if marker_length == 0:
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open":
             continue
-        assert marker_length <= 6, "markdown heading level must be between 1 and 6"
-        assert stripped[marker_length : marker_length + 1] == " ", "markdown heading marker must be followed by a space"
-        title = stripped[marker_length + 1 :].strip()
+        assert token.tag.startswith("h"), f"unexpected heading tag: {token.tag}"
+        level = int(token.tag[1:])
+        assert 1 <= level <= 6, "markdown heading level must be between 1 and 6"
+        assert index + 1 < len(tokens), "markdown heading must have body content"
+        body = tokens[index + 1]
+        assert body.type == "inline", "markdown heading body must be inline"
+        title = body.content.strip()
         assert title, "markdown heading title must be nonempty"
-        headings.append({"level": marker_length, "title": title, "line": line_number})
+        assert token.map is not None, "markdown heading must provide source map"
+        line_number = token.map[0] + 1
+        headings.append({"level": level, "title": title, "line": line_number})
     return tuple(headings)
 
 
+def _markdown_link_target(link_token: object) -> str | None:
+    href = None
+    if hasattr(link_token, "attrs"):
+        attrs = getattr(link_token, "attrs")
+        if isinstance(attrs, dict):
+            href = attrs.get("href")
+        elif isinstance(attrs, list):
+            attrs = dict(attrs)
+            href = attrs.get("href")
+    if href is None:
+        return None
+    assert isinstance(href, str), "markdown link target must be text"
+    return href
+
+
 def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
-    text = path.read_text(encoding="utf-8")
+    markdown = path.read_text(encoding="utf-8")
+    tokens = MARKDOWN_PARSER.parse(markdown)
     keys: list[str] = []
-    for match in MARKDOWN_LINK_PATTERN.finditer(text):
-        target = match.group(1).split("#", 1)[0]
-        assert target.endswith(".md"), f"markdown link target must point to a Markdown file: {target}"
-        target_path = (path.parent / target).resolve()
-        vault = config.vault.resolve()
-        assert target_path.is_relative_to(vault), f"markdown link leaves memory vault: {target}"
-        keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
+    for token in tokens:
+        if token.type != "inline":
+            continue
+        for child in token.children or []:
+            if child.type != "link_open":
+                continue
+            href = _markdown_link_target(child)
+            if href is None:
+                continue
+            target = href.split("#", 1)[0]
+            if not target:
+                continue
+            # outgoing_link_keys owns intra-vault note-to-note edges only. The markdown-it
+            # walk yields every link (external URLs, autolinks, reference-style, non-.md);
+            # a target that is not a vault-relative .md file is simply not an outgoing vault
+            # edge, so skip it by contract. This is a membership test, not error handling.
+            if not target.endswith(".md"):
+                continue
+            target_path = (path.parent / target).resolve()
+            vault = config.vault.resolve()
+            if not target_path.is_relative_to(vault):
+                continue
+            keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
     return tuple(keys)
 
 
@@ -2761,14 +2858,14 @@ def inspect_tree_node(config: ProjectConfig, key: str, depth: int) -> JsonObject
     return {
         "key": key,
         "path": str(path),
-        "title": inspect_title_for_document(document),
+        "title": inspect_title_for_document(document, path),
         "children": json_list(children),
     }
 
 
-def inspect_title_for_document(document: MemoryDocument) -> str:
+def inspect_title_for_document(document: MemoryDocument, path: Path) -> str:
     if "title" in document.metadata:
-        return metadata_string(document.metadata, "title")
+        return metadata_string(document.metadata, "title", path)
     return first_heading_title(document.body)
 
 
@@ -2824,7 +2921,7 @@ def traverse_link_records(
                 related_path = memory_path_for_key(config, related_key)
                 related_document = read_memory(related_path)
                 record_depth = current_depth + 1
-                records.append(LinkRecord(related_key, related_path, inspect_title_for_document(related_document), record_depth))
+                records.append(LinkRecord(related_key, related_path, inspect_title_for_document(related_document, related_path), record_depth))
                 frontier.append((related_key, record_depth))
     return tuple(records)
 
@@ -2856,11 +2953,11 @@ def inspect_export_node(
     node: JsonObject = {
         "key": key,
         "path": str(path),
-        "title": inspect_title_for_document(document),
+        "title": inspect_title_for_document(document, path),
         "scope": inspect_scope_for_path(config, path),
     }
     if "type" in document.metadata:
-        node["type"] = metadata_string(document.metadata, "type")
+        node["type"] = metadata_string(document.metadata, "type", path)
     if profile is InspectExportProfile.MAP:
         return node
     if profile is InspectExportProfile.CONTEXT:
