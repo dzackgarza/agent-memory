@@ -2261,6 +2261,8 @@ def inspect_overview(
 
 def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect schema currently emits JSON"
+    config = find_project_config(Path.cwd())
+    cards_config, card_model_by_type = load_card_system(config)
     return {
         "commands": {"inspect": list(INSPECT_COMMAND_NAMES)},
         "scopes": [scope.value for scope in SearchScope],
@@ -2270,8 +2272,34 @@ def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
         "stats_groups": [group.value for group in InspectStatsGroup],
         "export_profiles": [profile.value for profile in InspectExportProfile],
         "formats": {
-            "inspect": [InspectOutputFormat.JSON.value],
-            "export": [InspectExportFormat.GRAPH_JSON.value],
+            "inspect": json_list([InspectOutputFormat.JSON.value]),
+            "export": json_list([InspectExportFormat.GRAPH_JSON.value]),
+        },
+        "card_system": {
+            "root": cards_config.root,
+            "status_count": len(cards_config.statuses),
+            "type_count": len(cards_config.card_types),
+            "status_sets": {
+                status_set_name: {
+                    "default": status_set.default,
+                    "options": json_list(status_set.options),
+                }
+                for status_set_name, status_set in cards_config.status_sets.items()
+            },
+            "types": [
+                {
+                    "name": card_type.name,
+                    "id_prefix": card_type.id_prefix,
+                    "status_set": card_type.status_set,
+                    "parents": json_list(card_type.parents),
+                    "container": card_type.container,
+                    "own_dir": card_type.own_dir,
+                    "required_fields": json_list([field.name for field in card_type.fields if field.required]),
+                    "field_count": len(card_type.fields),
+                }
+                for card_type in cards_config.card_types
+            ],
+            "models": json_list(sorted(card_model_by_type.keys())),
         },
         "metadata_fields": list(ProjectNoteMetadata.model_fields),
     }
@@ -2881,8 +2909,9 @@ def json_metadata_value(value: MetadataValue) -> JsonValue:
 # --- Plan cards (issue #4): bridge the config-driven card engine to the project vault ---
 
 
-def load_card_system() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
-    cards_config = load_card_system_config()
+def load_card_system(config: ProjectConfig | None = None) -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
+    project_id = None if config is None else config.project_id
+    cards_config = load_card_system_config(config.vault if config is not None else None, project_id)
     return cards_config, build_card_models(cards_config)
 
 
@@ -2960,7 +2989,7 @@ def add_plan_card(
     empty_set: Sequence[str] | None = None,
 ) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     fields = parse_card_fields(cards_config, type_name, assignments, empty_set=empty_set)
     path = create_card(
         project_plans_root(config, cards_config),
@@ -2996,7 +3025,7 @@ def add_plan_card(
 
 def update_plan_card(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     type_name = card_type_for_id(cards_config, card_id).name
     updates = parse_card_fields(cards_config, type_name, assignments)
     path = update_card(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
@@ -3006,7 +3035,7 @@ def update_plan_card(card_id: str, assignments: Sequence[str], cwd: Path) -> Jso
 
 def delete_plan_card(card_id: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, _models = load_card_system()
+    cards_config, _models = load_card_system(config)
     plans_root = project_plans_root(config, cards_config)
     path = find_card_path(plans_root, card_id)
     path.unlink()
@@ -3016,7 +3045,7 @@ def delete_plan_card(card_id: str, cwd: Path) -> JsonObject:
 
 def validate_plan_cards(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
     problems = validate_cards(records, cards_config)
     return {"problems": json_list([{"kind": problem.kind, "card": problem.card_id, "detail": problem.detail} for problem in problems])}
@@ -3024,7 +3053,7 @@ def validate_plan_cards(cwd: Path) -> JsonObject:
 
 def write_plan_dag(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
     plans_root = project_plans_root(config, cards_config)
     plans_root.mkdir(parents=True, exist_ok=True)
@@ -3036,7 +3065,7 @@ def write_plan_dag(cwd: Path) -> JsonObject:
 
 def migrate_plan_cards(source: Path, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     paths = migrate_plans(source, project_plans_root(config, cards_config), cards_config, models)
     commit_vault_changes(config.vault, f"Migrate {len(paths)} plan cards", paths=paths)
     return {"migrated": json_list([str(path) for path in paths])}

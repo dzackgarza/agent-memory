@@ -1888,6 +1888,12 @@ def test_inspect_overview_schema_and_paths_map_real_vault(tmp_path: Path) -> Non
     ]
     assert schema["scopes"] == ["project", "global", "both"]
     assert schema["memory_types"] == ["decision", "trap", "advice", "context", "reference", "plan"]
+    card_system = json_object(schema["card_system"])
+    assert card_system["root"] == "plans"
+    assert isinstance(card_system["status_count"], int)
+    assert card_system["status_count"] >= 3
+    schema_type_names = {json_string(item["name"]) for item in json_records(card_system, "types")}
+    assert {"feature", "plan", "phase", "task"}.issubset(schema_type_names)
 
     paths = inspect_json(workspace, "paths", "--scope", "project", "--kind", "notes", "--format", "json")
     assert paths["scope"] == "project"
@@ -1976,6 +1982,61 @@ def linked_inspect_workspace(tmp_path: Path) -> tuple[CliWorkspace, str, str]:
     assert global_note["key"] == global_key
     assert project_note["key"] == project_key
     return workspace, project_key, global_key
+
+
+def test_plan_add_supports_project_cards_yaml_override(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards_path.write_text(
+        """root: plans
+statuses:
+  - todo
+  - blocked
+status_sets:
+  default:
+    default: todo
+    options:
+      - todo
+      - blocked
+card_types:
+  - name: ticket
+    id_prefix: TICKET
+    status_set: default
+    parents: []
+    own_dir: true
+    container: tickets
+    fields:
+      - name: id
+        type: string
+        required: true
+      - name: title
+        type: string
+        required: true
+      - name: status
+        type: status
+        required: true
+""",
+        encoding="utf-8",
+    )
+
+    schema = inspect_json(workspace, "schema", "--format", "json")
+    schema_type_names = {json_string(item["name"]) for item in json_records(json_object(schema["card_system"]), "types")}
+    assert "ticket" in schema_type_names
+
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "ticket",
+        "TICKET-1",
+        "--set",
+        "title=Override ticket",
+        "--set",
+        "status=todo",
+    )
+    ticket_path = workspace.vault / "projects" / workspace.project_id / "plans" / "tickets" / "TICKET-1" / "TICKET-1.md"
+    assert ticket_path.exists()
 
 
 def test_inspect_links_real_vault(tmp_path: Path) -> None:

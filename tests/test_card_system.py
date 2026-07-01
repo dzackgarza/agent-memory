@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from agent_memory.cards import CardSystemConfig, build_card_models, load_card_models, load_card_system_config
@@ -249,3 +251,46 @@ def test_shipped_task_model_enforces_complexity_range() -> None:
     assert models["task"].model_validate({**base, "complexity": 42}).model_dump()["complexity"] == 42
     with pytest.raises(ValidationError):
         models["task"].model_validate({**base, "complexity": 150})
+
+
+def test_load_card_system_config_prefers_project_cards_yaml(tmp_path: Path) -> None:
+    vault = tmp_path / "vault" / "projects" / "example-project"
+    cards_path = vault / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    payload = {
+        "statuses": ["todo", "in-progress", "complete", "blocked"],
+        "status_sets": {
+            "standard": {
+                "default": "todo",
+                "options": ["todo", "in-progress", "complete", "blocked"],
+            },
+        },
+        "card_types": [
+            {
+                "name": "signal",
+                "id_prefix": "SIG",
+                "status_set": "standard",
+                "parents": [],
+                "own_dir": True,
+                "container": "signals",
+                "fields": [
+                    {"name": "id", "type": "string", "required": True},
+                    {"name": "title", "type": "string", "required": True},
+                    {"name": "status", "type": "status", "required": True},
+                ],
+            },
+        ],
+    }
+    cards_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    config = load_card_system_config(vault)
+    assert config.root == "plans"
+    type_names = {card_type.name for card_type in config.card_types}
+    assert type_names == {"signal"}
+
+
+def test_load_card_system_config_falls_back_to_packaged_defaults_if_project_cards_yaml_missing(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = load_card_system_config(vault)
+    assert {card_type.name for card_type in config.card_types} >= {"feature", "plan", "phase", "task"}
