@@ -2036,6 +2036,43 @@ def test_inspect_links_ignores_links_in_fenced_code_blocks(tmp_path: Path) -> No
     assert children["links"] == []
 
 
+def test_search_keys_tolerates_note_missing_timestamp(tmp_path: Path) -> None:
+    # Issue #45: a note missing the optional `timestamp` field must not crash the
+    # record scan (search/inspect). It should still be discoverable.
+    workspace = initialized_workspace(tmp_path)
+    note = workspace.vault / "projects" / workspace.project_id / "decisions" / "no-timestamp.md"
+    note.write_text(
+        """---
+type: decision
+scope: project
+title: No Timestamp Note
+description: Fixture for issue #45
+tags: [project]
+---
+Body for the missing-timestamp reproducer.
+""",
+        encoding="utf-8",
+    )
+
+    search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "project", "No Timestamp"))
+    assert project_memory_key(workspace, "decisions", "no-timestamp") in result_keys(search)
+
+
+def test_doctor_reports_non_symlink_agent_state_without_crashing(tmp_path: Path) -> None:
+    # Issue #44: a real-directory `.agents` (not a symlink) must be a structured
+    # doctor finding, not an AssertionError that aborts the whole report.
+    workspace = initialized_workspace(tmp_path)
+    agents = workspace.repo / ".agents"
+    agents.unlink()
+    agents.mkdir()
+
+    doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
+    records = [json_object(record) for record in json_array(doctor["agent_state"])]
+    agents_record = next(record for record in records if json_string(record["name"]) == ".agents")
+    assert agents_record["ok"] is False
+    assert any(".agents" in json_string(issue) for issue in json_array(agents_record["issues"]))
+
+
 def test_inspect_links_real_vault(tmp_path: Path) -> None:
     workspace, project_key, global_key = linked_inspect_workspace(tmp_path)
     no_depth_children = inspect_json(
