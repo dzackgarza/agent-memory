@@ -1490,11 +1490,15 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
             "name": ".agents",
             "repo_path": str(workspace.repo / ".agents"),
             "vault_path": str(project_agent_state_path(workspace)),
+            "ok": True,
+            "issues": [],
         },
         {
             "name": ".hermes",
             "repo_path": str(workspace.repo / ".hermes"),
             "vault_path": str(project_agent_state_path(workspace)),
+            "ok": True,
+            "issues": [],
         },
     ]
     assert doctor["tools"] == ["git", "rg", "npx", "@probelabs/probe", "zk"]
