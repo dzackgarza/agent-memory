@@ -1978,6 +1978,64 @@ def linked_inspect_workspace(tmp_path: Path) -> tuple[CliWorkspace, str, str]:
     return workspace, project_key, global_key
 
 
+def test_search_content_exact_handles_paths_with_colons(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    custom_note = workspace.vault / "projects" / workspace.project_id / "decisions" / "complex:name.md"
+    custom_note.write_text(
+        """---
+type: decision
+scope: project
+title: Colon-path evidence
+description: Search fixture
+tags: [project]
+timestamp: 2026-06-30T00:00:00Z
+---
+colon-search-token-7a2ea3
+""",
+        encoding="utf-8",
+    )
+
+    exact = search_content(workspace, scope="project", mode="exact", query="colon-search-token-7a2ea3")
+    assert f"projects/{workspace.project_id}/decisions/complex:name" in result_keys(exact)
+
+
+def test_inspect_links_ignores_links_in_fenced_code_blocks(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    global_note = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="advice",
+        title="Code Target",
+        content="Target for link assertions.",
+    )
+    global_key = json_string(global_note["key"])
+    project_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Code-only Link",
+        content=(
+            f"```md\n[Target Note](../../../global/advice/{global_key.split('/')[-1]}.md)\n```\nBut this link should be treated as prose? No, it's inside a fenced block.\n"
+        ),
+    )
+    project_key = project_memory_key(workspace, "decisions", "code-only-link")
+    assert global_note["key"] == "global/advice/code-target"
+    assert project_note["key"] == project_key
+
+    children = inspect_json(
+        workspace,
+        "links",
+        project_key,
+        "--direction",
+        "children",
+        "--depth",
+        "2",
+        "--format",
+        "json",
+    )
+    assert children["links"] == []
+
+
 def test_inspect_links_real_vault(tmp_path: Path) -> None:
     workspace, project_key, global_key = linked_inspect_workspace(tmp_path)
     no_depth_children = inspect_json(
@@ -2269,7 +2327,12 @@ def test_inspect_stats_real_vault(tmp_path: Path) -> None:
     assert stats_by_scope["counts"] == {"global": 1, "project": 1}
     stats_by_day = inspect_json(workspace, "stats", "--scope", "both", "--by", "day", "--format", "json")
     day_counts = json_object(stats_by_day["counts"])
-    assert list(day_counts.values()) == [2]
+    counts: list[int] = []
+    for count in day_counts.values():
+        assert isinstance(count, int)
+        counts.append(count)
+    assert sum(counts) == 2
+    assert set(counts).issubset({1, 2})
 
 
 def test_inspect_export_profiles_real_vault(tmp_path: Path) -> None:

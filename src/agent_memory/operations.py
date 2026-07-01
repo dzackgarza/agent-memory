@@ -15,8 +15,10 @@ from datetime import date, datetime
 from importlib import resources
 from pathlib import Path
 
+import frontmatter
 import tomli_w
 import yaml
+from markdown_it import MarkdownIt
 from pydantic import BaseModel
 
 from agent_memory import iwe
@@ -75,7 +77,7 @@ class WikilinkRewrite:
 
 
 OKF_VERSION = "0.1"
-MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+MARKDOWN_PARSER = MarkdownIt("commonmark")
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 AGENTS_SECTION_START = "<!-- agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- agent-memory:end -->"
@@ -740,6 +742,7 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
     output = run_ripgrep_search(
         [
             "rg",
+            "--json",
             "--line-number",
             "--with-filename",
             "--fixed-strings",
@@ -749,15 +752,28 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
         cwd=config.vault,
     )
     records: list[JsonObject] = []
-    for line in output.splitlines():
-        path_text, line_number_text, text = line.split(":", 2)
-        path = Path(path_text).resolve()
+    for raw_match in output.splitlines():
+        payload = json.loads(raw_match)
+        if payload.get("type") != "match":
+            continue
+        data = payload["data"]
+        assert isinstance(data, dict), f"unexpected rg match payload: {payload}"
+        path_text = data["path"]["text"]
+        line_number = data["line_number"]
+        lines = data["lines"]["text"]
+        assert isinstance(path_text, str), f"unexpected rg path type: {payload}"
+        assert isinstance(line_number, int), f"unexpected rg line number: {payload}"
+        assert isinstance(lines, str), f"unexpected rg line text: {payload}"
+        path = Path(path_text)
+        if not path.is_absolute():
+            path = config.vault / path
+        path = path.resolve()
         records.append(
             {
                 "key": memory_key(config.vault, path),
                 "path": str(path),
-                "line": int(line_number_text),
-                "text": text,
+                "line": line_number,
+                "text": lines.rstrip(),
                 "source": "exact",
             }
         )
@@ -1837,6 +1853,7 @@ def remove_index_link_by_target(index_path: Path, target: str) -> None:
 
 
 def metadata_string(metadata: dict[str, MetadataValue], key: str) -> str:
+    assert key in metadata, f"memory frontmatter missing required field: {key}"
     value = metadata[key]
     assert isinstance(value, str), f"metadata field {key} must be a string"
     return value
@@ -2080,9 +2097,7 @@ def run_ripgrep_search(args: Sequence[str], cwd: Path) -> str:
     if result.returncode == 0:
         return result.stdout
     assert result.returncode == 1, f"ripgrep search failed with exit code {result.returncode}: {result.stderr}"
-    assert result.stdout == ""
-    assert result.stderr == ""
-    return ""
+    return result.stdout
 
 
 def search_roots(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
@@ -2111,7 +2126,8 @@ def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
     stored_scope = MemoryScope(metadata_string(document.metadata, "scope"))
     layout_scope = MemoryScope(inspect_scope_for_path(config, path))
     assert stored_scope is layout_scope, "memory note metadata scope must match vault layout"
-    tags = document.metadata["tags"]
+    tags = document.metadata.get("tags")
+    assert tags is not None, "memory note frontmatter must include tags"
     assert isinstance(tags, list), "memory tags must be a list"
     assert all(isinstance(tag_value, str) for tag_value in tags), "memory tags must contain strings"
     return NoteRecord(
@@ -2200,17 +2216,15 @@ def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
 
 
 def read_memory(path: Path) -> MemoryDocument:
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
+    raw = path.read_text(encoding="utf-8")
+    if not raw.startswith("---"):
         raise MalformedMemoryError(path, "memory must start with frontmatter")
     try:
-        closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    except StopIteration as e:
-        raise MalformedMemoryError(path, "frontmatter must end with a closing delimiter") from e
-    try:
-        parsed = yaml.safe_load("".join(lines[1:closing_index]))
-    except yaml.YAMLError as e:
+        document = frontmatter.loads(raw)
+    except ValueError as e:
         raise MalformedMemoryError(path, "frontmatter must be valid YAML") from e
+    parsed = document.metadata
+    body = document.content
     if not isinstance(parsed, dict):
         raise MalformedMemoryError(path, "frontmatter must be a mapping")
     metadata: dict[str, MetadataValue] = {}
@@ -2231,7 +2245,6 @@ def read_memory(path: Path) -> MemoryDocument:
             if not isinstance(value, str | bool):
                 raise MalformedMemoryError(path, "frontmatter values must be strings, booleans, datetimes, or string lists")
             metadata[key] = value
-    body = "".join(lines[closing_index + 1 :])
     return MemoryDocument(metadata=metadata, body=body)
 
 
@@ -2502,38 +2515,75 @@ def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
 
 
 def first_heading_title(markdown: str) -> str:
-    headings = [line[2:].strip() for line in markdown.splitlines() if line.startswith("# ")]
-    assert headings, "markdown document must contain a top-level heading"
-    title = headings[0]
-    assert title, "heading title must be nonempty"
-    return title
+    tokens = MARKDOWN_PARSER.parse(markdown)
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open" or token.tag != "h1":
+            continue
+        assert index + 1 < len(tokens), "markdown heading must have body content"
+        body = tokens[index + 1]
+        assert body.type == "inline", "markdown heading body must be inline"
+        title = body.content.strip()
+        assert title, "heading title must be nonempty"
+        return title
+    assert False, "markdown document must contain a top-level heading"
 
 
 def markdown_headings(markdown: str) -> tuple[JsonObject, ...]:
+    tokens = MARKDOWN_PARSER.parse(markdown)
     headings: list[JsonObject] = []
-    for line_number, line in enumerate(markdown.splitlines(), start=1):
-        stripped = line.lstrip()
-        marker_length = len(stripped) - len(stripped.lstrip("#"))
-        if marker_length == 0:
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open":
             continue
-        assert marker_length <= 6, "markdown heading level must be between 1 and 6"
-        assert stripped[marker_length : marker_length + 1] == " ", "markdown heading marker must be followed by a space"
-        title = stripped[marker_length + 1 :].strip()
+        assert token.tag.startswith("h"), f"unexpected heading tag: {token.tag}"
+        level = int(token.tag[1:])
+        assert 1 <= level <= 6, "markdown heading level must be between 1 and 6"
+        assert index + 1 < len(tokens), "markdown heading must have body content"
+        body = tokens[index + 1]
+        assert body.type == "inline", "markdown heading body must be inline"
+        title = body.content.strip()
         assert title, "markdown heading title must be nonempty"
-        headings.append({"level": marker_length, "title": title, "line": line_number})
+        assert token.map is not None, "markdown heading must provide source map"
+        line_number = token.map[0] + 1
+        headings.append({"level": level, "title": title, "line": line_number})
     return tuple(headings)
 
 
+def _markdown_link_target(link_token: object) -> str | None:
+    href = None
+    if hasattr(link_token, "attrs"):
+        attrs = getattr(link_token, "attrs")
+        if isinstance(attrs, dict):
+            href = attrs.get("href")
+        elif isinstance(attrs, list):
+            attrs = dict(attrs)
+            href = attrs.get("href")
+    if href is None:
+        return None
+    assert isinstance(href, str), "markdown link target must be text"
+    return href
+
+
 def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
-    text = path.read_text(encoding="utf-8")
+    markdown = path.read_text(encoding="utf-8")
+    tokens = MARKDOWN_PARSER.parse(markdown)
     keys: list[str] = []
-    for match in MARKDOWN_LINK_PATTERN.finditer(text):
-        target = match.group(1).split("#", 1)[0]
-        assert target.endswith(".md"), f"markdown link target must point to a Markdown file: {target}"
-        target_path = (path.parent / target).resolve()
-        vault = config.vault.resolve()
-        assert target_path.is_relative_to(vault), f"markdown link leaves memory vault: {target}"
-        keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
+    for token in tokens:
+        if token.type != "inline":
+            continue
+        for child in token.children or []:
+            if child.type != "link_open":
+                continue
+            href = _markdown_link_target(child)
+            if href is None:
+                continue
+            target = href.split("#", 1)[0]
+            if not target:
+                continue
+            assert target.endswith(".md"), f"markdown link target must point to a Markdown file: {target}"
+            target_path = (path.parent / target).resolve()
+            vault = config.vault.resolve()
+            assert target_path.is_relative_to(vault), f"markdown link leaves memory vault: {target}"
+            keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
     return tuple(keys)
 
 
