@@ -308,7 +308,7 @@ class NoteRecord:
     memory_type: MemoryType
     scope: MemoryScope
     tags: tuple[str, ...]
-    timestamp: str
+    timestamp: str | None
     document: MemoryDocument
 
 
@@ -1695,15 +1695,37 @@ def migrate_directory_contents(source: Path, destination: Path) -> None:
         shutil.move(str(child), str(target))
 
 
+def describe_non_symlink_path(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    if path.is_dir():
+        return "a regular directory"
+    if path.is_file():
+        return "a regular file"
+    return "not a symlink"
+
+
 def project_agent_state_records(git_root: Path, project_dir: Path) -> list[JsonValue]:
     records: list[JsonValue] = []
     for name in PROJECT_AGENT_STATE_DIRECTORIES:
         repo_path = git_root / name
         vault_path = project_dir
-        assert vault_path.is_dir(), f"project agent state directory is missing: {vault_path}"
-        assert repo_path.is_symlink(), f"project agent state path is not a symlink: {repo_path}"
-        assert repo_path.resolve() == vault_path.resolve(), f"project agent state path points outside the vault project: {repo_path}"
-        records.append({"name": name, "repo_path": str(repo_path), "vault_path": str(vault_path)})
+        issues: list[JsonValue] = []
+        if not vault_path.is_dir():
+            issues.append(f"vault project directory is missing: {vault_path}")
+        if not repo_path.is_symlink():
+            issues.append(f"{repo_path} must be a symlink into the vault project, but it is {describe_non_symlink_path(repo_path)}")
+        elif repo_path.resolve() != vault_path.resolve():
+            issues.append(f"{repo_path} points outside the vault project: it resolves to {repo_path.resolve()}")
+        records.append(
+            {
+                "name": name,
+                "repo_path": str(repo_path),
+                "vault_path": str(vault_path),
+                "ok": not issues,
+                "issues": issues,
+            }
+        )
     return records
 
 
@@ -1854,6 +1876,14 @@ def remove_index_link_by_target(index_path: Path, target: str) -> None:
 
 def metadata_string(metadata: dict[str, MetadataValue], key: str) -> str:
     assert key in metadata, f"memory frontmatter missing required field: {key}"
+    value = metadata[key]
+    assert isinstance(value, str), f"metadata field {key} must be a string"
+    return value
+
+
+def metadata_string_optional(metadata: dict[str, MetadataValue], key: str) -> str | None:
+    if key not in metadata:
+        return None
     value = metadata[key]
     assert isinstance(value, str), f"metadata field {key} must be a string"
     return value
@@ -2137,7 +2167,7 @@ def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
         memory_type=MemoryType(metadata_string(document.metadata, "type")),
         scope=stored_scope,
         tags=tuple(tags),
-        timestamp=metadata_string(document.metadata, "timestamp"),
+        timestamp=metadata_string_optional(document.metadata, "timestamp"),
         document=document,
     )
 
@@ -2151,7 +2181,7 @@ def note_record_matches_metadata(
     return (
         (memory_type is None or record.memory_type is memory_type)
         and (tag is None or tag in record.tags)
-        and (created_after is None or parse_memory_timestamp(record.timestamp) > created_after)
+        and (created_after is None or (record.timestamp is not None and parse_memory_timestamp(record.timestamp) > created_after))
     )
 
 
@@ -2410,8 +2440,8 @@ def inspect_recent(
     assert output_format is InspectOutputFormat.JSON, "inspect recent currently emits JSON"
     since_datetime = parse_memory_timestamp(since)
     config = load_project_config(cwd)
-    records = [record for record in inspect_note_records(config, scope) if parse_memory_timestamp(record.timestamp) > since_datetime]
-    records.sort(key=lambda record: record.timestamp, reverse=True)
+    records = [record for record in inspect_note_records(config, scope) if record.timestamp is not None and parse_memory_timestamp(record.timestamp) > since_datetime]
+    records.sort(key=lambda record: record.timestamp or "", reverse=True)
     return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records])}
 
 
@@ -2495,7 +2525,7 @@ def inspect_counts(values: Sequence[str]) -> JsonObject:
 
 
 def inspect_day_counts(records: Sequence[NoteRecord]) -> JsonObject:
-    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records)
+    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records if record.timestamp is not None)
     return {key: counts[key] for key in sorted(counts)}
 
 
