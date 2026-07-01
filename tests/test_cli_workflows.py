@@ -30,6 +30,7 @@ from agent_memory.operations import (
     basic_doctor,
     check_dependency,
     merge_probe_payloads,
+    outgoing_link_keys,
     update_memory,
 )
 from agent_memory.operations import load_project_config as operations_load_project_config
@@ -2062,6 +2063,149 @@ Body for the missing-timestamp reproducer.
     assert project_memory_key(workspace, "decisions", "no-timestamp") in result_keys(search)
 
 
+def write_raw_project_note(workspace: CliWorkspace, slug: str, text: str) -> Path:
+    note = workspace.vault / "projects" / workspace.project_id / "decisions" / f"{slug}.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(text, encoding="utf-8")
+    return note
+
+
+def test_read_memory_invalid_yaml_frontmatter_is_structured_cli_error(tmp_path: Path) -> None:
+    # F4: frontmatter.loads raises yaml.YAMLError (NOT a ValueError subclass) on invalid
+    # YAML, so the record scan must convert it into a path-bearing MalformedMemoryError
+    # that cli.main renders cleanly — not an uncaught YAMLError traceback.
+    workspace = initialized_workspace(tmp_path)
+    note = write_raw_project_note(
+        workspace,
+        "bad-yaml",
+        "---\ntype: decision\nscope: project\ntags: [unterminated\n---\nBody.\n",
+    )
+
+    result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
+
+    assert result.returncode != 0
+    assert "Malformed memory file" in result.stderr
+    assert note.name in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "YAMLError" not in result.stderr
+
+
+def test_note_missing_required_field_is_structured_cli_error(tmp_path: Path) -> None:
+    # F1: a note missing a required frontmatter field (scope) must fail through the
+    # path-bearing MalformedMemoryError contract, not an uncaught AssertionError.
+    workspace = initialized_workspace(tmp_path)
+    note = write_raw_project_note(
+        workspace,
+        "missing-scope",
+        "---\ntype: decision\ntitle: Missing Scope\ndescription: x\ntags: [project]\n---\nBody.\n",
+    )
+
+    result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
+
+    assert result.returncode != 0
+    assert "Malformed memory file" in result.stderr
+    assert note.name in result.stderr
+    assert "scope" in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_note_optional_field_wrong_type_is_structured_cli_error(tmp_path: Path) -> None:
+    # F2: a present-but-non-string optional field (timestamp: true) must raise the
+    # structured MalformedMemoryError, not an uncaught AssertionError.
+    workspace = initialized_workspace(tmp_path)
+    note = write_raw_project_note(
+        workspace,
+        "bad-timestamp-type",
+        "---\ntype: decision\nscope: project\ntitle: Bad Timestamp\ndescription: x\ntags: [project]\ntimestamp: true\n---\nBody.\n",
+    )
+
+    result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
+
+    assert result.returncode != 0
+    assert "Malformed memory file" in result.stderr
+    assert note.name in result.stderr
+    assert "timestamp" in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_note_missing_tags_is_structured_cli_error(tmp_path: Path) -> None:
+    # F3: a note missing the required `tags` field must raise a path-bearing
+    # MalformedMemoryError from note_record_for_path, not an uncaught AssertionError.
+    workspace = initialized_workspace(tmp_path)
+    note = write_raw_project_note(
+        workspace,
+        "missing-tags",
+        "---\ntype: decision\nscope: project\ntitle: No Tags\ndescription: x\n---\nBody.\n",
+    )
+
+    result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
+
+    assert result.returncode != 0
+    assert "Malformed memory file" in result.stderr
+    assert note.name in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_note_empty_timestamp_reads_as_absent(tmp_path: Path) -> None:
+    # F6: an empty-string optional timestamp must read as ABSENT (None), so the note is
+    # treated as having no timestamp. Otherwise "" reaches parse_memory_timestamp("") ->
+    # datetime.fromisoformat("") -> uncaught ValueError during a --since filter.
+    workspace = initialized_workspace(tmp_path)
+    write_raw_project_note(
+        workspace,
+        "empty-timestamp",
+        '---\ntype: decision\nscope: project\ntitle: Empty Timestamp\ndescription: x\ntags: [project]\ntimestamp: ""\n---\nBody.\n',
+    )
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "inspect",
+        "recent",
+        "--scope",
+        "project",
+        "--since",
+        "1970-01-01T00:00:00+00:00",
+        "--format",
+        "json",
+    )
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    # Treated as having no timestamp: an absent timestamp is excluded from a since filter.
+    recent = parse_json_stdout(result)
+    assert project_memory_key(workspace, "decisions", "empty-timestamp") not in result_keys(recent)
+
+
+def test_outgoing_link_keys_skips_non_vault_links_and_extracts_vault_links(tmp_path: Path) -> None:
+    # F11: outgoing_link_keys owns intra-vault note-to-note edges. The markdown-it walk now
+    # yields ALL links; a non-vault link (external URL) must be SKIPPED by contract, not
+    # crash the extraction. Intra-vault .md links, including reference-style, are extracted.
+    workspace = initialized_workspace(tmp_path)
+    note = write_raw_project_note(
+        workspace,
+        "link-source",
+        "---\n"
+        "type: decision\n"
+        "scope: project\n"
+        "title: Link Source\n"
+        "description: x\n"
+        "tags: [project]\n"
+        "---\n"
+        "See [external](https://example.com) and [inline](target-inline.md).\n\n"
+        "Also a [reference link][ref].\n\n"
+        "[ref]: target-ref.md\n",
+    )
+    config = operations_load_project_config(workspace.repo)
+
+    keys = outgoing_link_keys(config, note)
+
+    base = f"projects/{workspace.project_id}/decisions"
+    assert set(keys) == {f"{base}/target-inline", f"{base}/target-ref"}
+
+
 def test_doctor_reports_non_symlink_agent_state_without_crashing(tmp_path: Path) -> None:
     # Issue #44: a real-directory `.agents` (not a symlink) must be a structured
     # doctor finding, not an AssertionError that aborts the whole report.
@@ -2372,8 +2516,10 @@ def test_inspect_stats_real_vault(tmp_path: Path) -> None:
     for count in day_counts.values():
         assert isinstance(count, int)
         counts.append(count)
-    assert sum(counts) == 2
-    assert set(counts).issubset({1, 2})
+    # Both fixture notes are created in the same run, so they share one calendar day and
+    # must land in a SINGLE day bucket of 2. A broken day-key split reports [1, 1] (two
+    # buckets) with the same total; the exact histogram shape excludes that shape.
+    assert counts == [2]
 
 
 def test_inspect_export_profiles_real_vault(tmp_path: Path) -> None:

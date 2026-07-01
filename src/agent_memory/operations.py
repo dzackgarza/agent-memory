@@ -511,9 +511,9 @@ def memory_transition(
 ) -> MemoryTransition:
     source_path = config.vault / f"{key}.md"
     document = read_memory(source_path)
-    old_title = metadata_string(document.metadata, "title")
-    scope = MemoryScope(metadata_string(document.metadata, "scope"))
-    old_type = MemoryType(metadata_string(document.metadata, "type"))
+    old_title = metadata_string(document.metadata, "title", source_path)
+    scope = MemoryScope(metadata_string(document.metadata, "scope", source_path))
+    old_type = MemoryType(metadata_string(document.metadata, "type", source_path))
     new_title = title if title is not None else old_title
     new_type = memory_type if memory_type is not None else old_type
     body = updated_memory_body(document.body, new_title, content)
@@ -629,7 +629,7 @@ def delete_memory(
             path.unlink()
         commit_message = f"Delete memory: {key}"
     else:
-        title = metadata_string(document.metadata, "title")
+        title = metadata_string(document.metadata, "title", path)
         remove_index_link(path.parent / "index.md", title)
         commit_message = f"Delete memory: {title}"
         iwe.delete(config.vault, key)
@@ -1031,10 +1031,11 @@ def squash_memory(key: str, depth: int, cwd: Path) -> str:
 
 def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    source_document = read_memory(memory_path_for_key(config, key))
-    source_title = metadata_string(source_document.metadata, "title")
-    memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
-    scope = MemoryScope(metadata_string(source_document.metadata, "scope"))
+    source_path = memory_path_for_key(config, key)
+    source_document = read_memory(source_path)
+    source_title = metadata_string(source_document.metadata, "title", source_path)
+    memory_type = MemoryType(metadata_string(source_document.metadata, "type", source_path))
+    scope = MemoryScope(metadata_string(source_document.metadata, "scope", source_path))
     affected_keys = iwe.extract(config.vault, key, section)
     extracted_keys: list[str] = []
     for affected_key in affected_keys:
@@ -1074,8 +1075,9 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    reference_document = read_memory(memory_path_for_key(config, reference))
-    reference_title = metadata_string(reference_document.metadata, "title")
+    reference_path = memory_path_for_key(config, reference)
+    reference_document = read_memory(reference_path)
+    reference_title = metadata_string(reference_document.metadata, "title", reference_path)
     affected_keys = iwe.inline(config.vault, key, reference)
     rewritten = rewrite_wikilink_files(
         config,
@@ -1101,9 +1103,9 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     assert destination_path.parent.is_dir(), "move destination directory must exist"
 
     source_document = read_memory(source_path)
-    memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
-    title = metadata_string(source_document.metadata, "title")
-    description = metadata_string(source_document.metadata, "description")
+    memory_type = MemoryType(metadata_string(source_document.metadata, "type", source_path))
+    title = metadata_string(source_document.metadata, "title", source_path)
+    description = metadata_string(source_document.metadata, "description", source_path)
     iwe.rename(config.vault, key, destination_key)
 
     moved_document = read_memory(destination_path)
@@ -1874,18 +1876,25 @@ def remove_index_link_by_target(index_path: Path, target: str) -> None:
         index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def metadata_string(metadata: dict[str, MetadataValue], key: str) -> str:
-    assert key in metadata, f"memory frontmatter missing required field: {key}"
+def metadata_string(metadata: dict[str, MetadataValue], key: str, path: Path) -> str:
+    if key not in metadata:
+        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}")
     value = metadata[key]
-    assert isinstance(value, str), f"metadata field {key} must be a string"
+    if not isinstance(value, str):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a string")
     return value
 
 
-def metadata_string_optional(metadata: dict[str, MetadataValue], key: str) -> str | None:
+def metadata_string_optional(metadata: dict[str, MetadataValue], key: str, path: Path) -> str | None:
     if key not in metadata:
         return None
     value = metadata[key]
-    assert isinstance(value, str), f"metadata field {key} must be a string"
+    if not isinstance(value, str):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a string")
+    # An empty string reads as ABSENT: missing and empty are both "no value", so a blank
+    # optional field never reaches a consumer (e.g. parse_memory_timestamp) as "".
+    if value == "":
+        return None
     return value
 
 
@@ -2153,21 +2162,23 @@ def inspect_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[Not
 
 def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
     document = read_memory(path)
-    stored_scope = MemoryScope(metadata_string(document.metadata, "scope"))
+    stored_scope = MemoryScope(metadata_string(document.metadata, "scope", path))
     layout_scope = MemoryScope(inspect_scope_for_path(config, path))
     assert stored_scope is layout_scope, "memory note metadata scope must match vault layout"
     tags = document.metadata.get("tags")
-    assert tags is not None, "memory note frontmatter must include tags"
-    assert isinstance(tags, list), "memory tags must be a list"
-    assert all(isinstance(tag_value, str) for tag_value in tags), "memory tags must contain strings"
+    if tags is None:
+        raise MalformedMemoryError(path, "frontmatter must include tags")
+    if not isinstance(tags, list):
+        raise MalformedMemoryError(path, "frontmatter tags must be a list")
+    # read_memory already guarantees every list item is a string.
     return NoteRecord(
         key=memory_key(config.vault, path),
         path=path,
-        title=metadata_string(document.metadata, "title"),
-        memory_type=MemoryType(metadata_string(document.metadata, "type")),
+        title=metadata_string(document.metadata, "title", path),
+        memory_type=MemoryType(metadata_string(document.metadata, "type", path)),
         scope=stored_scope,
         tags=tuple(tags),
-        timestamp=metadata_string_optional(document.metadata, "timestamp"),
+        timestamp=metadata_string_optional(document.metadata, "timestamp", path),
         document=document,
     )
 
@@ -2251,7 +2262,7 @@ def read_memory(path: Path) -> MemoryDocument:
         raise MalformedMemoryError(path, "memory must start with frontmatter")
     try:
         document = frontmatter.loads(raw)
-    except ValueError as e:
+    except (ValueError, yaml.YAMLError) as e:
         raise MalformedMemoryError(path, "frontmatter must be valid YAML") from e
     parsed = document.metadata
     body = document.content
@@ -2609,10 +2620,16 @@ def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
             target = href.split("#", 1)[0]
             if not target:
                 continue
-            assert target.endswith(".md"), f"markdown link target must point to a Markdown file: {target}"
+            # outgoing_link_keys owns intra-vault note-to-note edges only. The markdown-it
+            # walk yields every link (external URLs, autolinks, reference-style, non-.md);
+            # a target that is not a vault-relative .md file is simply not an outgoing vault
+            # edge, so skip it by contract. This is a membership test, not error handling.
+            if not target.endswith(".md"):
+                continue
             target_path = (path.parent / target).resolve()
             vault = config.vault.resolve()
-            assert target_path.is_relative_to(vault), f"markdown link leaves memory vault: {target}"
+            if not target_path.is_relative_to(vault):
+                continue
             keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
     return tuple(keys)
 
@@ -2841,14 +2858,14 @@ def inspect_tree_node(config: ProjectConfig, key: str, depth: int) -> JsonObject
     return {
         "key": key,
         "path": str(path),
-        "title": inspect_title_for_document(document),
+        "title": inspect_title_for_document(document, path),
         "children": json_list(children),
     }
 
 
-def inspect_title_for_document(document: MemoryDocument) -> str:
+def inspect_title_for_document(document: MemoryDocument, path: Path) -> str:
     if "title" in document.metadata:
-        return metadata_string(document.metadata, "title")
+        return metadata_string(document.metadata, "title", path)
     return first_heading_title(document.body)
 
 
@@ -2904,7 +2921,7 @@ def traverse_link_records(
                 related_path = memory_path_for_key(config, related_key)
                 related_document = read_memory(related_path)
                 record_depth = current_depth + 1
-                records.append(LinkRecord(related_key, related_path, inspect_title_for_document(related_document), record_depth))
+                records.append(LinkRecord(related_key, related_path, inspect_title_for_document(related_document, related_path), record_depth))
                 frontier.append((related_key, record_depth))
     return tuple(records)
 
@@ -2936,11 +2953,11 @@ def inspect_export_node(
     node: JsonObject = {
         "key": key,
         "path": str(path),
-        "title": inspect_title_for_document(document),
+        "title": inspect_title_for_document(document, path),
         "scope": inspect_scope_for_path(config, path),
     }
     if "type" in document.metadata:
-        node["type"] = metadata_string(document.metadata, "type")
+        node["type"] = metadata_string(document.metadata, "type", path)
     if profile is InspectExportProfile.MAP:
         return node
     if profile is InspectExportProfile.CONTEXT:
