@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from agent_memory.cards import load_card_system_config
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
 from agent_memory.models import MemoryType
@@ -2644,6 +2645,70 @@ def test_global_op_error_names_init_global_only_when_vault_missing(tmp_path: Pat
     assert result.returncode != 0
     assert "maintain init-global" in result.stderr
     assert "init project" not in result.stderr
+
+
+def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Card Schema System (PR #35): `inspect schema` must advertise the card types the
+    # *configured* vault will actually enforce and route by. From an unbound cwd with a
+    # global vault configured via AGENT_MEMORY_VAULT, that vault's own `_meta/cards.yaml`
+    # owns the advertised schema -- not the tool's packaged defaults. Here the vault
+    # declares a `signal` type that is absent from the packaged defaults, so a schema that
+    # advertised packaged types would omit it.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    cards_path = vault / "_meta" / "cards.yaml"
+    payload = {
+        "statuses": ["todo", "in-progress", "complete", "blocked"],
+        "status_sets": {
+            "standard": {
+                "default": "todo",
+                "options": ["todo", "in-progress", "complete", "blocked"],
+            },
+        },
+        "card_types": [
+            {
+                "name": "signal",
+                "id_prefix": "SIG",
+                "status_set": "standard",
+                "parents": [],
+                "own_dir": True,
+                "container": "signals",
+                "fields": [
+                    {"name": "id", "type": "string", "required": True},
+                    {"name": "title", "type": "string", "required": True},
+                    {"name": "status", "type": "status", "required": True},
+                ],
+            },
+        ],
+    }
+    cards_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))
+    loose = unbound_dir(tmp_path)
+
+    schema = parse_json_stdout(run_agent_memory(loose, "inspect", "schema", "--format", "json"))
+    card_system = json_object(schema["card_system"])
+    advertised = {json_string(json_object(card_type)["name"]) for card_type in json_array(card_system["types"])}
+    assert "signal" in advertised
+
+
+def test_inspect_schema_advertises_packaged_defaults_when_no_vault_initialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Card Schema System (PR #35): the honest no-vault branch. From an unbound cwd whose
+    # configured global vault (AGENT_MEMORY_VAULT) is NOT initialized, `inspect schema`
+    # advertises exactly the tool's packaged default card types. It must select that answer
+    # by an explicit state query -- not by naively resolving the global vault, which would
+    # raise GlobalVaultNotInitializedError and abort the command. A regression that dropped
+    # the initialized-vault guard would crash here instead of returning the packaged schema.
+    uninitialized_vault = tmp_path / "empty-vault"
+    uninitialized_vault.mkdir()
+    monkeypatch.setenv("AGENT_MEMORY_VAULT", str(uninitialized_vault))
+    loose = unbound_dir(tmp_path)
+
+    schema = parse_json_stdout(run_agent_memory(loose, "inspect", "schema", "--format", "json"))
+    card_system = json_object(schema["card_system"])
+    advertised = {json_string(json_object(card_type)["name"]) for card_type in json_array(card_system["types"])}
+    assert advertised == {card_type.name for card_type in load_card_system_config().card_types}
 
 
 def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:

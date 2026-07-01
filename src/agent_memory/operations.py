@@ -1963,6 +1963,23 @@ def global_only_config() -> ProjectConfig:
     )
 
 
+def config_for_schema_advertisement(cwd: Path) -> ProjectConfig | None:
+    # The vault whose card schema `inspect schema` should advertise: the cwd's bound
+    # project when bound, else the configured global vault when it is actually
+    # initialized. When no vault is configured+initialized, return None so the caller
+    # advertises the packaged defaults -- the honest answer for a genuinely
+    # unconfigured state. That state is selected here by the explicit initialized-vault
+    # query, never by catching GlobalVaultNotInitializedError. Any other error (e.g. an
+    # empty AGENT_MEMORY_VAULT) still propagates loudly from global_vault_path.
+    config = find_project_config(cwd)
+    if config is not None:
+        return config
+    vault = global_vault_path()
+    if not (vault / ".agents" / "memories" / "config.toml").is_file():
+        return None
+    return global_only_config()
+
+
 def config_for_memory_scope(scope: MemoryScope, cwd: Path) -> ProjectConfig:
     # A bound repo's configured vault is authoritative for every scope, including global,
     # since its global memory lives in that same vault. Only an unbound directory falls
@@ -2261,7 +2278,7 @@ def inspect_overview(
 
 def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect schema currently emits JSON"
-    config = find_project_config(Path.cwd())
+    config = config_for_schema_advertisement(Path.cwd())
     cards_config, card_model_by_type = load_card_system(config)
     return {
         "commands": {"inspect": list(INSPECT_COMMAND_NAMES)},
