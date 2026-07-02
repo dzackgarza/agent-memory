@@ -766,6 +766,8 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
             "notes": ["preserve out-of-schema plan state"],
         }
     ]
+    structured_frontmatter_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "durable"))
+    assert project_key in result_keys(structured_frontmatter_search)
 
     project_index = project_path.parent / "index.md"
     index_lines = project_index.read_text(encoding="utf-8").splitlines()
