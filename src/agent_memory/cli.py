@@ -11,7 +11,7 @@ from cyclopts import App, Parameter
 from pydantic import ValidationError
 
 from agent_memory.cards.config import CardSystemConfig
-from agent_memory.cards.loader import load_card_system_config
+from agent_memory.cards.loader import CardConfigError, load_card_system_config
 from agent_memory.cards.storage import CardPlacementError
 from agent_memory.models import (
     ContentSearchMode,
@@ -671,6 +671,7 @@ def main() -> None:
         print("Error: Validation failed:\n" + "\n".join(msgs), file=sys.stderr)
         raise SystemExit(1)
     except (
+        CardConfigError,
         CardPlacementError,
         CardFieldError,
         CliUsageError,
