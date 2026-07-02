@@ -314,6 +314,17 @@ class NoteRecord:
 
 
 @dataclass(frozen=True)
+class CardListing:
+    title: str
+    card_type: str
+    scope: MemoryScope
+    path: Path
+    managed: bool
+    key: str | None
+    suggested_destination: str | None
+
+
+@dataclass(frozen=True)
 class MemoryTransition:
     old_key: str
     new_key: str
@@ -821,6 +832,43 @@ def json_list(values: Sequence[JsonValue]) -> list[JsonValue]:
     return list(values)
 
 
+STRUCTURED_CARD_PREFIX_TYPES = {
+    "FEATURE": "feature",
+    "PLAN": "plan",
+    "PHASE": "phase",
+    "TASK": "task",
+    "SPEC": "spec",
+    "DECISION": "decision",
+}
+
+
+def card_listing_json(record: CardListing) -> JsonObject:
+    return {
+        "title": record.title,
+        "type": record.card_type,
+        "scope": record.scope.value,
+        "path": str(record.path),
+        "managed": record.managed,
+        "key": record.key,
+        "suggested_destination": record.suggested_destination,
+    }
+
+
+def list_cards(card_type: str, scope: SearchScope, include_unmigrated: bool, cwd: Path) -> JsonObject:
+    config = config_for_search_scope(scope, cwd)
+    records = managed_card_listings(config, scope)
+    if include_unmigrated:
+        records.extend(unmigrated_card_listings(config, scope))
+    filtered = [record for record in records if record.card_type == card_type]
+    filtered.sort(key=lambda record: (record.managed, record.scope.value, record.title, str(record.path)))
+    return {
+        "type": card_type,
+        "scope": scope.value,
+        "include_unmigrated": include_unmigrated,
+        "results": json_list([card_listing_json(record) for record in filtered]),
+    }
+
+
 def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
     roots = search_roots(config, scope)
@@ -1203,6 +1251,7 @@ def doctor(cwd: Path) -> JsonObject:
         "project_root": str(git_root),
         "project_bound": True,
         "agent_state": project_agent_state_records(git_root, project_dir),
+        "unmigrated_cards": json_list([card_listing_json(record) for record in unmigrated_card_listings(config, SearchScope.BOTH)]),
         "auto_sync": sync_auto_status(),
         "last_sync": sync_state(),
         "tools": basic["tools"],
@@ -2166,6 +2215,127 @@ def memory_files(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
 def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
     scope_order = search_scope_memory_scopes(scope, both_order=CONTENT_SCOPE_ORDER)
     return tuple(memory_directory(config, memory_scope, memory_type) for memory_scope in scope_order for memory_type in MemoryType)
+
+
+def managed_card_listings(config: ProjectConfig, scope: SearchScope) -> list[CardListing]:
+    listings: list[CardListing] = []
+    for path in managed_card_paths(config, scope):
+        listing = card_listing_for_path(config, path, managed=True)
+        if listing is not None:
+            listings.append(listing)
+    return listings
+
+
+def managed_card_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
+    paths: set[Path] = set()
+    for directory in memory_note_directories(config, scope):
+        paths.update(path for path in directory.glob("*.md") if path.name != "index.md")
+    if scope in (SearchScope.PROJECT, SearchScope.BOTH):
+        plans_root = memory_directory(config, MemoryScope.PROJECT, MemoryType.PLAN)
+        paths.update(path for path in plans_root.rglob("*.md") if path.name not in ("index.md", PLAN_DAG_FILENAME))
+    return tuple(sorted(paths))
+
+
+def unmigrated_card_listings(config: ProjectConfig, scope: SearchScope) -> list[CardListing]:
+    listings: list[CardListing] = []
+    for path in unmigrated_card_candidate_paths(config, scope):
+        listing = card_listing_for_path(config, path, managed=False)
+        if listing is not None:
+            listings.append(listing)
+    return listings
+
+
+def unmigrated_card_candidate_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    if scope in (SearchScope.PROJECT, SearchScope.BOTH):
+        roots.append(scope_root(config, MemoryScope.PROJECT))
+    if scope in (SearchScope.GLOBAL, SearchScope.BOTH):
+        roots.extend([config.vault / "harnesses", config.vault / "global"])
+    candidates: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.md"):
+            if is_internal_vault_path(path) or is_managed_card_path(config, path) or path.name == "index.md":
+                continue
+            candidates.add(path)
+    return tuple(sorted(candidates))
+
+
+def is_internal_vault_path(path: Path) -> bool:
+    return any(part in (".git", ".zk") for part in path.parts)
+
+
+def is_managed_card_path(config: ProjectConfig, path: Path) -> bool:
+    for scope in (MemoryScope.GLOBAL, MemoryScope.PROJECT):
+        for memory_type in MemoryType:
+            directory = memory_directory(config, scope, memory_type)
+            if path.is_relative_to(directory):
+                return True
+    return False
+
+
+def card_listing_for_path(config: ProjectConfig, path: Path, *, managed: bool) -> CardListing | None:
+    try:
+        document = read_memory(path)
+    except MalformedMemoryError:
+        return None
+    card_type = card_type_from_metadata(document.metadata)
+    if card_type is None:
+        return None
+    scope = card_scope_for_path(config, path, document.metadata)
+    return CardListing(
+        title=card_title_from_metadata(path, document.metadata),
+        card_type=card_type,
+        scope=scope,
+        path=path,
+        managed=managed,
+        key=memory_key(config.vault, path) if managed else None,
+        suggested_destination=None if managed else suggested_card_destination(config, scope, card_type),
+    )
+
+
+def card_type_from_metadata(metadata: Mapping[str, MetadataValue]) -> str | None:
+    type_value = metadata.get("type")
+    if isinstance(type_value, str):
+        return type_value
+    id_value = metadata.get("id")
+    if isinstance(id_value, str):
+        prefix = id_value.split("-", 1)[0]
+        return STRUCTURED_CARD_PREFIX_TYPES.get(prefix)
+    return None
+
+
+def card_title_from_metadata(path: Path, metadata: Mapping[str, MetadataValue]) -> str:
+    title = metadata.get("title")
+    if isinstance(title, str):
+        return title
+    card_id = metadata.get("id")
+    if isinstance(card_id, str):
+        return card_id
+    return path.stem
+
+
+def card_scope_for_path(config: ProjectConfig, path: Path, metadata: Mapping[str, MetadataValue]) -> MemoryScope:
+    scope = metadata.get("scope")
+    if isinstance(scope, str):
+        try:
+            return MemoryScope(scope)
+        except ValueError:
+            pass
+    if path.is_relative_to(scope_root(config, MemoryScope.PROJECT)):
+        return MemoryScope.PROJECT
+    return MemoryScope.GLOBAL
+
+
+def suggested_card_destination(config: ProjectConfig, scope: MemoryScope, card_type: str) -> str:
+    try:
+        directory = MEMORY_TYPE_DIRECTORIES[MemoryType(card_type)]
+    except ValueError:
+        directory = MEMORY_TYPE_DIRECTORIES[MemoryType.PLAN]
+    if scope is MemoryScope.GLOBAL:
+        return f"global/{directory}"
+    return f"projects/{require_project_id(config)}/{directory}"
 
 
 def inspect_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[NoteRecord, ...]:

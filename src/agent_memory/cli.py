@@ -57,6 +57,7 @@ from agent_memory.operations import (
     inspect_stats,
     inspect_tree,
     install_sync_systemd_timer,
+    list_cards,
     merge_memory,
     migrate_plan_cards,
     move_memory,
@@ -435,6 +436,16 @@ def doctor_command() -> None:
     emit(run_doctor(cwd=Path.cwd()))
 
 
+def list_command(
+    *,
+    type_: Annotated[str, Parameter(name="type", help="Card or memory type to list, e.g. plan, decision, feature, task.")],
+    scope: Annotated[SearchScope, Parameter(help="Scope to list: project, global, or both.")] = SearchScope.BOTH,
+    unmigrated: Annotated[bool, Parameter(help="Include records stranded outside managed global/project folders.")] = False,
+) -> None:
+    """List managed cards/memories and optionally stranded harness-local records."""
+    emit(list_cards(card_type=type_, scope=scope, include_unmigrated=unmigrated, cwd=Path.cwd()))
+
+
 def plan_add_command(
     type_name: Annotated[str, Parameter(name="type", help="Card type, e.g. feature, plan, phase, task.")],
     card_id: Annotated[str, Parameter(name="id", help="Card id, must start with the type's prefix (e.g. TASK-...).")],
@@ -552,6 +563,7 @@ def register_commands() -> None:
     app.command(add_command, name="add")
     app.command(update_command, name="update")
     app.command(delete_command, name="delete")
+    app.command(list_command, name="list")
     search_app.default(search_default)
     search_app.command(search_content_command, name="content")
     search_app.command(search_metadata_command, name="metadata")
