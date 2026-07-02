@@ -12,7 +12,6 @@ from agent_memory.operations import (
     reconcile_okf_frontmatter,
 )
 
-
 PROJECT_ID = "github.com__dzackgarza__agent-memory"
 OKF_VALUES = {
     "type": "plan",
