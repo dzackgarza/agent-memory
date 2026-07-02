@@ -3470,6 +3470,25 @@ def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> N
     assert "Traceback" not in result.stderr
 
 
+def test_plan_update_unrecognized_id_is_structured_cli_error(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "plan",
+        "update",
+        "projects/some-project/plans/some-vault-key",
+        "--set",
+        "status=in-progress",
+    )
+
+    assert result.returncode != 0
+    assert result.stderr.startswith("Error: ")
+    assert "no card type matches id prefix" in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
