@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from agent_memory.cards.config import CardSystemConfig
 from agent_memory.cards.loader import CardConfigError, load_card_system_config
-from agent_memory.cards.storage import CardPlacementError
+from agent_memory.cards.storage import CardLookupError, CardPlacementError
 from agent_memory.models import (
     ContentSearchMode,
     InspectExportFormat,
@@ -672,6 +672,7 @@ def main() -> None:
         raise SystemExit(1)
     except (
         CardConfigError,
+        CardLookupError,
         CardPlacementError,
         CardFieldError,
         CliUsageError,
