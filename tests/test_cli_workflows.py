@@ -797,6 +797,29 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     assert global_key not in result_keys(after_delete)
 
 
+def test_generic_add_refuses_plain_plan_memory(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "add",
+        "--scope",
+        "project",
+        "--type",
+        "plan",
+        "--title",
+        "Tree-less Plan",
+        "--content",
+        "This would create a plan with no task tree.",
+    )
+
+    assert result.returncode != 0
+    assert "agent-memory plan add" in result.stderr
+    assert "Traceback" not in result.stderr
+    plain_plan = workspace.vault / "projects" / workspace.project_id / "plans" / "tree-less-plan.md"
+    assert not plain_plan.exists()
+
+
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
