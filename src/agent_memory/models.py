@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic.functional_validators import AfterValidator
 
 ProjectRootStrategy = Literal["git-root"]
-MetadataValue = str | bool | list[str]
+type MetadataValue = None | bool | int | float | str | list[MetadataValue] | dict[str, MetadataValue]
 
 
 class MemoryScope(StrEnum):

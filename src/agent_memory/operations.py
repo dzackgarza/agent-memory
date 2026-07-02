@@ -518,7 +518,10 @@ def memory_transition(
     new_type = memory_type if memory_type is not None else old_type
     body = updated_memory_body(document.body, new_title, content)
     description = okf_description(content if content is not None else body)
-    metadata = note_metadata(config, scope, new_type, new_title, description)
+    metadata = {
+        **document.metadata,
+        **note_metadata(config, scope, new_type, new_title, description),
+    }
     destination_path = memory_directory(config, scope, new_type) / f"{memory_slug(new_title)}.md"
     return MemoryTransition(
         old_key=key,
@@ -2256,6 +2259,31 @@ def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
     return f"---\n{frontmatter}---\n{body}"
 
 
+def yaml_metadata_value(path: Path, key: str, value: object) -> MetadataValue:
+    if isinstance(value, datetime):
+        if key == "timestamp":
+            if value.tzinfo is None:
+                raise MalformedMemoryError(path, "timestamp must include timezone information")
+            return value.isoformat().replace("+00:00", "Z")
+        return value.isoformat()
+    if isinstance(value, date):
+        if key == "timestamp":
+            raise MalformedMemoryError(path, "timestamp must include timezone information")
+        return value.isoformat()
+    if value is None or isinstance(value, str | bool | int | float):
+        return value
+    if isinstance(value, list):
+        return [yaml_metadata_value(path, key, item) for item in value]
+    if isinstance(value, dict):
+        normalized: dict[str, MetadataValue] = {}
+        for nested_key, nested_value in value.items():
+            if not isinstance(nested_key, str):
+                raise MalformedMemoryError(path, "frontmatter mapping keys must be strings")
+            normalized[nested_key] = yaml_metadata_value(path, nested_key, nested_value)
+        return normalized
+    raise MalformedMemoryError(path, "frontmatter values must be YAML scalars, lists, or mappings")
+
+
 def read_memory(path: Path) -> MemoryDocument:
     raw = path.read_text(encoding="utf-8")
     if not raw.startswith("---"):
@@ -2272,20 +2300,7 @@ def read_memory(path: Path) -> MemoryDocument:
     for key, value in parsed.items():
         if not isinstance(key, str):
             raise MalformedMemoryError(path, "frontmatter keys must be strings")
-        if isinstance(value, datetime):
-            if key != "timestamp":
-                raise MalformedMemoryError(path, "only timestamp may be parsed as a YAML datetime")
-            if value.tzinfo is None:
-                raise MalformedMemoryError(path, "timestamp must include timezone information")
-            metadata[key] = value.isoformat().replace("+00:00", "Z")
-        elif isinstance(value, list):
-            if not all(isinstance(item, str) for item in value):
-                raise MalformedMemoryError(path, "frontmatter lists must contain strings")
-            metadata[key] = value
-        else:
-            if not isinstance(value, str | bool):
-                raise MalformedMemoryError(path, "frontmatter values must be strings, booleans, datetimes, or string lists")
-            metadata[key] = value
+        metadata[key] = yaml_metadata_value(path, key, value)
     return MemoryDocument(metadata=metadata, body=body)
 
 
@@ -2970,9 +2985,11 @@ def inspect_export_node(
 
 
 def json_metadata_value(value: MetadataValue) -> JsonValue:
-    if isinstance(value, str | bool):
+    if value is None or isinstance(value, str | bool | int | float):
         return value
-    return json_list(value)
+    if isinstance(value, list):
+        return json_list([json_metadata_value(item) for item in value])
+    return {key: json_metadata_value(item) for key, item in value.items()}
 
 
 # --- Plan cards (issue #4): bridge the config-driven card engine to the project vault ---
