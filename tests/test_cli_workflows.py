@@ -1551,6 +1551,75 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     ]
 
 
+def write_unmigrated_plan(path: Path, title: str, project_id: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "---",
+                "type: plan",
+                f"title: {title}",
+                f"description: {title} description",
+                "tags:",
+                "  - project",
+                "  - plan",
+                "timestamp: 2026-07-02T00:00:00Z",
+                "scope: project",
+                "source: agent",
+                "confidence: high",
+                "promotable: false",
+                f"project_id: {project_id}",
+                "---",
+                f"{title} body.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    managed_plan = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="plan",
+        title="Managed Plan",
+        content="Managed plan is filed in project plans.",
+    )
+    unmigrated = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "harnesses"
+        / "codex"
+        / "memories"
+        / "extensions"
+        / "ad_hoc"
+        / "notes"
+        / "stranded-plan.md"
+    )
+    write_unmigrated_plan(unmigrated, "Stranded Harness Plan", workspace.project_id)
+
+    doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
+    unmigrated_records = json_array(doctor["unmigrated_cards"])
+    assert unmigrated_records
+    doctor_record = json_object(unmigrated_records[0])
+    assert doctor_record["managed"] is False
+    assert doctor_record["type"] == "plan"
+    assert doctor_record["scope"] == "project"
+    assert doctor_record["suggested_destination"] == f"projects/{workspace.project_id}/plans"
+    assert doctor_record["path"] == str(unmigrated)
+
+    listed = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "plan", "--scope", "both", "--unmigrated"))
+    records = {json_string(record["title"]): record for record in json_records(listed, "results")}
+    assert set(records) == {"Managed Plan", "Stranded Harness Plan"}
+    assert records["Managed Plan"]["managed"] is True
+    assert records["Managed Plan"]["key"] == managed_plan["key"]
+    assert records["Stranded Harness Plan"]["managed"] is False
+    assert records["Stranded Harness Plan"]["path"] == str(unmigrated)
+
+
 def test_sync_run_commits_and_pushes_vault_worktree_changes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     remote = initialized_bare_remote(tmp_path, "vault-remote.git")
