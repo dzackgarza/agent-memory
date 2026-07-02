@@ -314,6 +314,19 @@ class NoteRecord:
 
 
 @dataclass(frozen=True)
+class NoteFinding:
+    path: Path
+    key: str
+    message: str
+
+
+@dataclass(frozen=True)
+class NoteScan:
+    records: tuple[NoteRecord, ...]
+    findings: tuple[NoteFinding, ...]
+
+
+@dataclass(frozen=True)
 class CardListing:
     title: str
     card_type: str
@@ -682,7 +695,8 @@ def delete_memory(
 
 def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
-    key_matches = key_search_records(config, scope, query)
+    note_scan = scan_note_records(config, scope)
+    key_matches = key_search_records_from_notes(note_scan.records, query, config.search_max_results)
     exact_matches = exact_content_records(config, scope, query)
     fuzzy_matches = fuzzy_content_records(config, scope, query)
     results = dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[: config.search_max_results]
@@ -697,15 +711,18 @@ def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
         "exact_content_matches": json_list(exact_matches),
         "fuzzy_content_matches": json_list(fuzzy_matches),
         "ranked_content_matches": ranked_results,
+        "findings": note_findings_json(note_scan),
     }
 
 
 def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
+    note_scan = scan_note_records(config, scope)
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_list(key_search_records(config, scope, query)),
+        "results": json_list(key_search_records_from_notes(note_scan.records, query, config.search_max_results)),
+        "findings": note_findings_json(note_scan),
     }
 
 
@@ -727,26 +744,32 @@ def search_metadata(
 ) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
     created_after_datetime = parse_created_after(created_after)
+    note_scan = scan_note_records(config, scope)
     records = [
-        metadata_search_record_json(record) for record in inspect_note_records(config, scope) if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)
+        metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)
     ]
     return {
         "scope": scope.value,
         "results": json_list(records[: config.search_max_results]),
+        "findings": note_findings_json(note_scan),
     }
 
 
 def key_search_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    return key_search_records_from_notes(inspect_note_records(config, scope), query, config.search_max_results)
+
+
+def key_search_records_from_notes(records: Sequence[NoteRecord], query: str, limit: int) -> list[JsonObject]:
     query_text = query.casefold()
-    records: list[JsonObject] = []
-    for record in inspect_note_records(config, scope):
+    matched_records: list[JsonObject] = []
+    for record in records:
         key_matches = query_text in record.key.casefold()
         title_matches = query_text in record.title.casefold()
         if key_matches or title_matches:
             json_record = note_record_json(record)
             json_record["source"] = "keys"
-            records.append(json_record)
-    return dedupe_records_by_key(records)[: config.search_max_results]
+            matched_records.append(json_record)
+    return dedupe_records_by_key(matched_records)[:limit]
 
 
 def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
@@ -2342,25 +2365,56 @@ def suggested_card_destination(config: ProjectConfig, scope: MemoryScope, card_t
 
 
 def inspect_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[NoteRecord, ...]:
-    return tuple(note_record_for_path(config, path) for path in memory_files(config, scope))
+    return scan_note_records(config, scope).records
+
+
+def scan_note_records(config: ProjectConfig, scope: SearchScope) -> NoteScan:
+    records: list[NoteRecord] = []
+    findings: list[NoteFinding] = []
+    for path in memory_files(config, scope):
+        try:
+            records.append(note_record_for_path(config, path))
+        except MalformedMemoryError as error:
+            findings.append(note_finding_for_error(config, path, error))
+    return NoteScan(records=tuple(records), findings=tuple(findings))
+
+
+def note_finding_for_error(config: ProjectConfig, path: Path, error: MalformedMemoryError) -> NoteFinding:
+    return NoteFinding(
+        path=path,
+        key=memory_key(config.vault, path),
+        message=str(error),
+    )
 
 
 def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
     document = read_memory(path)
-    stored_scope = MemoryScope(metadata_string(document.metadata, "scope", path))
+    stored_scope_text = metadata_string(document.metadata, "scope", path)
+    try:
+        stored_scope = MemoryScope(stored_scope_text)
+    except ValueError as error:
+        known_scopes = ", ".join(scope.value for scope in MemoryScope)
+        raise MalformedMemoryError(path, f"frontmatter scope {stored_scope_text!r} is not one of: {known_scopes}") from error
     layout_scope = MemoryScope(inspect_scope_for_path(config, path))
-    assert stored_scope is layout_scope, "memory note metadata scope must match vault layout"
+    if stored_scope is not layout_scope:
+        raise MalformedMemoryError(path, f"frontmatter scope {stored_scope.value!r} does not match vault layout {layout_scope.value!r}")
     tags = document.metadata.get("tags")
     if tags is None:
         raise MalformedMemoryError(path, "frontmatter must include tags")
     if not isinstance(tags, list):
         raise MalformedMemoryError(path, "frontmatter tags must be a list")
+    memory_type_text = metadata_string(document.metadata, "type", path)
+    try:
+        memory_type = MemoryType(memory_type_text)
+    except ValueError as error:
+        known_types = ", ".join(memory_type.value for memory_type in MemoryType)
+        raise MalformedMemoryError(path, f"frontmatter type {memory_type_text!r} is not one of: {known_types}") from error
     # read_memory already guarantees every list item is a string.
     return NoteRecord(
         key=memory_key(config.vault, path),
         path=path,
         title=metadata_string(document.metadata, "title", path),
-        memory_type=MemoryType(metadata_string(document.metadata, "type", path)),
+        memory_type=memory_type,
         scope=stored_scope,
         tags=tuple(tags),
         timestamp=metadata_string_optional(document.metadata, "timestamp", path),
@@ -2412,6 +2466,18 @@ def note_path_record_json(record: NoteRecord) -> JsonObject:
         **note_record_core(record),
         "scope": record.scope.value,
     }
+
+
+def note_finding_json(finding: NoteFinding) -> JsonObject:
+    return {
+        "path": str(finding.path),
+        "key": finding.key,
+        "message": finding.message,
+    }
+
+
+def note_findings_json(scan: NoteScan) -> list[JsonValue]:
+    return json_list([note_finding_json(finding) for finding in scan.findings])
 
 
 def parse_created_after(value: str | None) -> datetime | None:
@@ -2573,7 +2639,8 @@ def inspect_overview(
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect overview currently emits JSON"
     config = load_project_config(cwd)
-    notes = inspect_note_records(config, scope)
+    note_scan = scan_note_records(config, scope)
+    notes = note_scan.records
     indexes = inspect_index_records(config, scope)
     return {
         "vault": str(config.vault),
@@ -2586,6 +2653,7 @@ def inspect_overview(
         },
         "notes_by_scope": inspect_counts([note.scope.value for note in notes]),
         "notes_by_type": inspect_counts([note.memory_type.value for note in notes]),
+        "findings": note_findings_json(note_scan),
     }
 
 
@@ -2618,18 +2686,21 @@ def inspect_paths(
     config = load_project_config(cwd)
     root_records = inspect_root_records(config, scope)
     index_records = inspect_index_records(config, scope)
-    note_records = inspect_path_note_records(config, scope)
+    note_scan = scan_note_records(config, scope)
+    note_records = tuple(note_path_record_json(record) for record in note_scan.records)
     records_by_kind = {
         InspectPathKind.ROOTS: root_records,
         InspectPathKind.INDEXES: index_records,
         InspectPathKind.NOTES: note_records,
         InspectPathKind.ALL: (*root_records, *index_records, *note_records),
     }
-    return {
+    result: JsonObject = {
         "scope": scope.value,
         "kind": kind.value,
         "paths": json_list(records_by_kind[kind]),
+        "findings": note_findings_json(note_scan),
     }
+    return result
 
 
 def inspect_tree(
@@ -2708,13 +2779,14 @@ def inspect_stats(
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect stats currently emits JSON"
     config = load_project_config(cwd)
-    notes = inspect_note_records(config, scope)
+    note_scan = scan_note_records(config, scope)
+    notes = note_scan.records
     counts_by_group = {
         InspectStatsGroup.TYPE: inspect_counts([note.memory_type.value for note in notes]),
         InspectStatsGroup.SCOPE: inspect_counts([note.scope.value for note in notes]),
         InspectStatsGroup.DAY: inspect_day_counts(notes),
     }
-    return {"scope": scope.value, "by": group.value, "counts": counts_by_group[group]}
+    return {"scope": scope.value, "by": group.value, "counts": counts_by_group[group], "findings": note_findings_json(note_scan)}
 
 
 def inspect_recent(
@@ -2727,9 +2799,10 @@ def inspect_recent(
     assert output_format is InspectOutputFormat.JSON, "inspect recent currently emits JSON"
     since_datetime = parse_memory_timestamp(since)
     config = load_project_config(cwd)
-    records = [record for record in inspect_note_records(config, scope) if record.timestamp is not None and parse_memory_timestamp(record.timestamp) > since_datetime]
+    note_scan = scan_note_records(config, scope)
+    records = [record for record in note_scan.records if record.timestamp is not None and parse_memory_timestamp(record.timestamp) > since_datetime]
     records.sort(key=lambda record: record.timestamp or "", reverse=True)
-    return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records])}
+    return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records]), "findings": note_findings_json(note_scan)}
 
 
 def inspect_export(
@@ -3296,7 +3369,9 @@ def parse_card_fields(
     empty_set: Sequence[str] | None = None,
 ) -> dict[str, object]:
     spec = next((card_type for card_type in cards_config.card_types if card_type.name == type_name), None)
-    assert spec is not None, f"unknown card type: {type_name}"
+    if spec is None:
+        known_types = ", ".join(card_type.name for card_type in cards_config.card_types)
+        raise CardFieldError(f"unknown card type {type_name}; known card types: {known_types}")
     field_types = {field.name: field.type for field in spec.fields}
     fields: dict[str, object] = {}
     for assignment in assignments:
