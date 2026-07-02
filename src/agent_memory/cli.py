@@ -134,7 +134,7 @@ def init_project_command(
 def add_command(
     *,
     scope: Annotated[MemoryScope, Parameter(help="Memory scope: project or global.")],
-    memory_type: Annotated[MemoryType, Parameter(name="type", help="Memory type directory to write into.")],
+    memory_type: Annotated[MemoryType, Parameter(name="type", help="Memory type directory to write into. Plain plan memories are rejected; use agent-memory plan add.")],
     title: Annotated[str, Parameter(help="Memory title. The key is generated from this title.")],
     content: Annotated[str, Parameter(help="Markdown body content to store under the title.")],
 ) -> None:

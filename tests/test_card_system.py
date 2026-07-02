@@ -229,11 +229,17 @@ def test_shipped_plan_model_requires_success_criteria() -> None:
         "status": "approved-and-unstarted",
         "description": "Drive the category spec program.",
         "successCriteria": ["The vertical slice compiles."],
+        "tasks": ["[[TASK-CATEGORY-SPEC-FIRST-SLICE]]"],
     }
     assert models["plan"].model_validate(base).model_dump()["status"] == "approved-and-unstarted"
     missing = {key: value for key, value in base.items() if key != "successCriteria"}
     with pytest.raises(ValidationError):
         models["plan"].model_validate(missing)
+    missing_tasks = {key: value for key, value in base.items() if key != "tasks"}
+    with pytest.raises(ValidationError):
+        models["plan"].model_validate(missing_tasks)
+    with pytest.raises(ValidationError):
+        models["plan"].model_validate({**base, "tasks": []})
 
 
 def test_shipped_task_model_enforces_complexity_range() -> None:

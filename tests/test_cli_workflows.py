@@ -402,6 +402,108 @@ def add_cli_memory(
     )
 
 
+def add_cli_plan_tree(
+    workspace: CliWorkspace,
+    *,
+    feature_id: str,
+    plan_id: str,
+    phase_id: str,
+    task_id: str,
+    feature_title: str,
+    plan_title: str,
+    description_signal: str,
+) -> str:
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "feature",
+        feature_id,
+        "--set",
+        f"title={feature_title}",
+        "--set",
+        "status=in-progress",
+        "--set",
+        f"description={description_signal}",
+        "--set",
+        f"plans=[[{plan_id}]]",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "plan",
+        plan_id,
+        "--parent",
+        feature_id,
+        "--set",
+        f"title={plan_title}",
+        "--set",
+        "status=in-progress",
+        "--set",
+        f"description={description_signal} plan",
+        "--set",
+        f"parents=[[{feature_id}]]",
+        "--set",
+        "successCriteria=plan ships",
+        "--set",
+        f"tasks=[[{task_id}]]",
+        "--set",
+        f"tags={feature_id}",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "phase",
+        phase_id,
+        "--parent",
+        plan_id,
+        "--set",
+        "title=Phase",
+        "--set",
+        "status=in-progress",
+        "--set",
+        f"description={description_signal} phase",
+        "--set",
+        f"parents=[[{plan_id}]]",
+        "--set",
+        "successCriteria=phase ships",
+        "--set",
+        f"tasks=[[{task_id}]]",
+        "--set",
+        f"tags={feature_id}",
+        "--set",
+        f"tags={plan_id}",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "task",
+        task_id,
+        "--parent",
+        phase_id,
+        "--set",
+        "title=Task",
+        "--set",
+        "status=in-progress",
+        "--set",
+        f"description={description_signal} task",
+        "--set",
+        f"parents=[[{phase_id}]]",
+        "--set",
+        "successCriteria=task ships",
+        "--set",
+        f"tags={feature_id}",
+        "--set",
+        f"tags={plan_id}",
+        "--set",
+        f"tags={phase_id}",
+    )
+    return f"projects/{workspace.project_id}/plans/features/{feature_id}/plans/{plan_id}/{plan_id}"
+
+
 def project_memory_key(workspace: CliWorkspace, memory_type_directory: str, slug: str) -> str:
     return f"projects/{workspace.project_id}/{memory_type_directory}/{slug}"
 
@@ -795,6 +897,29 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     assert deleted["deleted"] == global_key
     after_delete = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "both", "global-signal-cde4b9f6"))
     assert global_key not in result_keys(after_delete)
+
+
+def test_generic_add_refuses_plain_plan_memory(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "add",
+        "--scope",
+        "project",
+        "--type",
+        "plan",
+        "--title",
+        "Tree-less Plan",
+        "--content",
+        "This would create a plan with no task tree.",
+    )
+
+    assert result.returncode != 0
+    assert "agent-memory plan add" in result.stderr
+    assert "Traceback" not in result.stderr
+    plain_plan = workspace.vault / "projects" / workspace.project_id / "plans" / "tree-less-plan.md"
+    assert not plain_plan.exists()
 
 
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
@@ -1580,12 +1705,15 @@ def write_unmigrated_plan(path: Path, title: str, project_id: str) -> None:
 
 def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    managed_plan = add_cli_memory(
+    managed_plan_key = add_cli_plan_tree(
         workspace,
-        scope="project",
-        memory_type="plan",
-        title="Managed Plan",
-        content="Managed plan is filed in project plans.",
+        feature_id="FEATURE-MANAGED",
+        plan_id="PLAN-MANAGED",
+        phase_id="PHASE-MANAGED",
+        task_id="TASK-MANAGED",
+        feature_title="Managed Feature",
+        plan_title="Managed Plan",
+        description_signal="managed",
     )
     unmigrated = (
         workspace.vault
@@ -1615,7 +1743,7 @@ def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> Non
     records = {json_string(record["title"]): record for record in json_records(listed, "results")}
     assert set(records) == {"Managed Plan", "Stranded Harness Plan"}
     assert records["Managed Plan"]["managed"] is True
-    assert records["Managed Plan"]["key"] == managed_plan["key"]
+    assert records["Managed Plan"]["key"] == managed_plan_key
     assert records["Stranded Harness Plan"]["managed"] is False
     assert records["Stranded Harness Plan"]["path"] == str(unmigrated)
 
@@ -2680,47 +2808,15 @@ def test_merge_probe_payloads_rejects_null_skipped_files() -> None:
 
 def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    run_agent_memory(
-        workspace.repo,
-        "plan",
-        "add",
-        "--type",
-        "feature",
-        "--id",
-        "FEATURE-DEMO",
-        "--set",
-        "title=Demo",
-        "--set",
-        "status=in-progress",
-        "--set",
-        "description=plan-card-signal-9c1f",
-        "--set",
-        "plans=[[PLAN-DEMO]]",
-    )
-    # The plan is in-progress (a started child for the in-progress feature) and tags equal
-    # its sole ancestor, so the tree is valid under every validation rule.
-    run_agent_memory(
-        workspace.repo,
-        "plan",
-        "add",
-        "--type",
-        "plan",
-        "--id",
-        "PLAN-DEMO",
-        "--parent",
-        "FEATURE-DEMO",
-        "--set",
-        "title=Plan",
-        "--set",
-        "status=in-progress",
-        "--set",
-        "description=demo plan",
-        "--set",
-        "parents=[[FEATURE-DEMO]]",
-        "--set",
-        "successCriteria=ships",
-        "--set",
-        "tags=FEATURE-DEMO",
+    add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-DEMO",
+        plan_id="PLAN-DEMO",
+        phase_id="PHASE-DEMO",
+        task_id="TASK-DEMO",
+        feature_title="Demo",
+        plan_title="Plan",
+        description_signal="plan-card-signal-9c1f",
     )
     plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PLAN-DEMO.md"
     assert plan_path.is_file()
@@ -2806,6 +2902,8 @@ def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_cont
         "--set",
         "successCriteria=deleted",
         "--set",
+        "tasks=[[TASK-DELETE]]",
+        "--set",
         "tags=FEATURE-DELETE",
     )
     plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DELETE" / "plans" / "PLAN-DELETE" / "PLAN-DELETE.md"
@@ -2850,6 +2948,8 @@ def test_plan_add_parented_type_without_parent_fails_cleanly_before_root_write(t
         "parents=[[FEATURE-METADATA-ONLY]]",
         "--set",
         "successCriteria=blocked",
+        "--set",
+        "tasks=[[TASK-NO-PARENT]]",
         "--set",
         "tags=FEATURE-METADATA-ONLY",
     )
@@ -3082,6 +3182,7 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     assert "status" in help_result.stdout
     assert "parents" in help_result.stdout
     assert "successCriteria" in help_result.stdout
+    assert "tasks" in help_result.stdout
     assert "needs-human-input" in help_result.stdout or "blocked" in help_result.stdout
 
     # Scenario 2: bad enum validation produces clean field-level error without traceback
@@ -3099,6 +3200,8 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         "description=Desc",
         "--set",
         "successCriteria=Ships",
+        "--set",
+        "tasks=[[TASK-1]]",
         "--empty-set",
         "parents",
     )

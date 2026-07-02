@@ -40,7 +40,14 @@ def create_feature_plan_phase_task(plans_root: Path) -> dict[str, Path]:
         type_name="plan",
         card_id="PLAN-DEMO",
         parent_id="FEATURE-DEMO",
-        fields={"title": "Demo plan", "status": "approved-and-unstarted", "description": "demo", "parents": ["[[FEATURE-DEMO]]"], "successCriteria": ["plan compiles"]},
+        fields={
+            "title": "Demo plan",
+            "status": "approved-and-unstarted",
+            "description": "demo",
+            "parents": ["[[FEATURE-DEMO]]"],
+            "successCriteria": ["plan compiles"],
+            "tasks": ["[[TASK-DEMO]]"],
+        },
         body="# Demo plan\n",
     )
     phase = create_card(
@@ -129,6 +136,7 @@ def test_parented_card_without_parent_fails_before_root_write(tmp_path: Path) ->
                 "description": "orphan",
                 "parents": ["[[FEATURE-PARENT]]"],
                 "successCriteria": ["ships"],
+                "tasks": ["[[TASK-ORPHAN]]"],
             },
             body="# Orphan plan\n",
         )

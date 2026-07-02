@@ -145,6 +145,8 @@ card_types:
         type: wikilink_list
       - name: tasks
         type: wikilink_list
+        required: true
+        min_items: 1
     container: plans
     own_dir: true
   - name: phase
