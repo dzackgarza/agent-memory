@@ -96,8 +96,10 @@ Project plan cards live in the same vault under `projects/<project-id>/plans/`. 
 Create plan cards in the vault:
 
 ```bash
-agent-memory plan add --type feature --id FEATURE-DEMO --set title=Demo --set status=in-progress --set description="Plan card in the vault"
-agent-memory plan add --type plan --id PLAN-DEMO --parent FEATURE-DEMO --set title=Plan --set status=in-progress --set parents=[[FEATURE-DEMO]] --set successCriteria=ships
+agent-memory plan add --type feature --id FEATURE-DEMO --set title=Demo --set status=in-progress --set description="Plan card in the vault" --set plans=[[PLAN-DEMO]]
+agent-memory plan add --type plan --id PLAN-DEMO --parent FEATURE-DEMO --set title=Plan --set status=in-progress --set parents=[[FEATURE-DEMO]] --set successCriteria=ships --set tasks=[[TASK-DEMO]] --set tags=FEATURE-DEMO
+agent-memory plan add --type phase --id PHASE-DEMO --parent PLAN-DEMO --set title=Phase --set status=in-progress --set parents=[[PLAN-DEMO]] --set successCriteria=phase-ships --set tasks=[[TASK-DEMO]] --set tags=FEATURE-DEMO --set tags=PLAN-DEMO
+agent-memory plan add --type task --id TASK-DEMO --parent PHASE-DEMO --set title=Task --set status=in-progress --set parents=[[PHASE-DEMO]] --set successCriteria=task-ships --set tags=FEATURE-DEMO --set tags=PLAN-DEMO --set tags=PHASE-DEMO
 ```
 
 Validate and render the shared DAG:
