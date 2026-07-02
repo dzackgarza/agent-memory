@@ -733,6 +733,19 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
 
     retrieved = run_agent_memory(workspace.repo, "retrieve", str(project_note["key"]))
     assert "project-signal-7dcbd96d belongs only to this repository" in retrieved.stdout
+    project_raw = project_path.read_text(encoding="utf-8")
+    _, _, project_body = project_raw.split("---\n", 2)
+    project_metadata = frontmatter(project_path)
+    project_metadata["todos"] = [
+        {
+            "id": "M-RATIFY",
+            "title": "Ratify plan",
+            "children": ["M0", "M1"],
+            "done": False,
+            "notes": ["preserve out-of-schema plan state"],
+        }
+    ]
+    project_path.write_text("---\n" + yaml.safe_dump(project_metadata, sort_keys=False) + "---\n" + project_body, encoding="utf-8")
     updated = parse_json_stdout(
         run_agent_memory(
             workspace.repo,
@@ -744,6 +757,32 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     )
     assert updated["key"] == project_note["key"]
     assert "durable next step" in run_agent_memory(workspace.repo, "retrieve", str(project_note["key"])).stdout
+    assert frontmatter(project_path)["todos"] == [
+        {
+            "id": "M-RATIFY",
+            "title": "Ratify plan",
+            "children": ["M0", "M1"],
+            "done": False,
+            "notes": ["preserve out-of-schema plan state"],
+        }
+    ]
+    structured_frontmatter_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "durable"))
+    assert project_key in result_keys(structured_frontmatter_search)
+
+    project_index = project_path.parent / "index.md"
+    index_lines = project_index.read_text(encoding="utf-8").splitlines()
+    project_index.write_text("\n".join(line for line in index_lines if "](project-alpha.md)" not in line) + "\n", encoding="utf-8")
+    missing_index_update = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "update",
+            str(project_note["key"]),
+            "--content",
+            "project-signal-7dcbd96d updated after missing index link",
+        )
+    )
+    assert missing_index_update["key"] == project_note["key"]
+    assert "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d updated after missing index link" in project_index.read_text(encoding="utf-8")
 
     basename_miss = run_agent_memory_subprocess(workspace.repo, "retrieve", "project-alpha")
     assert basename_miss.returncode != 0
