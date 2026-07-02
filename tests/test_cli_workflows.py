@@ -767,6 +767,21 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         }
     ]
 
+    project_index = project_path.parent / "index.md"
+    index_lines = project_index.read_text(encoding="utf-8").splitlines()
+    project_index.write_text("\n".join(line for line in index_lines if "](project-alpha.md)" not in line) + "\n", encoding="utf-8")
+    missing_index_update = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "update",
+            str(project_note["key"]),
+            "--content",
+            "project-signal-7dcbd96d updated after missing index link",
+        )
+    )
+    assert missing_index_update["key"] == project_note["key"]
+    assert "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d updated after missing index link" in project_index.read_text(encoding="utf-8")
+
     basename_miss = run_agent_memory_subprocess(workspace.repo, "retrieve", "project-alpha")
     assert basename_miss.returncode != 0
     assert "retrieve expects a full vault-relative key" in basename_miss.stderr
