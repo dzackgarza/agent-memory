@@ -9,18 +9,6 @@ from pydantic import BaseModel
 from agent_memory.cards.config import CardSystemConfig, CardTypeSpec
 from agent_memory.cards.storage import card_file_path, card_type_for_id, split_card
 
-# Ancestor card types whose ids accumulate into a descendant's tags, ported from
-# TAGGED_ANCESTOR_TYPES in ~/ai/planning/justfile.
-TAGGED_ANCESTOR_TYPES = ("feature", "plan", "phase")
-
-# The ordered child-link field a parent of each type must declare for its children
-# of the given child type, ported from validate_sibling_ordering in the source.
-ORDERED_CHILD_FIELDS: dict[str, tuple[str, str]] = {
-    "feature": ("plan", "plans"),
-    "plan": ("phase", "phases"),
-    "phase": ("task", "tasks"),
-}
-
 
 @dataclass(frozen=True)
 class CardRecord:
@@ -160,6 +148,16 @@ class StatusRoles:
     unstarted: set[str]
 
 
+def status_roles(config: CardSystemConfig) -> StatusRoles | None:
+    if not config.workflow_roles:
+        return None
+    return StatusRoles(
+        config.statuses_with_role("started"),
+        config.statuses_with_role("complete"),
+        config.statuses_with_role("unstarted"),
+    )
+
+
 def _unstarted_parent_problems(parent_id: str, parent_status: str, statuses: dict[str, str], roles: StatusRoles) -> list[Problem]:
     if parent_status not in roles.unstarted:
         return []
@@ -174,8 +172,8 @@ def _members_in_role(statuses: dict[str, str], role: set[str]) -> list[str]:
     return [child_id for child_id, status in statuses.items() if status in role]
 
 
-def _in_progress_parent_problems(parent_id: str, parent_status: str, statuses: dict[str, str], roles: StatusRoles) -> list[Problem]:
-    if parent_status != "in-progress":
+def _started_parent_problems(parent_id: str, parent_status: str, statuses: dict[str, str], roles: StatusRoles) -> list[Problem]:
+    if parent_status not in roles.started or parent_status in roles.complete:
         return []
     started_children = _members_in_role(statuses, roles.started)
     unstarted_children = _members_in_role(statuses, roles.unstarted)
@@ -190,7 +188,7 @@ def _in_progress_parent_problems(parent_id: str, parent_status: str, statuses: d
 
 
 def _complete_parent_problems(parent_id: str, parent_status: str, statuses: dict[str, str], roles: StatusRoles) -> list[Problem]:
-    if parent_status != "complete":
+    if parent_status not in roles.complete:
         return []
     incomplete_children = [child_id for child_id, status in statuses.items() if status not in roles.complete]
     if not incomplete_children:
@@ -203,7 +201,9 @@ def status_hierarchy_problems(records: dict[str, CardRecord], config: CardSystem
     # Port of validate_status_hierarchy: a parent's status must be consistent with the
     # workflow roles of its children. Statuses are the iwe2 hyphenated values; the role
     # sets come from unit D's workflow_roles rather than the source's status catalog.
-    roles = StatusRoles(config.statuses_with_role("started"), config.statuses_with_role("complete"), config.statuses_with_role("unstarted"))
+    roles = status_roles(config)
+    if roles is None:
+        return []
     problems: list[Problem] = []
     for parent_id, child_ids in children_by_parent(records).items():
         if not child_ids:
@@ -211,7 +211,7 @@ def status_hierarchy_problems(records: dict[str, CardRecord], config: CardSystem
         parent_status = card_status(records[parent_id])
         statuses = {child_id: card_status(records[child_id]) for child_id in child_ids}
         problems.extend(_unstarted_parent_problems(parent_id, parent_status, statuses, roles))
-        problems.extend(_in_progress_parent_problems(parent_id, parent_status, statuses, roles))
+        problems.extend(_started_parent_problems(parent_id, parent_status, statuses, roles))
         problems.extend(_complete_parent_problems(parent_id, parent_status, statuses, roles))
     return problems
 
@@ -262,13 +262,18 @@ def _dependson_order_problems(sequence: list[str], records: dict[str, CardRecord
     ]
 
 
-def sibling_ordering_problems(records: dict[str, CardRecord]) -> list[Problem]:
+def ordered_child_fields(config: CardSystemConfig) -> dict[str, tuple[str, str]]:
+    return {parent_type.name: (child_type, field_name) for parent_type in config.card_types for child_type, field_name in parent_type.ordered_children.items()}
+
+
+def sibling_ordering_problems(records: dict[str, CardRecord], config: CardSystemConfig) -> list[Problem]:
     # Port of validate_sibling_ordering: a parent's like-typed children must be declared in
     # the parent's ordered link field and each sibling must dependsOn its predecessor.
     children = children_by_parent(records)
+    order_fields = ordered_child_fields(config)
     problems: list[Problem] = []
     for parent_id in sorted(records):
-        ordering = ORDERED_CHILD_FIELDS.get(records[parent_id].type_name)
+        ordering = order_fields.get(records[parent_id].type_name)
         if ordering is None:
             continue
         child_type, field_name = ordering
@@ -279,25 +284,30 @@ def sibling_ordering_problems(records: dict[str, CardRecord]) -> list[Problem]:
     return problems
 
 
-def plans_root_for(card_id: str, record: CardRecord, records: dict[str, CardRecord]) -> Path:
+def plans_root_for(card_id: str, record: CardRecord, records: dict[str, CardRecord], config: CardSystemConfig) -> Path:
     # Derive the project plans root that contains this card. A correctly-placed parent
-    # anchors the root for a child; a root feature anchors it from the `features` segment of
-    # its own path. Used to feed card_file_path so the canonical layout is config-driven.
+    # anchors the root for a child; a root card anchors it from its configured container.
+    # Used to feed card_file_path so the canonical layout is config-driven.
     parents = [parent_id for parent_id in parent_ids(record) if parent_id in records]
     if parents:
-        return plans_root_for(parents[0], records[parents[0]], records)
+        return plans_root_for(parents[0], records[parents[0]], records, config)
+    by_type = {card_type.name: card_type for card_type in config.card_types}
+    card_type = by_type[record.type_name]
     parts = record.path.parts
-    assert "features" in parts, f"root card not under a features directory: {record.path}"
-    return Path(*parts[: parts.index("features")])
+    if card_type.container and card_type.container != config.root:
+        assert card_type.container in parts, f"root card not under its configured container {card_type.container}: {record.path}"
+        return Path(*parts[: parts.index(card_type.container)])
+    assert config.root in parts, f"root card not under configured root {config.root}: {record.path}"
+    return Path(*parts[: parts.index(config.root) + 1])
 
 
-def _filesystem_problem(card_id: str, record: CardRecord, card_type: CardTypeSpec, records: dict[str, CardRecord]) -> Problem | None:
+def _filesystem_problem(card_id: str, record: CardRecord, card_type: CardTypeSpec, records: dict[str, CardRecord], config: CardSystemConfig) -> Problem | None:
     parents = [parent_id for parent_id in parent_ids(record) if parent_id in records]
     is_root = not card_type.parents
     if not is_root and len(parents) != 1:
         return None  # malformed parent count is reported by the containment check
     parent_id = None if is_root else parents[0]
-    expected = card_file_path(plans_root_for(card_id, record, records), card_type, card_id, parent_id).resolve()
+    expected = card_file_path(plans_root_for(card_id, record, records, config), card_type, card_id, parent_id).resolve()
     if record.path.resolve() == expected:
         return None
     return Problem("filesystem-hierarchy", card_id, f"expected path {expected}, found {record.path.resolve()}")
@@ -307,7 +317,7 @@ def filesystem_hierarchy_problems(records: dict[str, CardRecord], config: CardSy
     # Port of validate_filesystem_hierarchy: each card's on-disk path must equal the
     # canonical path computed by card_file_path from its type + single containment parent.
     by_type = {card_type.name: card_type for card_type in config.card_types}
-    problems = [_filesystem_problem(card_id, records[card_id], by_type[records[card_id].type_name], records) for card_id in sorted(records)]
+    problems = [_filesystem_problem(card_id, records[card_id], by_type[records[card_id].type_name], records, config) for card_id in sorted(records)]
     return [problem for problem in problems if problem is not None]
 
 
@@ -328,12 +338,13 @@ def ancestor_chain(card_id: str, records: dict[str, CardRecord], active: frozens
     return chain
 
 
-def tags_from_ancestry_problems(records: dict[str, CardRecord]) -> list[Problem]:
+def tags_from_ancestry_problems(records: dict[str, CardRecord], config: CardSystemConfig) -> list[Problem]:
     # Port of the derive-tags logic: a card's tags must equal the chain of its ancestor ids
-    # whose type is in TAGGED_ANCESTOR_TYPES.
+    # whose type opts into tagged ancestry.
+    tagged_types = {card_type.name for card_type in config.card_types if card_type.tagged_ancestor}
     problems: list[Problem] = []
     for card_id in sorted(records):
-        derived = [ancestor_id for ancestor_id in ancestor_chain(card_id, records, frozenset()) if records[ancestor_id].type_name in TAGGED_ANCESTOR_TYPES]
+        derived = [ancestor_id for ancestor_id in ancestor_chain(card_id, records, frozenset()) if records[ancestor_id].type_name in tagged_types]
         tags = records[card_id].metadata.get("tags")
         if derived:
             if tags != derived:
@@ -355,7 +366,7 @@ def validate_cards(records: dict[str, CardRecord], config: CardSystemConfig) -> 
         depends[card_id] = depends_targets(record, records)
     problems.extend(dependency_cycles(depends))
     problems.extend(status_hierarchy_problems(records, config))
-    problems.extend(sibling_ordering_problems(records))
+    problems.extend(sibling_ordering_problems(records, config))
     problems.extend(filesystem_hierarchy_problems(records, config))
-    problems.extend(tags_from_ancestry_problems(records))
+    problems.extend(tags_from_ancestry_problems(records, config))
     return problems

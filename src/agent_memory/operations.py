@@ -27,7 +27,8 @@ from agent_memory.cards.dag import PLAN_DAG_FILENAME, render_dag
 from agent_memory.cards.factory import build_card_models
 from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
-from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, update_card
+from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, split_card
+from agent_memory.cards.storage import update_card as write_card_updates
 from agent_memory.cards.validation import load_card_records, validate_cards
 from agent_memory.models import (
     GlobalNoteMetadata,
@@ -105,6 +106,7 @@ MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.REFERENCE: "references",
     MemoryType.PLAN: "plans",
 }
+WRITABLE_MEMORY_TYPES: tuple[MemoryType, ...] = tuple(memory_type for memory_type in MemoryType if memory_type is not MemoryType.PLAN)
 
 # The directory names for every memory type, in MemoryType enum order. This is the
 # single source for both the global vault layout and the per-project layout.
@@ -301,6 +303,29 @@ class MemoryDocument:
 
 
 @dataclass(frozen=True)
+class NoteTimestamp:
+    value: str
+
+    @classmethod
+    def from_metadata(cls, metadata: dict[str, MetadataValue], path: Path) -> NoteTimestamp:
+        return cls(metadata_string_optional(metadata, "timestamp", path) or "")
+
+    def is_present(self) -> bool:
+        return self.value != ""
+
+    def is_after(self, lower_bound: datetime) -> bool:
+        return self.is_present() and parse_memory_timestamp(self.value) > lower_bound
+
+    def json_value(self) -> JsonValue:
+        if self.is_present():
+            return self.value
+        return None
+
+    def sort_key(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
 class NoteRecord:
     key: str
     path: Path
@@ -308,7 +333,7 @@ class NoteRecord:
     memory_type: MemoryType
     scope: MemoryScope
     tags: tuple[str, ...]
-    timestamp: str | None
+    timestamp: NoteTimestamp
     document: MemoryDocument
 
 
@@ -462,6 +487,8 @@ def add_memory(
     content: str,
     cwd: Path,
 ) -> JsonObject:
+    if memory_type is MemoryType.PLAN:
+        raise MemoryOperationError("plan memories are card-backed; create plan cards with `agent-memory plan add`")
     config = config_for_memory_scope(scope, cwd)
     slug = memory_slug(title)
     directory = memory_directory(config, scope, memory_type)
@@ -1732,7 +1759,7 @@ def project_agent_state_records(git_root: Path, project_dir: Path) -> list[JsonV
 
 
 def agents_pointer_section(vault: Path, project_id: str) -> str:
-    add_examples = "".join(f"agent-memory add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in MemoryType)
+    add_examples = "".join(f"agent-memory add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in WRITABLE_MEMORY_TYPES)
     return (
         f"{AGENTS_SECTION_START}\n"
         "# Agent memory\n\n"
@@ -1747,6 +1774,7 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         "```bash\n"
         f"{add_examples}"
         "```\n\n"
+        "Plan work is card-backed. Create and update plan cards with `agent-memory plan add` and `agent-memory plan update`, not `agent-memory add --type plan`.\n\n"
         "Use `agent-memory retrieve <key>`, `agent-memory update <key>`, and `agent-memory delete <key>` for memory CRUD.\n\n"
         "The vault should be committed at all times. Treat staged or unstaged vault changes as an ephemeral error state. "
         f"Before normal memory work resumes, load the bundled vault-maintenance skill with `{VAULT_MAINTENANCE_SKILL_COMMAND}` "
@@ -2195,7 +2223,7 @@ def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
         memory_type=MemoryType(metadata_string(document.metadata, "type", path)),
         scope=stored_scope,
         tags=tuple(tags),
-        timestamp=metadata_string_optional(document.metadata, "timestamp", path),
+        timestamp=NoteTimestamp.from_metadata(document.metadata, path),
         document=document,
     )
 
@@ -2209,7 +2237,7 @@ def note_record_matches_metadata(
     return (
         (memory_type is None or record.memory_type is memory_type)
         and (tag is None or tag in record.tags)
-        and (created_after is None or (record.timestamp is not None and parse_memory_timestamp(record.timestamp) > created_after))
+        and (created_after is None or record.timestamp.is_after(created_after))
     )
 
 
@@ -2227,7 +2255,7 @@ def note_record_json(record: NoteRecord) -> JsonObject:
         **note_record_core(record),
         "scope": record.scope.value,
         "tags": json_list(record.tags),
-        "timestamp": record.timestamp,
+        "timestamp": record.timestamp.json_value(),
     }
 
 
@@ -2235,7 +2263,7 @@ def metadata_search_record_json(record: NoteRecord) -> JsonObject:
     return {
         **note_record_core(record),
         "tags": json_list(record.tags),
-        "timestamp": record.timestamp,
+        "timestamp": record.timestamp.json_value(),
     }
 
 
@@ -2335,9 +2363,13 @@ def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
     config = config_for_schema_advertisement(Path.cwd())
     cards_config, card_model_by_type = load_card_system(config)
     return {
-        "commands": {"inspect": list(INSPECT_COMMAND_NAMES)},
+        "commands": {
+            "inspect": list(INSPECT_COMMAND_NAMES),
+            "card": ["add", "update", "delete", "show", "validate", "dag", "migrate"],
+            "card_types": [card_type.name for card_type in cards_config.card_types],
+        },
         "scopes": [scope.value for scope in SearchScope],
-        "memory_types": [memory_type.value for memory_type in MemoryType],
+        "memory_types": [memory_type.value for memory_type in WRITABLE_MEMORY_TYPES],
         "path_kinds": [kind.value for kind in InspectPathKind],
         "link_directions": [direction.value for direction in InspectLinkDirection],
         "stats_groups": [group.value for group in InspectStatsGroup],
@@ -2496,8 +2528,8 @@ def inspect_recent(
     assert output_format is InspectOutputFormat.JSON, "inspect recent currently emits JSON"
     since_datetime = parse_memory_timestamp(since)
     config = load_project_config(cwd)
-    records = [record for record in inspect_note_records(config, scope) if record.timestamp is not None and parse_memory_timestamp(record.timestamp) > since_datetime]
-    records.sort(key=lambda record: record.timestamp or "", reverse=True)
+    records = [record for record in inspect_note_records(config, scope) if record.timestamp.is_after(since_datetime)]
+    records.sort(key=lambda record: record.timestamp.sort_key(), reverse=True)
     return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records])}
 
 
@@ -2581,7 +2613,7 @@ def inspect_counts(values: Sequence[str]) -> JsonObject:
 
 
 def inspect_day_counts(records: Sequence[NoteRecord]) -> JsonObject:
-    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records if record.timestamp is not None)
+    counts = Counter(parse_memory_timestamp(record.timestamp.value).date().isoformat() for record in records if record.timestamp.is_present())
     return {key: counts[key] for key in sorted(counts)}
 
 
@@ -3093,7 +3125,7 @@ def parse_card_fields(
     return fields
 
 
-def add_plan_card(
+def add_card(
     type_name: str,
     card_id: str,
     parent_id: str | None,
@@ -3137,27 +3169,43 @@ def add_plan_card(
     return {"id": card_id, "path": str(path)}
 
 
-def update_plan_card(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:
+def update_card_record(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
     type_name = card_type_for_id(cards_config, card_id).name
     updates = parse_card_fields(cards_config, type_name, assignments)
-    path = update_card(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
-    commit_vault_changes(config.vault, f"Update plan card: {card_id}", paths=[path])
+    path = write_card_updates(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
+    commit_vault_changes(config.vault, f"Update card: {card_id}", paths=[path])
     return {"id": card_id, "path": str(path)}
 
 
-def delete_plan_card(card_id: str, cwd: Path) -> JsonObject:
+def delete_card_record(card_id: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, _models = load_card_system(config)
     plans_root = project_plans_root(config, cards_config)
     path = find_card_path(plans_root, card_id)
     path.unlink()
-    commit_vault_changes(config.vault, f"Delete plan card: {card_id}", paths=[path])
+    commit_vault_changes(config.vault, f"Delete card: {card_id}", paths=[path])
     return {"deleted": card_id}
 
 
-def validate_plan_cards(cwd: Path) -> JsonObject:
+def show_card(card_id: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    cards_config, models = load_card_system(config)
+    card_type = card_type_for_id(cards_config, card_id)
+    path = find_card_path(project_plans_root(config, cards_config), card_id)
+    metadata, body = split_card(path.read_text(encoding="utf-8"))
+    validated = models[card_type.name].model_validate(metadata)
+    return {
+        "id": card_id,
+        "type": card_type.name,
+        "path": str(path),
+        "metadata": validated.model_dump(exclude_unset=True),
+        "body": body,
+    }
+
+
+def validate_card_records(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
     records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
@@ -3165,7 +3213,7 @@ def validate_plan_cards(cwd: Path) -> JsonObject:
     return {"problems": json_list([{"kind": problem.kind, "card": problem.card_id, "detail": problem.detail} for problem in problems])}
 
 
-def write_plan_dag(cwd: Path) -> JsonObject:
+def write_card_dag(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
     records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
@@ -3177,7 +3225,7 @@ def write_plan_dag(cwd: Path) -> JsonObject:
     return {"path": str(path)}
 
 
-def migrate_plan_cards(source: Path, cwd: Path) -> JsonObject:
+def migrate_cards(source: Path, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
     paths = migrate_plans(source, project_plans_root(config, cards_config), cards_config, models)
