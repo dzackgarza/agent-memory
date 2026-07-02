@@ -2332,6 +2332,13 @@ def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path)
         "bad-tags",
         "---\ntype: decision\nscope: project\ntitle: Bad Tags\ndescription: x\ntags: project\n---\nBody.\n",
     )
+    bad_utf8 = workspace.vault / "projects" / workspace.project_id / "decisions" / "bad-utf8.md"
+    bad_utf8.write_bytes(b"---\ntype: decision\nscope: project\ntitle: Bad UTF8\ndescription: x\ntags: [project]\n---\nBody \xff\n")
+    mixed_tags = write_raw_project_note(
+        workspace,
+        "mixed-tags",
+        "---\ntype: decision\nscope: project\ntitle: Mixed Tags\ndescription: x\ntags: [project, 12]\n---\nBody.\n",
+    )
 
     result = run_agent_memory_subprocess(workspace.repo, "search", "--scope", "project", "resilient-scan-token-71d9")
 
@@ -2341,6 +2348,10 @@ def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path)
     assert good["key"] in result_keys(payload)
     finding = assert_note_finding(payload, bad, workspace)
     assert "tags" in json_string(finding["message"])
+    utf8_finding = assert_note_finding(payload, bad_utf8, workspace)
+    assert "UTF-8" in json_string(utf8_finding["message"])
+    mixed_tags_finding = assert_note_finding(payload, mixed_tags, workspace)
+    assert "tags" in json_string(mixed_tags_finding["message"])
 
 
 def test_inspect_overview_reports_malformed_note_findings(tmp_path: Path) -> None:
@@ -2357,12 +2368,16 @@ def test_inspect_overview_reports_malformed_note_findings(tmp_path: Path) -> Non
         "missing-tags",
         "---\ntype: decision\nscope: project\ntitle: Missing Tags\ndescription: x\n---\nBody.\n",
     )
+    bad_index = workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
+    bad_index.write_text("---\nnot: [valid\n---\n# Broken index\n", encoding="utf-8")
 
     overview = inspect_json(workspace, "overview", "--scope", "project", "--format", "json")
 
-    assert overview["totals"] == {"notes": 1, "indexes": 7}
+    assert overview["totals"] == {"notes": 1, "indexes": 6}
     finding = assert_note_finding(overview, bad, workspace)
     assert "tags" in json_string(finding["message"])
+    index_finding = assert_note_finding(overview, bad_index, workspace)
+    assert "YAML" in json_string(index_finding["message"])
 
 
 def test_read_memory_invalid_yaml_frontmatter_is_structured_finding(tmp_path: Path) -> None:

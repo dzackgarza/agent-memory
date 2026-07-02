@@ -327,6 +327,12 @@ class NoteScan:
 
 
 @dataclass(frozen=True)
+class IndexScan:
+    records: tuple[JsonObject, ...]
+    findings: tuple[NoteFinding, ...]
+
+
+@dataclass(frozen=True)
 class CardListing:
     title: str
     card_type: str
@@ -711,7 +717,7 @@ def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
         "exact_content_matches": json_list(exact_matches),
         "fuzzy_content_matches": json_list(fuzzy_matches),
         "ranked_content_matches": ranked_results,
-        "findings": note_findings_json(note_scan),
+        "findings": note_findings_json(note_scan.findings),
     }
 
 
@@ -722,7 +728,7 @@ def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
         "query": query,
         "scope": scope.value,
         "results": json_list(key_search_records_from_notes(note_scan.records, query, config.search_max_results)),
-        "findings": note_findings_json(note_scan),
+        "findings": note_findings_json(note_scan.findings),
     }
 
 
@@ -751,7 +757,7 @@ def search_metadata(
     return {
         "scope": scope.value,
         "results": json_list(records[: config.search_max_results]),
-        "findings": note_findings_json(note_scan),
+        "findings": note_findings_json(note_scan.findings),
     }
 
 
@@ -2403,6 +2409,8 @@ def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
         raise MalformedMemoryError(path, "frontmatter must include tags")
     if not isinstance(tags, list):
         raise MalformedMemoryError(path, "frontmatter tags must be a list")
+    if not all(isinstance(tag, str) for tag in tags):
+        raise MalformedMemoryError(path, "frontmatter tags must be a list of strings")
     memory_type_text = metadata_string(document.metadata, "type", path)
     try:
         memory_type = MemoryType(memory_type_text)
@@ -2476,8 +2484,8 @@ def note_finding_json(finding: NoteFinding) -> JsonObject:
     }
 
 
-def note_findings_json(scan: NoteScan) -> list[JsonValue]:
-    return json_list([note_finding_json(finding) for finding in scan.findings])
+def note_findings_json(findings: Sequence[NoteFinding]) -> list[JsonValue]:
+    return json_list([note_finding_json(finding) for finding in findings])
 
 
 def parse_created_after(value: str | None) -> datetime | None:
@@ -2612,7 +2620,10 @@ def reconcile_memory_file(path: Path) -> None:
 
 
 def read_memory(path: Path) -> MemoryDocument:
-    raw = path.read_text(encoding="utf-8")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise MalformedMemoryError(path, "memory file must be valid UTF-8") from error
     if not raw.startswith("---"):
         raise MalformedMemoryError(path, "memory must start with frontmatter")
     try:
@@ -2641,7 +2652,8 @@ def inspect_overview(
     config = load_project_config(cwd)
     note_scan = scan_note_records(config, scope)
     notes = note_scan.records
-    indexes = inspect_index_records(config, scope)
+    index_scan = scan_index_records(config, scope)
+    indexes = index_scan.records
     return {
         "vault": str(config.vault),
         "project_id": require_project_id(config),
@@ -2653,7 +2665,7 @@ def inspect_overview(
         },
         "notes_by_scope": inspect_counts([note.scope.value for note in notes]),
         "notes_by_type": inspect_counts([note.memory_type.value for note in notes]),
-        "findings": note_findings_json(note_scan),
+        "findings": note_findings_json((*note_scan.findings, *index_scan.findings)),
     }
 
 
@@ -2685,7 +2697,8 @@ def inspect_paths(
     assert output_format is InspectOutputFormat.JSON, "inspect paths currently emits JSON"
     config = load_project_config(cwd)
     root_records = inspect_root_records(config, scope)
-    index_records = inspect_index_records(config, scope)
+    index_scan = scan_index_records(config, scope)
+    index_records = index_scan.records
     note_scan = scan_note_records(config, scope)
     note_records = tuple(note_path_record_json(record) for record in note_scan.records)
     records_by_kind = {
@@ -2698,7 +2711,14 @@ def inspect_paths(
         "scope": scope.value,
         "kind": kind.value,
         "paths": json_list(records_by_kind[kind]),
-        "findings": note_findings_json(note_scan),
+        "findings": note_findings_json(
+            {
+                InspectPathKind.ROOTS: (),
+                InspectPathKind.INDEXES: index_scan.findings,
+                InspectPathKind.NOTES: note_scan.findings,
+                InspectPathKind.ALL: (*index_scan.findings, *note_scan.findings),
+            }[kind]
+        ),
     }
     return result
 
@@ -2786,7 +2806,7 @@ def inspect_stats(
         InspectStatsGroup.SCOPE: inspect_counts([note.scope.value for note in notes]),
         InspectStatsGroup.DAY: inspect_day_counts(notes),
     }
-    return {"scope": scope.value, "by": group.value, "counts": counts_by_group[group], "findings": note_findings_json(note_scan)}
+    return {"scope": scope.value, "by": group.value, "counts": counts_by_group[group], "findings": note_findings_json(note_scan.findings)}
 
 
 def inspect_recent(
@@ -2802,7 +2822,7 @@ def inspect_recent(
     note_scan = scan_note_records(config, scope)
     records = [record for record in note_scan.records if record.timestamp is not None and parse_memory_timestamp(record.timestamp) > since_datetime]
     records.sort(key=lambda record: record.timestamp or "", reverse=True)
-    return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records]), "findings": note_findings_json(note_scan)}
+    return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records]), "findings": note_findings_json(note_scan.findings)}
 
 
 def inspect_export(
@@ -2859,11 +2879,20 @@ def inspect_markdown_paths(config: ProjectConfig, scope: SearchScope) -> tuple[P
 
 
 def inspect_index_records(config: ProjectConfig, scope: SearchScope) -> tuple[JsonObject, ...]:
+    return scan_index_records(config, scope).records
+
+
+def scan_index_records(config: ProjectConfig, scope: SearchScope) -> IndexScan:
     records: list[JsonObject] = []
+    findings: list[NoteFinding] = []
     for path in inspect_markdown_paths(config, scope):
         if path.name != "index.md":
             continue
-        document = read_memory(path)
+        try:
+            document = read_memory(path)
+        except MalformedMemoryError as error:
+            findings.append(note_finding_for_error(config, path, error))
+            continue
         records.append(
             {
                 "key": memory_key(config.vault, path),
@@ -2872,7 +2901,7 @@ def inspect_index_records(config: ProjectConfig, scope: SearchScope) -> tuple[Js
                 "scope": inspect_scope_for_path(config, path),
             }
         )
-    return tuple(records)
+    return IndexScan(records=tuple(records), findings=tuple(findings))
 
 
 def inspect_path_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[JsonObject, ...]:
