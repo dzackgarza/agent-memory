@@ -2306,10 +2306,83 @@ def write_raw_project_note(workspace: CliWorkspace, slug: str, text: str) -> Pat
     return note
 
 
-def test_read_memory_invalid_yaml_frontmatter_is_structured_cli_error(tmp_path: Path) -> None:
-    # F4: frontmatter.loads raises yaml.YAMLError (NOT a ValueError subclass) on invalid
-    # YAML, so the record scan must convert it into a path-bearing MalformedMemoryError
-    # that cli.main renders cleanly — not an uncaught YAMLError traceback.
+def findings_by_path(payload: JsonObject) -> dict[str, JsonObject]:
+    return {json_string(record["path"]): record for record in json_records(payload, "findings")}
+
+
+def assert_note_finding(payload: JsonObject, note: Path, workspace: CliWorkspace) -> JsonObject:
+    findings = findings_by_path(payload)
+    finding = findings[str(note)]
+    assert finding["key"] == note.relative_to(workspace.vault).with_suffix("").as_posix()
+    assert note.name in json_string(finding["message"])
+    return finding
+
+
+def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    good = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Scan Survives",
+        content="resilient-scan-token-71d9",
+    )
+    bad = write_raw_project_note(
+        workspace,
+        "bad-tags",
+        "---\ntype: decision\nscope: project\ntitle: Bad Tags\ndescription: x\ntags: project\n---\nBody.\n",
+    )
+    bad_utf8 = workspace.vault / "projects" / workspace.project_id / "decisions" / "bad-utf8.md"
+    bad_utf8.write_bytes(b"---\ntype: decision\nscope: project\ntitle: Bad UTF8\ndescription: x\ntags: [project]\n---\nBody \xff\n")
+    mixed_tags = write_raw_project_note(
+        workspace,
+        "mixed-tags",
+        "---\ntype: decision\nscope: project\ntitle: Mixed Tags\ndescription: x\ntags: [project, 12]\n---\nBody.\n",
+    )
+
+    result = run_agent_memory_subprocess(workspace.repo, "search", "--scope", "project", "resilient-scan-token-71d9")
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert good["key"] in result_keys(payload)
+    finding = assert_note_finding(payload, bad, workspace)
+    assert "tags" in json_string(finding["message"])
+    utf8_finding = assert_note_finding(payload, bad_utf8, workspace)
+    assert "UTF-8" in json_string(utf8_finding["message"])
+    mixed_tags_finding = assert_note_finding(payload, mixed_tags, workspace)
+    assert "tags" in json_string(mixed_tags_finding["message"])
+
+
+def test_inspect_overview_reports_malformed_note_findings(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Overview Survives",
+        content="Well-formed overview note.",
+    )
+    bad = write_raw_project_note(
+        workspace,
+        "missing-tags",
+        "---\ntype: decision\nscope: project\ntitle: Missing Tags\ndescription: x\n---\nBody.\n",
+    )
+    bad_index = workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
+    bad_index.write_text("---\nnot: [valid\n---\n# Broken index\n", encoding="utf-8")
+
+    overview = inspect_json(workspace, "overview", "--scope", "project", "--format", "json")
+
+    assert overview["totals"] == {"notes": 1, "indexes": 6}
+    finding = assert_note_finding(overview, bad, workspace)
+    assert "tags" in json_string(finding["message"])
+    index_finding = assert_note_finding(overview, bad_index, workspace)
+    assert "YAML" in json_string(index_finding["message"])
+
+
+def test_read_memory_invalid_yaml_frontmatter_is_structured_finding(tmp_path: Path) -> None:
+    # F4: frontmatter.loads raises yaml.YAMLError on invalid YAML. The scan reports the
+    # file as a finding so the rest of the vault remains readable.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -2319,16 +2392,18 @@ def test_read_memory_invalid_yaml_frontmatter_is_structured_cli_error(tmp_path: 
 
     result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
 
-    assert result.returncode != 0
-    assert "Malformed memory file" in result.stderr
-    assert note.name in result.stderr
+    assert result.returncode == 0
     assert "Traceback" not in result.stderr
     assert "YAMLError" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert result_keys(payload) == set()
+    finding = assert_note_finding(payload, note, workspace)
+    assert "YAML" in json_string(finding["message"])
 
 
-def test_note_missing_required_field_is_structured_cli_error(tmp_path: Path) -> None:
-    # F1: a note missing a required frontmatter field (scope) must fail through the
-    # path-bearing MalformedMemoryError contract, not an uncaught AssertionError.
+def test_note_missing_required_field_is_structured_finding(tmp_path: Path) -> None:
+    # F1: a note missing a required frontmatter field (scope) must become a path-bearing
+    # finding, not a scan-wide abort.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -2338,17 +2413,18 @@ def test_note_missing_required_field_is_structured_cli_error(tmp_path: Path) -> 
 
     result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
 
-    assert result.returncode != 0
-    assert "Malformed memory file" in result.stderr
-    assert note.name in result.stderr
-    assert "scope" in result.stderr
+    assert result.returncode == 0
     assert "AssertionError" not in result.stderr
     assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert result_keys(payload) == set()
+    finding = assert_note_finding(payload, note, workspace)
+    assert "scope" in json_string(finding["message"])
 
 
-def test_note_optional_field_wrong_type_is_structured_cli_error(tmp_path: Path) -> None:
-    # F2: a present-but-non-string optional field (timestamp: true) must raise the
-    # structured MalformedMemoryError, not an uncaught AssertionError.
+def test_note_optional_field_wrong_type_is_structured_finding(tmp_path: Path) -> None:
+    # F2: a present-but-non-string optional field (timestamp: true) must become a
+    # structured finding, not a scan-wide abort.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -2358,17 +2434,18 @@ def test_note_optional_field_wrong_type_is_structured_cli_error(tmp_path: Path) 
 
     result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
 
-    assert result.returncode != 0
-    assert "Malformed memory file" in result.stderr
-    assert note.name in result.stderr
-    assert "timestamp" in result.stderr
+    assert result.returncode == 0
     assert "AssertionError" not in result.stderr
     assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert result_keys(payload) == set()
+    finding = assert_note_finding(payload, note, workspace)
+    assert "timestamp" in json_string(finding["message"])
 
 
-def test_note_missing_tags_is_structured_cli_error(tmp_path: Path) -> None:
-    # F3: a note missing the required `tags` field must raise a path-bearing
-    # MalformedMemoryError from note_record_for_path, not an uncaught AssertionError.
+def test_note_missing_tags_is_structured_finding(tmp_path: Path) -> None:
+    # F3: a note missing the required `tags` field must become a path-bearing finding,
+    # not a scan-wide abort.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -2378,11 +2455,13 @@ def test_note_missing_tags_is_structured_cli_error(tmp_path: Path) -> None:
 
     result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
 
-    assert result.returncode != 0
-    assert "Malformed memory file" in result.stderr
-    assert note.name in result.stderr
+    assert result.returncode == 0
     assert "AssertionError" not in result.stderr
     assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert result_keys(payload) == set()
+    finding = assert_note_finding(payload, note, workspace)
+    assert "tags" in json_string(finding["message"])
 
 
 def test_note_empty_timestamp_reads_as_absent(tmp_path: Path) -> None:
@@ -3329,6 +3408,20 @@ def test_plan_add_missing_body_file_fails_through_cli_boundary_without_writing_c
     assert "Traceback" not in result.stderr
     assert "FileNotFoundError" not in result.stderr
     assert not card_file.exists()
+
+
+def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+
+    result = run_agent_memory_subprocess(workspace.repo, "plan", "add", "milestone", "MILESTONE-1")
+
+    assert result.returncode != 0
+    assert result.stderr.startswith("Error: ")
+    assert "unknown card type" in result.stderr
+    assert "feature" in result.stderr
+    assert "task" in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
