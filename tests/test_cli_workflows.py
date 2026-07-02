@@ -2060,6 +2060,52 @@ def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path
     assert payload["project_root"] == str(workspace.repo)
 
 
+def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_yaml = tmp_path / "cards.yaml"
+    cards_yaml.write_text("statuses: [unterminated\n", encoding="utf-8")
+
+    import agent_memory.cards.loader as card_loader
+
+    original_files = card_loader.resources.files
+
+    class FakeDefaults:
+        def __init__(self, real_defaults: object) -> None:
+            self.real_defaults = real_defaults
+
+        def joinpath(self, name: str) -> Path:
+            if name == "cards.yaml":
+                return cards_yaml
+            return self.real_defaults.joinpath(name)
+
+    monkeypatch.setattr(card_loader.resources, "files", lambda package: FakeDefaults(original_files(package)))
+    command_env = agent_memory_env()
+    original_cwd = Path.cwd()
+    original_argv = sys.argv.copy()
+    original_env = os.environ.copy()
+    stderr = StringIO()
+    try:
+        os.chdir(workspace.repo)
+        os.environ.clear()
+        os.environ.update(command_env)
+        sys.argv = ["agent-memory", "plan", "validate"]
+        with redirect_stderr(stderr), pytest.raises(SystemExit) as excinfo:
+            cli_main()
+    finally:
+        os.chdir(original_cwd)
+        sys.argv = original_argv
+        os.environ.clear()
+        os.environ.update(original_env)
+
+    assert excinfo.value.code == 1
+    message = stderr.getvalue()
+    assert message.startswith("Error: ")
+    assert str(cards_yaml) in message
+    assert "cards.yaml" in message
+    assert "Traceback" not in message
+    assert "ParserError" not in message
+
+
 def test_python_dash_m_agent_memory_module_entrypoint_runs_doctor(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     command_env = agent_memory_env()
