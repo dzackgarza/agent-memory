@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tomllib
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from importlib import resources
@@ -19,7 +19,7 @@ import frontmatter
 import tomli_w
 import yaml
 from markdown_it import MarkdownIt
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agent_memory import iwe
 from agent_memory.cards.config import CardSystemConfig
@@ -30,6 +30,7 @@ from agent_memory.cards.migration import migrate_plans
 from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, update_card
 from agent_memory.cards.validation import load_card_records, validate_cards
 from agent_memory.models import (
+    BaseNoteMetadata,
     GlobalNoteMetadata,
     InspectExportFormat,
     InspectExportProfile,
@@ -2267,6 +2268,9 @@ def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
     return f"---\n{frontmatter}---\n{body}"
 
 
+OKF_FRONTMATTER_KEYS = frozenset(BaseNoteMetadata.model_fields) | {"project_id", "origin_project_id"}
+
+
 def yaml_metadata_value(path: Path, key: str, value: object) -> MetadataValue:
     if isinstance(value, datetime):
         if key == "timestamp":
@@ -2290,6 +2294,82 @@ def yaml_metadata_value(path: Path, key: str, value: object) -> MetadataValue:
             normalized[nested_key] = yaml_metadata_value(path, nested_key, nested_value)
         return normalized
     raise MalformedMemoryError(path, "frontmatter values must be YAML scalars, lists, or mappings")
+
+
+def extract_embedded_frontmatter_blocks(path: Path, body: str) -> tuple[str, list[dict[str, MetadataValue]]]:
+    lines = body.splitlines(keepends=True)
+    cleaned: list[str] = []
+    extras: list[dict[str, MetadataValue]] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != "---":
+            cleaned.append(lines[index])
+            index += 1
+            continue
+
+        end = next((candidate for candidate in range(index + 1, len(lines)) if lines[candidate].strip() == "---"), None)
+        if end is None:
+            cleaned.append(lines[index])
+            index += 1
+            continue
+
+        block_text = "".join(lines[index + 1 : end])
+        try:
+            parsed = yaml.safe_load(block_text)
+        except yaml.YAMLError as exc:
+            raise MalformedMemoryError(path, "embedded frontmatter block must be valid YAML") from exc
+        if not isinstance(parsed, dict):
+            cleaned.extend(lines[index : end + 1])
+            index = end + 1
+            continue
+
+        extra: dict[str, MetadataValue] = {}
+        for key, value in parsed.items():
+            if not isinstance(key, str):
+                raise MalformedMemoryError(path, "embedded frontmatter keys must be strings")
+            extra[key] = yaml_metadata_value(path, key, value)
+        extras.append(extra)
+        index = end + 1
+    return "".join(cleaned), extras
+
+
+def reconcile_okf_frontmatter(
+    path: Path,
+    primary: Mapping[str, MetadataValue],
+    extras: Sequence[Mapping[str, MetadataValue]],
+) -> dict[str, MetadataValue]:
+    merged = dict(primary)
+    for extra in extras:
+        for key, value in extra.items():
+            if key not in OKF_FRONTMATTER_KEYS:
+                raise MalformedMemoryError(path, f"unreconcilable extra frontmatter key: {key}")
+            if key in merged:
+                if merged[key] != value:
+                    raise MalformedMemoryError(path, f"conflicting values for {key}: {merged[key]!r} vs {value!r}")
+                continue
+            merged[key] = value
+    return canonical_okf_metadata(path, merged)
+
+
+def canonical_okf_metadata(path: Path, metadata: Mapping[str, MetadataValue]) -> dict[str, MetadataValue]:
+    payload = dict(metadata)
+    payload["type"] = MemoryType(metadata_string(payload, "type", path))
+    payload["scope"] = MemoryScope(metadata_string(payload, "scope", path))
+    try:
+        if "origin_project_id" in payload:
+            return PromotedNoteMetadata(**payload).to_yaml_payload()
+        if payload["scope"] is MemoryScope.PROJECT:
+            return ProjectNoteMetadata(**payload).to_yaml_payload()
+        return GlobalNoteMetadata(**payload).to_yaml_payload()
+    except ValidationError as exc:
+        raise MalformedMemoryError(path, f"invalid OKF frontmatter: {exc}") from exc
+
+
+def reconcile_memory_file(path: Path) -> None:
+    document = read_memory(path)
+    body, extras = extract_embedded_frontmatter_blocks(path, document.body)
+    metadata = reconcile_okf_frontmatter(path, document.metadata, extras)
+    write_memory(path, metadata, body)
 
 
 def read_memory(path: Path) -> MemoryDocument:

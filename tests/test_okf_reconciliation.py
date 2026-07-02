@@ -30,7 +30,7 @@ PRIMARY_COLLAPSED_HEADER = {
 }
 
 
-def double_frontmatter_note(extra: dict[str, object] | None = None) -> str:
+def double_frontmatter_note(extra: dict[str, object] | None = None, primary: dict[str, object] | None = None) -> str:
     extra_payload = OKF_VALUES if extra is None else extra
     lines = [
         "---",
@@ -38,11 +38,10 @@ def double_frontmatter_note(extra: dict[str, object] | None = None) -> str:
         "tags:",
         "  - project",
         "  - plan",
-        "---",
-        "This body should survive normalization.",
-        "",
-        "---",
     ]
+    for key, value in (primary or {}).items():
+        lines.append(f"{key}: {value}")
+    lines.extend(["---", "This body should survive normalization.", "", "---"])
     for key, value in extra_payload.items():
         if isinstance(value, list):
             lines.append(f"{key}:")
@@ -92,7 +91,7 @@ def test_reconcile_memory_file_writes_single_canonical_okf_header(tmp_path: Path
 
 def test_reconcile_memory_file_fails_loudly_without_rewriting_conflicts(tmp_path: Path) -> None:
     note_path = tmp_path / "conflicting-plan.md"
-    original = double_frontmatter_note({**OKF_VALUES, "scope": "global"})
+    original = double_frontmatter_note({**OKF_VALUES, "scope": "global"}, primary={"scope": "project"})
     note_path.write_text(original, encoding="utf-8")
 
     with pytest.raises(MalformedMemoryError, match="conflicting values for scope"):
