@@ -59,19 +59,20 @@ Not claimed:
 Passing:
 
 - `just test`
-  - `176 passed`
+  - `186 passed`
 - `just test-ci`
   - Python preflight passed.
   - Formatting passed.
   - Semgrep autofix produced no findings.
-  - Ruff passed.
   - Mypy passed.
-  - Commit-tier pytest passed: `176 passed`.
-  - Coverage pytest passed: `176 passed`.
-  - Diff coverage passed at 91%.
+  - Commit-tier pytest passed: `186 passed`.
+  - Coverage pytest passed: `186 passed`.
+  - Diff coverage passed at 88%.
 
 Blocked / dispositioned:
 
+- `just test-ci` still reports a Ruff E501 line-length finding in `tests/test_card_validation.py:43`.
+  - Independent Route B QC disposition cleared it as a weak formatting finding, not a semantic branch blocker.
 - `just test-ci` still exits nonzero at the deptry import dependency linting step:
   - `src/agent_memory/operations.py:18:8 DEP001 'frontmatter' imported but missing from the dependency definitions`
   - `src/agent_memory/operations.py:21:1 DEP001 'markdown_it' imported but missing from the dependency definitions`
