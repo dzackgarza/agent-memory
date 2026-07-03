@@ -91,15 +91,15 @@ agent-memory doctor
 
 ## Plan Cards
 
-Project plan cards live in the same vault under `projects/<project-id>/plans/`. The shipped source of truth is the `agent-memory plan ...` surface, not a parallel in-repo `.agents/plans` tree after migration.
+Project plan cards live in the same vault under `projects/<project-id>/plans/`. Card definitions generate their own CLI groups, so `feature add`, `plan add`, `phase add`, and `task add` all route through the same card creation engine. `plan` is a configured card type with plan-specific extras such as validation and DAG rendering, not a separate memory-note write path.
 
 Create plan cards in the vault:
 
 ```bash
-agent-memory plan add --type feature --id FEATURE-DEMO --set title=Demo --set status=in-progress --set description="Plan card in the vault" --set plans=[[PLAN-DEMO]]
-agent-memory plan add --type plan --id PLAN-DEMO --parent FEATURE-DEMO --set title=Plan --set status=in-progress --set parents=[[FEATURE-DEMO]] --set successCriteria=ships --set tasks=[[TASK-DEMO]] --set tags=FEATURE-DEMO
-agent-memory plan add --type phase --id PHASE-DEMO --parent PLAN-DEMO --set title=Phase --set status=in-progress --set parents=[[PLAN-DEMO]] --set successCriteria=phase-ships --set tasks=[[TASK-DEMO]] --set tags=FEATURE-DEMO --set tags=PLAN-DEMO
-agent-memory plan add --type task --id TASK-DEMO --parent PHASE-DEMO --set title=Task --set status=in-progress --set parents=[[PHASE-DEMO]] --set successCriteria=task-ships --set tags=FEATURE-DEMO --set tags=PLAN-DEMO --set tags=PHASE-DEMO
+agent-memory feature add FEATURE-DEMO --set title=Demo --set status=in-progress --set description="Plan card in the vault" --set plans=[[PLAN-DEMO]]
+agent-memory plan add PLAN-DEMO --parent FEATURE-DEMO --set title=Plan --set status=in-progress --set parents=[[FEATURE-DEMO]] --set successCriteria=ships --set tasks=[[TASK-DEMO]] --set tags=FEATURE-DEMO
+agent-memory phase add PHASE-DEMO --parent PLAN-DEMO --set title=Phase --set status=in-progress --set parents=[[PLAN-DEMO]] --set successCriteria=phase-ships --set tasks=[[TASK-DEMO]] --set tags=FEATURE-DEMO --set tags=PLAN-DEMO
+agent-memory task add TASK-DEMO --parent PHASE-DEMO --set title=Task --set status=in-progress --set parents=[[PHASE-DEMO]] --set successCriteria=task-ships --set tags=FEATURE-DEMO --set tags=PLAN-DEMO --set tags=PHASE-DEMO
 ```
 
 Validate and render the shared DAG:

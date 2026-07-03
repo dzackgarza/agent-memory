@@ -4,7 +4,7 @@
 
 Milestone: **Card Schema System**
 
-This updates existing PR #35 instead of opening another narrow PR. The branch now claims the coherent card-schema slice that issue #51 describes: cards are the single source of truth, type-specific commands are generated from the configured card definitions, and `plan` remains a card type with plan-specific extras layered on top.
+This updates existing PR #35 instead of opening another narrow PR. The branch now claims the coherent card-schema slice that issue #51 describes: cards are the single source of truth, type-specific commands are generated from the configured card definitions (`feature add`, `plan add`, or any vault-defined peer command), and `plan` remains a card type with plan-specific extras layered on top.
 
 Closes:
 
@@ -29,7 +29,7 @@ Not claimed:
 
 - `src/agent_memory/cli.py`
   - Adds a generic `card` command group.
-  - Registers top-level command groups for configured card types at CLI startup.
+  - Registers top-level command groups for configured card types at CLI startup, so each card type owns one add/update/delete/show path through card creation.
   - Keeps plan extras (`validate`, `dag`, `migrate`) as code-driven conveniences on the generated `plan` command group.
 
 - `src/agent_memory/operations.py`
