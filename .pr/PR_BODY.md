@@ -81,3 +81,4 @@ Blocked / dispositioned:
   - `markdown-it-py>=3`
 - The separate Route C remediation removed the repo-local `[tool.deptry.package_module_name_map]` section because repo-local deptry config violates `POLICY.GLOBAL_QC_AUTHORITY`.
 - Remaining action is central QC alignment for deptry package/module mapping; this branch does not carry local QC config.
+- Non-blocking review residue is tracked in #67.
