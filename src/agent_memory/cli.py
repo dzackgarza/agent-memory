@@ -265,7 +265,7 @@ def inspect_schema_command(
     output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
 ) -> None:
     """Print the user-facing command and metadata schema."""
-    emit(inspect_schema(output_format=output_format))
+    emit(inspect_schema(output_format=output_format, cwd=Path.cwd()))
 
 
 def inspect_paths_command(

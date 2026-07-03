@@ -2822,9 +2822,9 @@ def inspect_overview(
     }
 
 
-def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
+def inspect_schema(*, output_format: InspectOutputFormat, cwd: Path) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect schema currently emits JSON"
-    config = config_for_schema_advertisement(Path.cwd())
+    config = config_for_schema_advertisement(cwd)
     cards_config, card_model_by_type = load_card_system(config)
     return {
         "commands": {

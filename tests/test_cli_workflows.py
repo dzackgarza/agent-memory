@@ -20,7 +20,7 @@ import yaml
 from agent_memory.cards import load_card_system_config
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
-from agent_memory.models import MemoryType
+from agent_memory.models import InspectOutputFormat, MemoryType
 from agent_memory.operations import (
     OKF_VERSION,
     DependencyCheck,
@@ -30,6 +30,7 @@ from agent_memory.operations import (
     VaultCommitError,
     basic_doctor,
     check_dependency,
+    inspect_schema,
     merge_probe_payloads,
     outgoing_link_keys,
     update_memory,
@@ -2267,7 +2268,7 @@ card_types:
 
     schema = inspect_json(workspace, "schema", "--format", "json")
     schema_type_names = {json_string(item["name"]) for item in json_records(json_object(schema["card_system"]), "types")}
-    assert "ticket" in schema_type_names
+    assert schema_type_names == {"ticket"}
 
     run_agent_memory(
         workspace.repo,
@@ -2285,6 +2286,47 @@ card_types:
 
     clean = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
     assert json_array(clean["problems"]) == []
+
+
+def test_inspect_schema_operation_uses_explicit_cwd_for_project_schema(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards_path.write_text(
+        """root: plans
+statuses:
+  - todo
+  - blocked
+status_sets:
+  default:
+    default: todo
+    options:
+      - todo
+      - blocked
+card_types:
+  - name: ticket
+    id_prefix: TICKET
+    status_set: default
+    parents: []
+    own_dir: true
+    container: tickets
+    fields:
+      - name: id
+        type: string
+        required: true
+      - name: title
+        type: string
+        required: true
+      - name: status
+        type: status
+        required: true
+""",
+        encoding="utf-8",
+    )
+
+    schema = inspect_schema(output_format=InspectOutputFormat.JSON, cwd=workspace.repo)
+    schema_type_names = {json_string(item["name"]) for item in json_records(json_object(schema["card_system"]), "types")}
+    assert schema_type_names == {"ticket"}
 
 
 def test_search_content_exact_handles_paths_with_colons(tmp_path: Path) -> None:

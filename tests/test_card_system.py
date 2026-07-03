@@ -260,36 +260,45 @@ def test_shipped_task_model_enforces_complexity_range() -> None:
 
 
 def test_load_card_system_config_prefers_project_cards_yaml(tmp_path: Path) -> None:
-    vault = tmp_path / "vault" / "projects" / "example-project"
-    cards_path = vault / "_meta" / "cards.yaml"
-    cards_path.parent.mkdir(parents=True)
-    payload = {
-        "statuses": ["todo", "in-progress", "complete", "blocked"],
-        "status_sets": {
-            "standard": {
-                "default": "todo",
-                "options": ["todo", "in-progress", "complete", "blocked"],
-            },
-        },
-        "card_types": [
-            {
-                "name": "signal",
-                "id_prefix": "SIG",
-                "status_set": "standard",
-                "parents": [],
-                "own_dir": True,
-                "container": "signals",
-                "fields": [
-                    {"name": "id", "type": "string", "required": True},
-                    {"name": "title", "type": "string", "required": True},
-                    {"name": "status", "type": "status", "required": True},
-                ],
-            },
-        ],
-    }
-    cards_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    vault = tmp_path / "vault"
+    project_id = "example-project"
 
-    config = load_card_system_config(vault)
+    def payload_for(name: str, id_prefix: str, container: str) -> dict[str, Any]:
+        return {
+            "root": "plans",
+            "statuses": ["todo", "in-progress", "complete", "blocked"],
+            "status_sets": {
+                "standard": {
+                    "default": "todo",
+                    "options": ["todo", "in-progress", "complete", "blocked"],
+                },
+            },
+            "card_types": [
+                {
+                    "name": name,
+                    "id_prefix": id_prefix,
+                    "status_set": "standard",
+                    "parents": [],
+                    "own_dir": True,
+                    "container": container,
+                    "fields": [
+                        {"name": "id", "type": "string", "required": True},
+                        {"name": "title", "type": "string", "required": True},
+                        {"name": "status", "type": "status", "required": True},
+                    ],
+                },
+            ],
+        }
+
+    vault_cards_path = vault / "_meta" / "cards.yaml"
+    vault_cards_path.parent.mkdir(parents=True)
+    vault_cards_path.write_text(yaml.safe_dump(payload_for("global_signal", "GSIG", "global-signals")), encoding="utf-8")
+
+    cards_path = vault / "projects" / project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards_path.write_text(yaml.safe_dump(payload_for("signal", "SIG", "signals")), encoding="utf-8")
+
+    config = load_card_system_config(vault, project_id)
     assert config.root == "plans"
     type_names = {card_type.name for card_type in config.card_types}
     assert type_names == {"signal"}
