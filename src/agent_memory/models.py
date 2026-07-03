@@ -149,11 +149,12 @@ class BaseNoteMetadata(BaseModel):
     promotable: bool = False
 
     def base_yaml_payload(self) -> dict[str, MetadataValue]:
+        tags: list[MetadataValue] = [tag for tag in self.tags]
         return {
             "type": self.type.value,
             "title": self.title,
             "description": self.description,
-            "tags": self.tags,
+            "tags": tags,
             "timestamp": self.timestamp,
             "scope": self.scope.value,
             "source": self.source,

@@ -57,9 +57,14 @@ class CardTypeSpec(BaseModel):
     # the card occupies a directory named by its id (so it can contain child cards).
     container: str = ""
     own_dir: bool = False
+    tagged_ancestor: bool = False
+    ordered_children: dict[str, str] = Field(default_factory=dict)
 
 
 def _validate_workflow_roles(statuses: list[str], workflow_roles: dict[str, list[str]]) -> None:
+    required_roles = {"started", "complete", "unstarted"}
+    if workflow_roles and set(workflow_roles) != required_roles:
+        raise ValueError(f"workflow roles must declare exactly {sorted(required_roles)} when enabled")
     status_values = set(statuses)
     for role, members in workflow_roles.items():
         for status in members:
@@ -108,6 +113,20 @@ def _validate_card_fields(card_type: CardTypeSpec) -> None:
     _validate_fields(card_type.fields, card_type.name)
 
 
+def _validate_card_ordering(card_type: CardTypeSpec, by_name: dict[str, CardTypeSpec]) -> None:
+    fields_by_name = {field.name: field for field in card_type.fields}
+    for child_type_name, field_name in card_type.ordered_children.items():
+        if child_type_name not in by_name:
+            raise ValueError(f"card type {card_type.name} orders unknown child type: {child_type_name}")
+        if card_type.name not in by_name[child_type_name].parents:
+            raise ValueError(f"card type {card_type.name} cannot order non-child type: {child_type_name}")
+        field = fields_by_name.get(field_name)
+        if field is None:
+            raise ValueError(f"card type {card_type.name} orders {child_type_name} through unknown field: {field_name}")
+        if field.type != "wikilink_list":
+            raise ValueError(f"card type {card_type.name} ordering field {field_name} must be a wikilink_list")
+
+
 def _validate_card_types(card_types: list[CardTypeSpec], status_sets: dict[str, StatusSetSpec]) -> None:
     by_name = {card_type.name: card_type for card_type in card_types}
     for card_type in card_types:
@@ -115,6 +134,7 @@ def _validate_card_types(card_types: list[CardTypeSpec], status_sets: dict[str, 
             raise ValueError(f"card type {card_type.name} references unknown status set: {card_type.status_set}")
         _validate_card_parents(card_type, by_name)
         _validate_card_fields(card_type)
+        _validate_card_ordering(card_type, by_name)
 
 
 class CardSystemConfig(BaseModel):

@@ -85,6 +85,9 @@ card_types:
         type: string_list
     container: features
     own_dir: true
+    tagged_ancestor: true
+    ordered_children:
+      plan: plans
   - name: plan
     id_prefix: PLAN
     status_set: plan
@@ -149,6 +152,9 @@ card_types:
         min_items: 1
     container: plans
     own_dir: true
+    tagged_ancestor: true
+    ordered_children:
+      phase: phases
   - name: phase
     id_prefix: PHASE
     status_set: standard-no-complete-icon
@@ -224,6 +230,9 @@ card_types:
         type: string_list
     container: ''
     own_dir: true
+    tagged_ancestor: true
+    ordered_children:
+      task: tasks
   - name: task
     id_prefix: TASK
     status_set: standard-no-complete-icon
