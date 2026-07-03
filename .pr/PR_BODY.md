@@ -59,14 +59,14 @@ Not claimed:
 Passing:
 
 - `just test`
-  - `186 passed`
+  - `187 passed`
 - `just test-ci`
   - Python preflight passed.
   - Formatting passed.
   - Semgrep autofix produced no findings.
   - Mypy passed.
-  - Commit-tier pytest passed: `186 passed`.
-  - Coverage pytest passed: `186 passed`.
+  - Commit-tier pytest passed before the latest review-remediation commits: `186 passed`.
+  - Coverage pytest passed before the latest review-remediation commits: `186 passed`.
   - Diff coverage passed at 88%.
 
 Blocked / dispositioned:

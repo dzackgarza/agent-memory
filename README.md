@@ -91,7 +91,8 @@ agent-memory doctor
 
 ## Plan Cards
 
-Project plan cards live in the same vault under `projects/<project-id>/plans/`. Card definitions generate their own CLI groups, so `feature add`, `plan add`, `phase add`, and `task add` all route through the same card creation engine. `plan` is a configured card type with plan-specific extras such as validation and DAG rendering, not a separate memory-note write path.
+Project plan cards live in the same vault under `projects/<project-id>/plans/`. Card definitions generate their own CLI groups, so `feature add`, `plan add`, `phase add`, and `task add` all route through the same card creation engine.
+`plan` is a configured card type with plan-specific extras such as validation and DAG rendering, not a separate memory-note write path.
 
 Create plan cards in the vault:
 
