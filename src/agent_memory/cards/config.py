@@ -30,6 +30,7 @@ class FieldSpec(BaseModel):
     options: list[str] = []
     min: int | None = None
     max: int | None = None
+    min_items: int | None = None
     # For an object_list field, the schema of each nested item. Aliased to "schema"
     # (the config key) to avoid shadowing BaseModel.schema. Empty for scalar fields.
     item_schema: list[FieldSpec] = Field(default_factory=list, alias="schema")

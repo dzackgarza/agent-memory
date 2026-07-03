@@ -151,6 +151,14 @@ def run_agent_memory_subprocess(cwd: Path, *args: str, env: dict[str, str] | Non
     )
 
 
+def assert_structured_cli_error(result: subprocess.CompletedProcess[str]) -> str:
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr.startswith("Error: ")
+    assert not re.search(r"\b(Traceback|AssertionError|ValidationError|FileNotFoundError)\b", result.stderr)
+    return result.stderr
+
+
 def run_agent_memory_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     result = run_agent_memory_subprocess(cwd, *args)
     if result.returncode != 0:
@@ -401,6 +409,104 @@ def add_cli_memory(
             content,
         )
     )
+
+
+def add_cli_plan_tree(
+    workspace: CliWorkspace,
+    *,
+    feature_id: str,
+    plan_id: str,
+    phase_id: str,
+    task_id: str,
+    feature_title: str,
+    plan_title: str,
+    description_signal: str,
+) -> str:
+    run_agent_memory(
+        workspace.repo,
+        "feature",
+        "add",
+        feature_id,
+        "--set",
+        f"title={feature_title}",
+        "--set",
+        "status=in-progress",
+        "--set",
+        f"description={description_signal}",
+        "--set",
+        f"plans=[[{plan_id}]]",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        plan_id,
+        "--parent",
+        feature_id,
+        "--set",
+        f"title={plan_title}",
+        "--set",
+        "status=in-progress",
+        "--set",
+        f"description={description_signal} plan",
+        "--set",
+        f"parents=[[{feature_id}]]",
+        "--set",
+        "successCriteria=plan ships",
+        "--set",
+        f"tasks=[[{task_id}]]",
+        "--set",
+        f"tags={feature_id}",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "phase",
+        "add",
+        phase_id,
+        "--parent",
+        plan_id,
+        "--set",
+        "title=Phase",
+        "--set",
+        "status=in-progress",
+        "--set",
+        f"description={description_signal} phase",
+        "--set",
+        f"parents=[[{plan_id}]]",
+        "--set",
+        "successCriteria=phase ships",
+        "--set",
+        f"tasks=[[{task_id}]]",
+        "--set",
+        f"tags={feature_id}",
+        "--set",
+        f"tags={plan_id}",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "task",
+        "add",
+        task_id,
+        "--parent",
+        phase_id,
+        "--set",
+        "title=Task",
+        "--set",
+        "status=in-progress",
+        "--set",
+        f"description={description_signal} task",
+        "--set",
+        f"parents=[[{phase_id}]]",
+        "--set",
+        "successCriteria=task ships",
+        "--set",
+        f"tags={feature_id}",
+        "--set",
+        f"tags={plan_id}",
+        "--set",
+        f"tags={phase_id}",
+    )
+    return f"projects/{workspace.project_id}/plans/features/{feature_id}/plans/{plan_id}/{plan_id}"
 
 
 def project_memory_key(workspace: CliWorkspace, memory_type_directory: str, slug: str) -> str:
@@ -733,6 +839,19 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
 
     retrieved = run_agent_memory(workspace.repo, "retrieve", str(project_note["key"]))
     assert "project-signal-7dcbd96d belongs only to this repository" in retrieved.stdout
+    project_raw = project_path.read_text(encoding="utf-8")
+    _, _, project_body = project_raw.split("---\n", 2)
+    project_metadata = frontmatter(project_path)
+    project_metadata["todos"] = [
+        {
+            "id": "M-RATIFY",
+            "title": "Ratify plan",
+            "children": ["M0", "M1"],
+            "done": False,
+            "notes": ["preserve out-of-schema plan state"],
+        }
+    ]
+    project_path.write_text("---\n" + yaml.safe_dump(project_metadata, sort_keys=False) + "---\n" + project_body, encoding="utf-8")
     updated = parse_json_stdout(
         run_agent_memory(
             workspace.repo,
@@ -744,6 +863,32 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     )
     assert updated["key"] == project_note["key"]
     assert "durable next step" in run_agent_memory(workspace.repo, "retrieve", str(project_note["key"])).stdout
+    assert frontmatter(project_path)["todos"] == [
+        {
+            "id": "M-RATIFY",
+            "title": "Ratify plan",
+            "children": ["M0", "M1"],
+            "done": False,
+            "notes": ["preserve out-of-schema plan state"],
+        }
+    ]
+    structured_frontmatter_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "durable"))
+    assert project_key in result_keys(structured_frontmatter_search)
+
+    project_index = project_path.parent / "index.md"
+    index_lines = project_index.read_text(encoding="utf-8").splitlines()
+    project_index.write_text("\n".join(line for line in index_lines if "](project-alpha.md)" not in line) + "\n", encoding="utf-8")
+    missing_index_update = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "update",
+            str(project_note["key"]),
+            "--content",
+            "project-signal-7dcbd96d updated after missing index link",
+        )
+    )
+    assert missing_index_update["key"] == project_note["key"]
+    assert "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d updated after missing index link" in project_index.read_text(encoding="utf-8")
 
     basename_miss = run_agent_memory_subprocess(workspace.repo, "retrieve", "project-alpha")
     assert basename_miss.returncode != 0
@@ -756,6 +901,29 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     assert deleted["deleted"] == global_key
     after_delete = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "both", "global-signal-cde4b9f6"))
     assert global_key not in result_keys(after_delete)
+
+
+def test_generic_add_refuses_plain_plan_memory(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "add",
+        "--scope",
+        "project",
+        "--type",
+        "plan",
+        "--title",
+        "Tree-less Plan",
+        "--content",
+        "This would create a plan with no task tree.",
+    )
+
+    assert result.returncode != 0
+    assert "agent-memory plan add" in result.stderr
+    assert "Traceback" not in result.stderr
+    plain_plan = workspace.vault / "projects" / workspace.project_id / "plans" / "tree-less-plan.md"
+    assert not plain_plan.exists()
 
 
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
@@ -1512,6 +1680,78 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     ]
 
 
+def write_unmigrated_plan(path: Path, title: str, project_id: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "---",
+                "type: plan",
+                f"title: {title}",
+                f"description: {title} description",
+                "tags:",
+                "  - project",
+                "  - plan",
+                "timestamp: 2026-07-02T00:00:00Z",
+                "scope: project",
+                "source: agent",
+                "confidence: high",
+                "promotable: false",
+                f"project_id: {project_id}",
+                "---",
+                f"{title} body.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    managed_plan_key = add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-MANAGED",
+        plan_id="PLAN-MANAGED",
+        phase_id="PHASE-MANAGED",
+        task_id="TASK-MANAGED",
+        feature_title="Managed Feature",
+        plan_title="Managed Plan",
+        description_signal="managed",
+    )
+    unmigrated = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "harnesses"
+        / "codex"
+        / "memories"
+        / "extensions"
+        / "ad_hoc"
+        / "notes"
+        / "stranded-plan.md"
+    )
+    write_unmigrated_plan(unmigrated, "Stranded Harness Plan", workspace.project_id)
+
+    doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
+    unmigrated_records = json_array(doctor["unmigrated_cards"])
+    assert unmigrated_records
+    doctor_record = json_object(unmigrated_records[0])
+    assert doctor_record["managed"] is False
+    assert doctor_record["type"] == "plan"
+    assert doctor_record["scope"] == "project"
+    assert doctor_record["suggested_destination"] == f"projects/{workspace.project_id}/plans"
+    assert doctor_record["path"] == str(unmigrated)
+
+    listed = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "plan", "--scope", "both", "--unmigrated"))
+    records = {json_string(record["title"]): record for record in json_records(listed, "results")}
+    assert set(records) == {"Managed Plan", "Stranded Harness Plan"}
+    assert records["Managed Plan"]["managed"] is True
+    assert records["Managed Plan"]["key"] == managed_plan_key
+    assert records["Stranded Harness Plan"]["managed"] is False
+    assert records["Stranded Harness Plan"]["path"] == str(unmigrated)
+
+
 def test_sync_run_commits_and_pushes_vault_worktree_changes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     remote = initialized_bare_remote(tmp_path, "vault-remote.git")
@@ -2134,10 +2374,83 @@ def write_raw_project_note(workspace: CliWorkspace, slug: str, text: str) -> Pat
     return note
 
 
-def test_read_memory_invalid_yaml_frontmatter_is_structured_cli_error(tmp_path: Path) -> None:
-    # F4: frontmatter.loads raises yaml.YAMLError (NOT a ValueError subclass) on invalid
-    # YAML, so the record scan must convert it into a path-bearing MalformedMemoryError
-    # that cli.main renders cleanly — not an uncaught YAMLError traceback.
+def findings_by_path(payload: JsonObject) -> dict[str, JsonObject]:
+    return {json_string(record["path"]): record for record in json_records(payload, "findings")}
+
+
+def assert_note_finding(payload: JsonObject, note: Path, workspace: CliWorkspace) -> JsonObject:
+    findings = findings_by_path(payload)
+    finding = findings[str(note)]
+    assert finding["key"] == note.relative_to(workspace.vault).with_suffix("").as_posix()
+    assert note.name in json_string(finding["message"])
+    return finding
+
+
+def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    good = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Scan Survives",
+        content="resilient-scan-token-71d9",
+    )
+    bad = write_raw_project_note(
+        workspace,
+        "bad-tags",
+        "---\ntype: decision\nscope: project\ntitle: Bad Tags\ndescription: x\ntags: project\n---\nBody.\n",
+    )
+    bad_utf8 = workspace.vault / "projects" / workspace.project_id / "decisions" / "bad-utf8.md"
+    bad_utf8.write_bytes(b"---\ntype: decision\nscope: project\ntitle: Bad UTF8\ndescription: x\ntags: [project]\n---\nBody \xff\n")
+    mixed_tags = write_raw_project_note(
+        workspace,
+        "mixed-tags",
+        "---\ntype: decision\nscope: project\ntitle: Mixed Tags\ndescription: x\ntags: [project, 12]\n---\nBody.\n",
+    )
+
+    result = run_agent_memory_subprocess(workspace.repo, "search", "--scope", "project", "resilient-scan-token-71d9")
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert good["key"] in result_keys(payload)
+    finding = assert_note_finding(payload, bad, workspace)
+    assert "tags" in json_string(finding["message"])
+    utf8_finding = assert_note_finding(payload, bad_utf8, workspace)
+    assert "UTF-8" in json_string(utf8_finding["message"])
+    mixed_tags_finding = assert_note_finding(payload, mixed_tags, workspace)
+    assert "tags" in json_string(mixed_tags_finding["message"])
+
+
+def test_inspect_overview_reports_malformed_note_findings(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Overview Survives",
+        content="Well-formed overview note.",
+    )
+    bad = write_raw_project_note(
+        workspace,
+        "missing-tags",
+        "---\ntype: decision\nscope: project\ntitle: Missing Tags\ndescription: x\n---\nBody.\n",
+    )
+    bad_index = workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
+    bad_index.write_text("---\nnot: [valid\n---\n# Broken index\n", encoding="utf-8")
+
+    overview = inspect_json(workspace, "overview", "--scope", "project", "--format", "json")
+
+    assert overview["totals"] == {"notes": 1, "indexes": 6}
+    finding = assert_note_finding(overview, bad, workspace)
+    assert "tags" in json_string(finding["message"])
+    index_finding = assert_note_finding(overview, bad_index, workspace)
+    assert "YAML" in json_string(index_finding["message"])
+
+
+def test_read_memory_invalid_yaml_frontmatter_is_structured_finding(tmp_path: Path) -> None:
+    # F4: frontmatter.loads raises yaml.YAMLError on invalid YAML. The scan reports the
+    # file as a finding so the rest of the vault remains readable.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -2147,16 +2460,18 @@ def test_read_memory_invalid_yaml_frontmatter_is_structured_cli_error(tmp_path: 
 
     result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
 
-    assert result.returncode != 0
-    assert "Malformed memory file" in result.stderr
-    assert note.name in result.stderr
+    assert result.returncode == 0
     assert "Traceback" not in result.stderr
     assert "YAMLError" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert result_keys(payload) == set()
+    finding = assert_note_finding(payload, note, workspace)
+    assert "YAML" in json_string(finding["message"])
 
 
-def test_note_missing_required_field_is_structured_cli_error(tmp_path: Path) -> None:
-    # F1: a note missing a required frontmatter field (scope) must fail through the
-    # path-bearing MalformedMemoryError contract, not an uncaught AssertionError.
+def test_note_missing_required_field_is_structured_finding(tmp_path: Path) -> None:
+    # F1: a note missing a required frontmatter field (scope) must become a path-bearing
+    # finding, not a scan-wide abort.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -2166,17 +2481,18 @@ def test_note_missing_required_field_is_structured_cli_error(tmp_path: Path) -> 
 
     result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
 
-    assert result.returncode != 0
-    assert "Malformed memory file" in result.stderr
-    assert note.name in result.stderr
-    assert "scope" in result.stderr
+    assert result.returncode == 0
     assert "AssertionError" not in result.stderr
     assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert result_keys(payload) == set()
+    finding = assert_note_finding(payload, note, workspace)
+    assert "scope" in json_string(finding["message"])
 
 
-def test_note_optional_field_wrong_type_is_structured_cli_error(tmp_path: Path) -> None:
-    # F2: a present-but-non-string optional field (timestamp: true) must raise the
-    # structured MalformedMemoryError, not an uncaught AssertionError.
+def test_note_optional_field_wrong_type_is_structured_finding(tmp_path: Path) -> None:
+    # F2: a present-but-non-string optional field (timestamp: true) must become a
+    # structured finding, not a scan-wide abort.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -2186,17 +2502,18 @@ def test_note_optional_field_wrong_type_is_structured_cli_error(tmp_path: Path) 
 
     result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
 
-    assert result.returncode != 0
-    assert "Malformed memory file" in result.stderr
-    assert note.name in result.stderr
-    assert "timestamp" in result.stderr
+    assert result.returncode == 0
     assert "AssertionError" not in result.stderr
     assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert result_keys(payload) == set()
+    finding = assert_note_finding(payload, note, workspace)
+    assert "timestamp" in json_string(finding["message"])
 
 
-def test_note_missing_tags_is_structured_cli_error(tmp_path: Path) -> None:
-    # F3: a note missing the required `tags` field must raise a path-bearing
-    # MalformedMemoryError from note_record_for_path, not an uncaught AssertionError.
+def test_note_missing_tags_is_structured_finding(tmp_path: Path) -> None:
+    # F3: a note missing the required `tags` field must become a path-bearing finding,
+    # not a scan-wide abort.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -2206,11 +2523,13 @@ def test_note_missing_tags_is_structured_cli_error(tmp_path: Path) -> None:
 
     result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
 
-    assert result.returncode != 0
-    assert "Malformed memory file" in result.stderr
-    assert note.name in result.stderr
+    assert result.returncode == 0
     assert "AssertionError" not in result.stderr
     assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    assert result_keys(payload) == set()
+    finding = assert_note_finding(payload, note, workspace)
+    assert "tags" in json_string(finding["message"])
 
 
 def test_note_empty_timestamp_reads_as_absent(tmp_path: Path) -> None:
@@ -2636,41 +2955,15 @@ def test_merge_probe_payloads_rejects_null_skipped_files() -> None:
 
 def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    run_agent_memory(
-        workspace.repo,
-        "feature",
-        "add",
-        "FEATURE-DEMO",
-        "--set",
-        "title=Demo",
-        "--set",
-        "status=in-progress",
-        "--set",
-        "description=plan-card-signal-9c1f",
-        "--set",
-        "plans=[[PLAN-DEMO]]",
-    )
-    # The plan is in-progress (a started child for the in-progress feature) and tags equal
-    # its sole ancestor, so the tree is valid under every validation rule.
-    run_agent_memory(
-        workspace.repo,
-        "plan",
-        "add",
-        "PLAN-DEMO",
-        "--parent",
-        "FEATURE-DEMO",
-        "--set",
-        "title=Plan",
-        "--set",
-        "status=in-progress",
-        "--set",
-        "description=demo plan",
-        "--set",
-        "parents=[[FEATURE-DEMO]]",
-        "--set",
-        "successCriteria=ships",
-        "--set",
-        "tags=FEATURE-DEMO",
+    add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-DEMO",
+        plan_id="PLAN-DEMO",
+        phase_id="PHASE-DEMO",
+        task_id="TASK-DEMO",
+        feature_title="Demo",
+        plan_title="Plan",
+        description_signal="plan-card-signal-9c1f",
     )
     plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PLAN-DEMO.md"
     assert plan_path.is_file()
@@ -2756,6 +3049,8 @@ def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_cont
         "--set",
         "successCriteria=deleted",
         "--set",
+        "tasks=[[TASK-DELETE]]",
+        "--set",
         "tags=FEATURE-DELETE",
     )
     plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DELETE" / "plans" / "PLAN-DELETE" / "PLAN-DELETE.md"
@@ -2799,6 +3094,8 @@ def test_plan_add_parented_type_without_parent_fails_cleanly_before_root_write(t
         "parents=[[FEATURE-METADATA-ONLY]]",
         "--set",
         "successCriteria=blocked",
+        "--set",
+        "tasks=[[TASK-NO-PARENT]]",
         "--set",
         "tags=FEATURE-METADATA-ONLY",
     )
@@ -3138,6 +3435,7 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     assert "status" in help_result.stdout
     assert "parents" in help_result.stdout
     assert "successCriteria" in help_result.stdout
+    assert "tasks" in help_result.stdout
     assert "needs-human-input" in help_result.stdout or "blocked" in help_result.stdout
 
     # Scenario 2: bad enum validation produces clean field-level error without traceback
@@ -3154,6 +3452,8 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         "description=Desc",
         "--set",
         "successCriteria=Ships",
+        "--set",
+        "tasks=[[TASK-1]]",
         "--empty-set",
         "parents",
     )
@@ -3301,6 +3601,19 @@ def test_plan_add_missing_body_file_fails_through_cli_boundary_without_writing_c
     assert not card_file.exists()
 
 
+def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    unsupported_type = "milestone"
+    unsupported_id = "MILESTONE-1"
+
+    result = run_agent_memory_subprocess(workspace.repo, "card", "add", unsupported_type, unsupported_id)
+
+    stderr = assert_structured_cli_error(result)
+    assert unsupported_type in stderr
+    assert {"feature", "task"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr)))
+    assert list(workspace.vault.rglob(f"{unsupported_id}.md")) == []
+
+
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
@@ -3315,24 +3628,27 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
         "--content",
         "Y",
     )
-    assert r1.returncode != 0
-    assert "Unknown option: --type" in r1.stderr
-    assert "Did you mean --scope?" in r1.stderr
+    stderr1 = assert_structured_cli_error(r1)
+    assert "--type" in stderr1
+    assert "--scope" in stderr1
 
     # Scenario 2: missing modes/arguments
     r2 = run_agent_memory_subprocess(workspace.repo, "search", "content")
-    assert r2.returncode != 0
-    assert "requires an argument" in r2.stderr
-    assert "--mode" in r2.stderr
+    stderr2 = assert_structured_cli_error(r2)
+    assert "--mode" in stderr2
 
     # Scenario 3: invalid search mode
-    r3 = run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", "substring")
-    assert r3.returncode != 0
-    assert "exact" in r3.stderr
-    assert "fuzzy" in r3.stderr
+    unsupported_mode = "substring"
+    r3 = run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", unsupported_mode)
+    stderr3 = assert_structured_cli_error(r3)
+    assert unsupported_mode in stderr3
+    assert {"exact", "fuzzy", "ranked"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr3)))
 
-    # Scenario 4: unknown commands list
+    # Scenario 4: list is a registered command and requires an explicit type
     r4 = run_agent_memory_subprocess(workspace.repo, "list")
-    assert r4.returncode != 0
-    assert 'Unknown command "list"' in r4.stderr
-    assert "Available commands" in r4.stderr
+    stderr4 = assert_structured_cli_error(r4)
+    assert "--type" in stderr4
+    listed = parse_json_stdout(run_agent_memory_module(workspace.repo, "list", "--type", "plan", "--scope", "both"))
+    assert listed["type"] == "plan"
+    assert listed["scope"] == "both"
+    assert json_array(listed["results"]) == []
