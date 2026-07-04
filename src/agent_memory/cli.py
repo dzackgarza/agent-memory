@@ -84,6 +84,7 @@ from agent_memory.operations import (
     sync_vault,
     update_card_record,
     update_memory,
+    update_plan_todo,
     validate_card_records,
     write_card_dag,
 )
@@ -107,6 +108,7 @@ maintain_app = app.command(App(name="maintain", help="Vault setup and maintenanc
 card_app = app.command(App(name="card", help="Operate on schema-defined vault-backed cards."))
 sync_app = app.command(App(name="sync", help="Synchronize the configured memory vault with its git remote."))
 links_app = app.command(App(name="links", help="Inspect and rewrite vault links."))
+todo_app = app.command(App(name="todo", help="Mutate structured todos on vault plan records."))
 
 
 class CliUsageError(RuntimeError):
@@ -215,6 +217,18 @@ def delete_command(
         emit(delete_memory_orphaning_backlinks(key=key, cwd=Path.cwd()))
         return
     emit(delete_memory(key=key, cwd=Path.cwd()))
+
+
+def todo_set_command(
+    key: Annotated[str, Parameter(help="Full vault-relative plan memory key.")],
+    todo_id: Annotated[str, Parameter(help="Todo id to mutate inside the plan record's todos tree.")],
+    *,
+    status: Annotated[str | None, Parameter(help="Replacement todo status.")] = None,
+    content: Annotated[str | None, Parameter(help="Replacement todo content.")] = None,
+    note: Annotated[str | None, Parameter(help="Replacement todo note.")] = None,
+) -> None:
+    """Update one todo node in a plan memory record."""
+    emit(update_plan_todo(key=key, todo_id=todo_id, status=status, content=content, note=note, cwd=Path.cwd()))
 
 
 def search_default(
@@ -675,6 +689,7 @@ ROOT_COMMAND_NAMES = {
     "card",
     "sync",
     "links",
+    "todo",
     "add",
     "update",
     "delete",
@@ -701,6 +716,7 @@ def register_commands(registration_state: CardConfigRegistrationState) -> None:
     app.command(update_command, name="update")
     app.command(delete_command, name="delete")
     app.command(list_command, name="list")
+    todo_app.command(todo_set_command, name="set")
     search_app.default(search_default)
     search_app.command(search_content_command, name="content")
     search_app.command(search_metadata_command, name="metadata")

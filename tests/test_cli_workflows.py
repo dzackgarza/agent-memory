@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from io import StringIO
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -937,6 +938,109 @@ def test_generic_add_refuses_plain_plan_memory(tmp_path: Path) -> None:
     assert "Traceback" not in result.stderr
     plain_plan = workspace.vault / "projects" / workspace.project_id / "plans" / "tree-less-plan.md"
     assert not plain_plan.exists()
+
+
+def write_legacy_plan_with_todos(workspace: CliWorkspace, slug: str = "legacy-plan") -> tuple[str, Path]:
+    plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / f"{slug}.md"
+    metadata: dict[str, JsonValue] = {
+        "type": "plan",
+        "title": "Legacy Plan",
+        "description": "legacy plan with mutable todos",
+        "tags": ["project", "plan"],
+        "timestamp": "2026-07-04T00:00:00Z",
+        "scope": "project",
+        "source": "agent",
+        "confidence": "high",
+        "promotable": False,
+        "project_id": workspace.project_id,
+        "custom_state": {"owner": "plan-runner", "preserve": True},
+        "todos": [
+            {
+                "id": "M1",
+                "content": "Milestone one",
+                "status": "unstarted",
+                "priority": "high",
+                "depends_on": [],
+                "note": "Keep parent note",
+                "children": [
+                    {
+                        "id": "T1",
+                        "content": "Start implementation",
+                        "status": "unstarted",
+                        "priority": "medium",
+                        "depends_on": ["T0"],
+                        "note": "old note",
+                    },
+                    {
+                        "id": "T2",
+                        "content": "Leave untouched",
+                        "status": "unstarted",
+                    },
+                ],
+            }
+        ],
+    }
+    plan_path.write_text("---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n# Legacy Plan\n\nBody text must survive.\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(plan_path.relative_to(workspace.vault))], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Seed legacy plan todo fixture"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    return f"projects/{workspace.project_id}/plans/{slug}", plan_path
+
+
+def test_todo_set_mutates_nested_plan_todo_and_preserves_record(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plan_key, plan_path = write_legacy_plan_with_todos(workspace)
+    before_body = plan_path.read_text(encoding="utf-8").split("---\n", 2)[2]
+
+    updated = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "todo",
+            "set",
+            plan_key,
+            "T1",
+            "--status",
+            "in-progress",
+            "--content",
+            "Start implementation with a committed reproducer",
+            "--note",
+            "red test landed",
+        )
+    )
+
+    assert updated["key"] == plan_key
+    assert updated["todo_id"] == "T1"
+    assert updated["status"] == "in-progress"
+    metadata = frontmatter(plan_path)
+    assert metadata["custom_state"] == {"owner": "plan-runner", "preserve": True}
+    assert plan_path.read_text(encoding="utf-8").split("---\n", 2)[2] == before_body
+    parent = json_object(json_array(cast(JsonValue, metadata["todos"]))[0])
+    assert parent["note"] == "Keep parent note"
+    target = json_object(json_array(parent["children"])[0])
+    assert target["id"] == "T1"
+    assert target["status"] == "in-progress"
+    assert target["content"] == "Start implementation with a committed reproducer"
+    assert target["note"] == "red test landed"
+    untouched = json_object(json_array(parent["children"])[1])
+    assert untouched == {"id": "T2", "content": "Leave untouched", "status": "unstarted"}
+    assert git_status_lines(workspace.vault) == set()
+    assert git_commit_subjects(workspace.vault)[0] == "Update todo T1 in plan: Legacy Plan"
+
+
+def test_todo_set_reports_clean_errors_for_invalid_inputs(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plan_key, _plan_path = write_legacy_plan_with_todos(workspace)
+
+    invalid_status = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T1", "--status", "not-a-status")
+    invalid_status_stderr = assert_structured_cli_error(invalid_status)
+    assert "invalid todo status 'not-a-status'" in invalid_status_stderr
+
+    missing_todo = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T-MISSING", "--status", "in-progress")
+    missing_todo_stderr = assert_structured_cli_error(missing_todo)
+    assert "todo id not found: T-MISSING" in missing_todo_stderr
+
+    missing_plan = run_agent_memory_subprocess(workspace.repo, "todo", "set", f"projects/{workspace.project_id}/plans/missing-plan", "T1", "--status", "in-progress")
+    missing_plan_stderr = assert_structured_cli_error(missing_plan)
+    assert "plan memory not found" in missing_plan_stderr
 
 
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ import sys
 import tomllib
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -137,6 +138,22 @@ MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.PLAN: "plans",
 }
 WRITABLE_MEMORY_TYPES: tuple[MemoryType, ...] = tuple(memory_type for memory_type in MemoryType if memory_type is not MemoryType.PLAN)
+PLAN_TODO_STATUSES: frozenset[str] = frozenset(
+    (
+        "pending",
+        "unstarted",
+        "approved-and-unstarted",
+        "in-progress",
+        "needs-agent-review",
+        "needs-human-input",
+        "revision-required",
+        "blocked",
+        "complete",
+        "decided",
+        "implemented",
+    )
+)
+PLAN_TODO_CHILD_KEYS: tuple[str, ...] = ("children", "todos", "tasks")
 
 # The directory names for every memory type, in MemoryType enum order. This is the
 # single source for both the global vault layout and the per-project layout.
@@ -702,6 +719,121 @@ def update_memory(
     if transition.new_key != transition.old_key:
         result["rewritten"] = json_list(rewritten)
     return result
+
+
+def update_plan_todo(
+    *,
+    key: str,
+    todo_id: str,
+    status: str | None,
+    content: str | None,
+    note: str | None,
+    cwd: Path,
+) -> JsonObject:
+    if status is None and content is None and note is None:
+        raise MemoryOperationError("todo set requires at least one of --status, --content, or --note")
+    if status is not None and status not in PLAN_TODO_STATUSES:
+        allowed = ", ".join(sorted(PLAN_TODO_STATUSES))
+        raise MemoryOperationError(f"invalid todo status {status!r}; allowed statuses: {allowed}")
+    if content is not None and not content.strip():
+        raise MemoryOperationError("todo content must not be empty")
+    if not todo_id.strip():
+        raise MemoryOperationError("todo id must not be empty")
+
+    config = load_project_config(cwd)
+    path = (config.vault / f"{key}.md").resolve()
+    if not path.is_relative_to(config.vault.resolve()) or not path.is_file():
+        raise MemoryOperationError(f"plan memory not found: {key}")
+
+    original_body = raw_memory_body(path)
+    document = read_memory(path)
+    if metadata_memory_type(document.metadata, path) is not MemoryType.PLAN:
+        raise MemoryOperationError(f"todo set requires a plan memory key, got {metadata_string(document.metadata, 'type', path)!r}: {key}")
+    todos_value = document.metadata.get("todos")
+    if not isinstance(todos_value, list):
+        raise MemoryOperationError(f"plan memory has no todos list: {key}")
+
+    metadata = deepcopy(document.metadata)
+    copied_todos = metadata["todos"]
+    assert isinstance(copied_todos, list), "deep-copied todos must preserve list type"
+    target = mutate_todo_tree(copied_todos, todo_id=todo_id, status=status, content=content, note=note, path=path)
+    if target is None:
+        raise MemoryOperationError(f"todo id not found: {todo_id}")
+
+    write_memory(path, metadata, original_body)
+    index_zk_notebook(config.vault)
+    title = metadata_string(metadata, "title", path)
+    try:
+        commit_vault_changes(config.vault, f"Update todo {todo_id} in plan: {title}", paths=[path])
+    except subprocess.CalledProcessError as e:
+        git_stderr = e.stderr or ""
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
+
+    result: JsonObject = {"key": key, "path": str(path), "todo_id": todo_id}
+    if status is not None:
+        result["status"] = status
+    if content is not None:
+        result["content"] = content
+    if note is not None:
+        result["note"] = note
+    return result
+
+
+def mutate_todo_tree(
+    todos: list[MetadataValue],
+    *,
+    todo_id: str,
+    status: str | None,
+    content: str | None,
+    note: str | None,
+    path: Path,
+) -> dict[str, MetadataValue] | None:
+    found: dict[str, MetadataValue] | None = None
+    for item in todos:
+        todo = todo_mapping(item, path)
+        item_id = todo.get("id")
+        if item_id == todo_id:
+            if found is not None:
+                raise MemoryOperationError(f"todo id is not unique: {todo_id}")
+            if status is not None:
+                todo["status"] = status
+            if content is not None:
+                todo["content"] = content
+            if note is not None:
+                todo["note"] = note
+            found = todo
+        for child_key in PLAN_TODO_CHILD_KEYS:
+            children = todo.get(child_key)
+            if children is None:
+                continue
+            if not isinstance(children, list):
+                raise MalformedMemoryError(path, f"todo field {child_key} must be a list")
+            child_match = mutate_todo_tree(children, todo_id=todo_id, status=status, content=content, note=note, path=path)
+            if child_match is not None:
+                if found is not None:
+                    raise MemoryOperationError(f"todo id is not unique: {todo_id}")
+                found = child_match
+    return found
+
+
+def todo_mapping(value: MetadataValue, path: Path) -> dict[str, MetadataValue]:
+    if not isinstance(value, dict):
+        raise MalformedMemoryError(path, "todo entries must be mappings")
+    for key in value:
+        if not isinstance(key, str):
+            raise MalformedMemoryError(path, "todo entry keys must be strings")
+    todo_id = value.get("id")
+    if not isinstance(todo_id, str) or not todo_id.strip():
+        raise MalformedMemoryError(path, "todo entries must contain a nonempty string id")
+    return value
+
+
+def raw_memory_body(path: Path) -> str:
+    raw = path.read_text(encoding="utf-8")
+    parts = raw.split("---\n", 2)
+    if len(parts) != 3 or parts[0] != "":
+        return read_memory(path).body
+    return parts[2]
 
 
 def delete_backlink_disposition_error(key: str, inbound_keys: Sequence[str]) -> str:
@@ -2868,6 +3000,7 @@ def inspect_schema(*, output_format: InspectOutputFormat, cwd: Path) -> JsonObje
         "commands": {
             "inspect": list(INSPECT_COMMAND_NAMES),
             "card": ["add", "update", "delete", "show", "validate", "dag", "migrate"],
+            "todo": ["set"],
             "card_types": [card_type.name for card_type in cards_config.card_types],
         },
         "scopes": [scope.value for scope in SearchScope],
