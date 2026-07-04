@@ -380,6 +380,20 @@ def initialized_git_repo(tmp_path: Path) -> GitRepo:
     return GitRepo(path=repo, project_id=init_git_repo(repo))
 
 
+def initialized_git_repo_with_remote(tmp_path: Path, name: str, repo_slug: str) -> GitRepo:
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", f"git@github.com:dzackgarza/{repo_slug}.git"],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return GitRepo(path=repo, project_id=f"github.com__dzackgarza__{repo_slug}")
+
+
 def initialized_project_workspace(tmp_path: Path, git_repo: GitRepo) -> CliWorkspace:
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
@@ -3417,6 +3431,110 @@ def test_global_op_error_names_init_global_only_when_vault_missing(tmp_path: Pat
     assert result.returncode != 0
     assert "maintain init-global" in result.stderr
     assert "init project" not in result.stderr
+
+
+def test_queue_add_and_list_round_trip_across_projects(tmp_path: Path) -> None:
+    # Issue #39: the queue is a single global-vault surface, not project-local checkout
+    # state. Two distinct project bindings that share one vault must see the same item.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
+    project_b = initialized_git_repo_with_remote(tmp_path, "project-b", "queue-project-b")
+    run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
+    run_agent_memory(project_b.path, "init", "project", "--vault", str(vault))
+
+    added = parse_json_stdout(
+        run_agent_memory(
+            project_a.path,
+            "queue",
+            "add",
+            "--project",
+            project_a.project_id,
+            "--agent",
+            "claude-1",
+            "--status",
+            "handed-off",
+            "--summary",
+            "OAuth PR half-done; token refresh untested",
+            "--link",
+            "[[PLAN-oauth]]",
+        )
+    )
+    queue_id = json_string(added["id"])
+    assert queue_id.startswith("QUEUE-")
+    queue_path = Path(json_string(added["path"]))
+    assert queue_path.is_file()
+    assert queue_path.parent == vault / "queue"
+    assert frontmatter(queue_path) == {
+        "id": queue_id,
+        "project": project_a.project_id,
+        "agent": "claude-1",
+        "status": "handed-off",
+        "summary": "OAuth PR half-done; token refresh untested",
+        "links": ["[[PLAN-oauth]]"],
+    }
+
+    listed = parse_json_stdout(run_agent_memory(project_b.path, "queue", "list"))
+    items = json_records(listed, "items")
+    assert len(items) == 1
+    item = items[0]
+    assert item["id"] == queue_id
+    assert item["path"] == str(queue_path)
+    assert item["metadata"] == frontmatter(queue_path)
+
+
+def test_queue_add_rejects_schema_invalid_items_without_writing(tmp_path: Path) -> None:
+    # Issue #39: malformed queue items are rejected by the card-schema path before any
+    # global queue file is written.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
+    run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
+
+    queue_help = run_agent_memory_subprocess(project_a.path, "queue", "add", "--help")
+    assert queue_help.returncode == 0
+    assert "queue" in queue_help.stdout
+
+    missing_summary = run_agent_memory_subprocess(
+        project_a.path,
+        "queue",
+        "add",
+        "--project",
+        project_a.project_id,
+        "--status",
+        "handed-off",
+    )
+    assert_structured_cli_error(missing_summary)
+
+    invalid_status = run_agent_memory_subprocess(
+        project_a.path,
+        "queue",
+        "add",
+        "--project",
+        project_a.project_id,
+        "--status",
+        "paused",
+        "--summary",
+        "Invalid status must not write",
+    )
+    assert_structured_cli_error(invalid_status)
+
+    unknown_field = run_agent_memory_subprocess(
+        project_a.path,
+        "queue",
+        "add",
+        "--project",
+        project_a.project_id,
+        "--status",
+        "handed-off",
+        "--summary",
+        "Unknown field must not write",
+        "--set",
+        "bogus=1",
+    )
+    assert_structured_cli_error(unknown_field)
+    queue_root = vault / "queue"
+    assert not queue_root.exists() or list(queue_root.rglob("*.md")) == []
 
 
 def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
