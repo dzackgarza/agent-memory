@@ -2516,11 +2516,8 @@ def card_title_from_metadata(path: Path, metadata: Mapping[str, MetadataValue]) 
 
 def card_scope_for_path(config: ProjectConfig, path: Path, metadata: Mapping[str, MetadataValue]) -> MemoryScope:
     scope = metadata.get("scope")
-    if isinstance(scope, str):
-        try:
-            return MemoryScope(scope)
-        except ValueError:
-            pass
+    if isinstance(scope, str) and scope in (MemoryScope.PROJECT.value, MemoryScope.GLOBAL.value):
+        return MemoryScope(scope)
     if path.is_relative_to(scope_root(config, MemoryScope.PROJECT)):
         return MemoryScope.PROJECT
     return MemoryScope.GLOBAL
