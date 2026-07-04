@@ -4,6 +4,7 @@ import json
 import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,8 +12,10 @@ import tomllib
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from io import StringIO
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -140,9 +143,14 @@ def run_agent_memory(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def run_agent_memory_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_agent_memory_subprocess(
+    cwd: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    pythonpath: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     command_env = env if env is not None else agent_memory_env()
-    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src" if pythonpath is None else pythonpath)
     return subprocess.run(
         [sys.executable, "-m", "agent_memory", *args],
         cwd=cwd,
@@ -286,11 +294,16 @@ def json_string(value: JsonValue) -> str:
     return value
 
 
+class ExpectedSyncAutoState(Enum):
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+
+
 def expected_sync_auto_status(
     env: dict[str, str] | None = None,
     interval_seconds: int | None = None,
     *,
-    enabled: bool = False,
+    state: ExpectedSyncAutoState = ExpectedSyncAutoState.DISABLED,
 ) -> JsonObject:
     source_env = env if env is not None else os.environ
     xdg_config_home = source_env.get("XDG_CONFIG_HOME")
@@ -299,7 +312,7 @@ def expected_sync_auto_status(
     timer_path = config_home / "systemd" / "user" / "agent-memory-sync.timer"
     timer_wants_path = config_home / "systemd" / "user" / "timers.target.wants" / "agent-memory-sync.timer"
     status: JsonObject = {
-        "enabled": enabled,
+        "enabled": state is ExpectedSyncAutoState.ENABLED,
         "installed": interval_seconds is not None,
         "service_path": str(service_path),
         "timer_path": str(timer_path),
@@ -925,6 +938,109 @@ def test_generic_add_refuses_plain_plan_memory(tmp_path: Path) -> None:
     assert "Traceback" not in result.stderr
     plain_plan = workspace.vault / "projects" / workspace.project_id / "plans" / "tree-less-plan.md"
     assert not plain_plan.exists()
+
+
+def write_legacy_plan_with_todos(workspace: CliWorkspace, slug: str = "legacy-plan") -> tuple[str, Path]:
+    plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / f"{slug}.md"
+    metadata: dict[str, JsonValue] = {
+        "type": "plan",
+        "title": "Legacy Plan",
+        "description": "legacy plan with mutable todos",
+        "tags": ["project", "plan"],
+        "timestamp": "2026-07-04T00:00:00Z",
+        "scope": "project",
+        "source": "agent",
+        "confidence": "high",
+        "promotable": False,
+        "project_id": workspace.project_id,
+        "custom_state": {"owner": "plan-runner", "preserve": True},
+        "todos": [
+            {
+                "id": "M1",
+                "content": "Milestone one",
+                "status": "unstarted",
+                "priority": "high",
+                "depends_on": [],
+                "note": "Keep parent note",
+                "children": [
+                    {
+                        "id": "T1",
+                        "content": "Start implementation",
+                        "status": "unstarted",
+                        "priority": "medium",
+                        "depends_on": ["T0"],
+                        "note": "old note",
+                    },
+                    {
+                        "id": "T2",
+                        "content": "Leave untouched",
+                        "status": "unstarted",
+                    },
+                ],
+            }
+        ],
+    }
+    plan_path.write_text("---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n# Legacy Plan\n\nBody text must survive.\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(plan_path.relative_to(workspace.vault))], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Seed legacy plan todo fixture"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    return f"projects/{workspace.project_id}/plans/{slug}", plan_path
+
+
+def test_todo_set_mutates_nested_plan_todo_and_preserves_record(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plan_key, plan_path = write_legacy_plan_with_todos(workspace)
+    before_body = plan_path.read_text(encoding="utf-8").split("---\n", 2)[2]
+
+    updated = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "todo",
+            "set",
+            plan_key,
+            "T1",
+            "--status",
+            "in-progress",
+            "--content",
+            "Start implementation with a committed reproducer",
+            "--note",
+            "red test landed",
+        )
+    )
+
+    assert updated["key"] == plan_key
+    assert updated["todo_id"] == "T1"
+    assert updated["status"] == "in-progress"
+    metadata = frontmatter(plan_path)
+    assert metadata["custom_state"] == {"owner": "plan-runner", "preserve": True}
+    assert plan_path.read_text(encoding="utf-8").split("---\n", 2)[2] == before_body
+    parent = json_object(json_array(cast(JsonValue, metadata["todos"]))[0])
+    assert parent["note"] == "Keep parent note"
+    target = json_object(json_array(parent["children"])[0])
+    assert target["id"] == "T1"
+    assert target["status"] == "in-progress"
+    assert target["content"] == "Start implementation with a committed reproducer"
+    assert target["note"] == "red test landed"
+    untouched = json_object(json_array(parent["children"])[1])
+    assert untouched == {"id": "T2", "content": "Leave untouched", "status": "unstarted"}
+    assert git_status_lines(workspace.vault) == set()
+    assert git_commit_subjects(workspace.vault)[0] == "Update todo T1 in plan: Legacy Plan"
+
+
+def test_todo_set_reports_clean_errors_for_invalid_inputs(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plan_key, _plan_path = write_legacy_plan_with_todos(workspace)
+
+    invalid_status = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T1", "--status", "not-a-status")
+    invalid_status_stderr = assert_structured_cli_error(invalid_status)
+    assert "invalid todo status 'not-a-status'" in invalid_status_stderr
+
+    missing_todo = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T-MISSING", "--status", "in-progress")
+    missing_todo_stderr = assert_structured_cli_error(missing_todo)
+    assert "todo id not found: T-MISSING" in missing_todo_stderr
+
+    missing_plan = run_agent_memory_subprocess(workspace.repo, "todo", "set", f"projects/{workspace.project_id}/plans/missing-plan", "T1", "--status", "in-progress")
+    missing_plan_stderr = assert_structured_cli_error(missing_plan)
+    assert "plan memory not found" in missing_plan_stderr
 
 
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
@@ -1720,18 +1836,7 @@ def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> Non
         plan_title="Managed Plan",
         description_signal="managed",
     )
-    unmigrated = (
-        workspace.vault
-        / "projects"
-        / workspace.project_id
-        / "harnesses"
-        / "codex"
-        / "memories"
-        / "extensions"
-        / "ad_hoc"
-        / "notes"
-        / "stranded-plan.md"
-    )
+    unmigrated = workspace.vault / "projects" / workspace.project_id / "harnesses" / "codex" / "memories" / "extensions" / "ad_hoc" / "notes" / "stranded-plan.md"
     write_unmigrated_plan(unmigrated, "Stranded Harness Plan", workspace.project_id)
 
     doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
@@ -1937,13 +2042,13 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert enabled.returncode == 0
     assert parse_json_stdout(enabled) == {
-        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED),
         "vault": str(vault),
     }
     assert timer_wants_path.is_symlink()
     assert timer_wants_path.resolve() == timer_path.resolve()
     enabled_status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
-    assert enabled_status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300, enabled=True)
+    assert enabled_status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED)
 
     disabled = run_agent_memory_subprocess(loose, "sync", "disable", env=env)
 
@@ -1958,7 +2063,7 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert enabled_again.returncode == 0
     assert parse_json_stdout(enabled_again) == {
-        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED),
         "vault": str(vault),
     }
 
@@ -2063,6 +2168,21 @@ def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path
     assert excinfo.value.code == 0
     payload = json.loads(stdout.getvalue())
     assert payload["project_root"] == str(workspace.repo)
+
+
+def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    test_src = tmp_path / "src"
+    shutil.copytree(PROJECT_ROOT / "src", test_src)
+    cards_yaml = test_src / "agent_memory" / "defaults" / "cards.yaml"
+    cards_yaml.write_text("statuses: [unterminated\n", encoding="utf-8")
+
+    result = run_agent_memory_subprocess(workspace.repo, "plan", "validate", pythonpath=test_src)
+
+    stderr = assert_structured_cli_error(result)
+    assert str(cards_yaml) in stderr
+    assert "cards.yaml" in stderr
+    assert "ParserError" not in stderr
 
 
 def test_python_dash_m_agent_memory_module_entrypoint_runs_doctor(tmp_path: Path) -> None:
@@ -3654,6 +3774,37 @@ def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> N
     assert unsupported_type in stderr
     assert {"feature", "task"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr)))
     assert list(workspace.vault.rglob(f"{unsupported_id}.md")) == []
+
+
+def test_generated_card_update_unknown_id_prefix_is_structured_cli_error(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    unsupported_id = "MILESTONE-1"
+
+    result = run_agent_memory_subprocess(workspace.repo, "plan", "update", unsupported_id, "--set", "title=x")
+
+    stderr = assert_structured_cli_error(result)
+    assert unsupported_id in stderr
+    assert {"FEATURE", "PLAN", "TASK"}.issubset(set(re.findall(r"[A-Z][A-Z_-]+", stderr)))
+
+
+def test_root_list_global_memory_type_does_not_require_project_card_schema(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    global_decision = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="decision",
+        title="Schema Independent Decision",
+        content="Global memory listing must not depend on project card schema.",
+    )
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True, exist_ok=True)
+    cards_path.write_text("not: [valid\n", encoding="utf-8")
+
+    listed = parse_json_stdout(run_agent_memory_module(workspace.repo, "list", "--type", "decision", "--scope", "global"))
+
+    assert listed["type"] == "decision"
+    assert listed["scope"] == "global"
+    assert set(records_by_key(listed, "results")) == {global_decision["key"]}
 
 
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
