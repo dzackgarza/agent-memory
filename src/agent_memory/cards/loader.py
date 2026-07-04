@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 
 import yaml
@@ -15,11 +16,11 @@ _CARDS_SCHEMA_PATH = "cards.yaml"
 class CardConfigError(ValueError):
     """Raised when a card schema cannot be loaded."""
 
-    def __init__(self, path: Path, detail: str) -> None:
+    def __init__(self, path: Traversable, detail: str) -> None:
         super().__init__(f"Malformed card schema file {path}: {detail}")
 
 
-def _load_cards_payload(path: Path) -> dict:
+def _load_cards_payload(path: Traversable) -> dict:
     try:
         raw = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
@@ -46,12 +47,12 @@ def load_card_system_config(vault: Path | None = None, project_id: str | None = 
                 except ValidationError as error:
                     raise CardConfigError(candidate, f"schema validation failed: {error}") from error
 
-    payload = _load_cards_payload(Path(str(resources.files("agent_memory.defaults").joinpath(_CARDS_SCHEMA_PATH))))
+    default_schema = resources.files("agent_memory.defaults").joinpath(_CARDS_SCHEMA_PATH)
+    payload = _load_cards_payload(default_schema)
     try:
         return CardSystemConfig.model_validate(payload)
     except ValidationError as error:
-        path = Path(str(resources.files("agent_memory.defaults").joinpath(_CARDS_SCHEMA_PATH)))
-        raise CardConfigError(path, f"schema validation failed: {error}") from error
+        raise CardConfigError(default_schema, f"schema validation failed: {error}") from error
 
 
 def load_card_models() -> dict[str, type[BaseModel]]:
