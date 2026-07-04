@@ -16,6 +16,7 @@ from datetime import date, datetime
 from enum import Enum
 from importlib import resources
 from pathlib import Path
+from uuid import uuid4
 
 import frontmatter
 import tomli_w
@@ -31,7 +32,7 @@ from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
 from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, split_card
 from agent_memory.cards.storage import update_card as write_card_updates
-from agent_memory.cards.validation import load_card_records, validate_cards
+from agent_memory.cards.validation import CardRecord, load_card_records, validate_cards
 from agent_memory.models import (
     BaseNoteMetadata,
     GlobalNoteMetadata,
@@ -173,6 +174,9 @@ INSPECT_COMMAND_NAMES: tuple[str, ...] = (
     "recent",
     "export",
 )
+QUEUE_CARD_TYPE = "queue-item"
+QUEUE_CARD_ID_PREFIX = "QUEUE"
+QUEUE_DIRECTORY = "queue"
 
 
 def index_descriptions(scope: MemoryScope) -> dict[str, str]:
@@ -183,6 +187,7 @@ def index_descriptions(scope: MemoryScope) -> dict[str, str]:
 VAULT_DIRECTORIES: tuple[Path, ...] = (
     *(Path("global") / name for name in MEMORY_TYPE_DIRECTORY_NAMES),
     Path("projects"),
+    Path(QUEUE_DIRECTORY),
     Path("inbox/unsorted"),
     Path("inbox/project"),
     Path("inbox/global"),
@@ -467,6 +472,10 @@ def normalize_vault_path(vault: Path) -> Path:
     return vault.expanduser().resolve(strict=False)
 
 
+def default_cards_schema_text() -> str:
+    return resources.files("agent_memory.defaults").joinpath("cards.yaml").read_text(encoding="utf-8")
+
+
 def init_global_vault(vault: Path) -> JsonObject:
     vault = normalize_vault_path(vault)
     vault.mkdir(parents=True)
@@ -496,6 +505,7 @@ def init_global_vault(vault: Path) -> JsonObject:
     )
     write_section_indexes(vault / "global", MEMORY_TYPE_DIRECTORY_NAMES)
     write_new_file(vault / "_meta" / "projects.toml", tomli_w.dumps({"projects": []}))
+    write_new_file(vault / "_meta" / "cards.yaml", default_cards_schema_text())
     index_zk_notebook(vault)
     commit_vault_changes(vault, "Initialize agent-memory vault")
     return {"vault": str(vault)}
@@ -3763,8 +3773,22 @@ def load_card_system(config: ProjectConfig | None = None) -> tuple[CardSystemCon
     return cards_config, build_card_models(cards_config)
 
 
+def load_global_queue_card_system(config: ProjectConfig) -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
+    schema_path = config.vault / "_meta" / "cards.yaml"
+    if not schema_path.is_file():
+        raise MemoryOperationError(f"global queue requires vault card schema: {schema_path}")
+    cards_config = load_card_system_config(config.vault, None)
+    if not any(card_type.name == QUEUE_CARD_TYPE for card_type in cards_config.card_types):
+        raise MemoryOperationError(f"global queue schema must declare card type {QUEUE_CARD_TYPE}")
+    return cards_config, build_card_models(cards_config)
+
+
 def project_plans_root(config: ProjectConfig, cards_config: CardSystemConfig) -> Path:
     return config.vault / "projects" / require_project_id(config) / cards_config.root
+
+
+def global_queue_root(config: ProjectConfig) -> Path:
+    return config.vault / QUEUE_DIRECTORY
 
 
 def all_plans_roots(config: ProjectConfig, cards_config: CardSystemConfig) -> list[Path]:
@@ -3829,6 +3853,20 @@ def parse_card_fields(
     return fields
 
 
+def rollback_created_vault_path(vault: Path, path: Path) -> None:
+    run_checked_optional(["git", "reset", "HEAD", "--", str(path.relative_to(vault))], cwd=vault)
+    if not path.exists():
+        return
+    path.unlink()
+    parent_dir = path.parent
+    while parent_dir != vault:
+        try:
+            parent_dir.rmdir()
+            parent_dir = parent_dir.parent
+        except OSError:
+            break
+
+
 def add_card(
     type_name: str,
     card_id: str,
@@ -3838,6 +3876,8 @@ def add_card(
     cwd: Path,
     empty_set: Sequence[str] | None = None,
 ) -> JsonObject:
+    if type_name == QUEUE_CARD_TYPE:
+        raise MemoryOperationError("queue-item cards are global queue records; use `agent-memory queue add`")
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
     fields = parse_card_fields(cards_config, type_name, assignments, empty_set=empty_set)
@@ -3855,22 +3895,121 @@ def add_card(
     try:
         commit_vault_changes(config.vault, f"Add {type_name} card: {card_id}", paths=[path])
     except subprocess.CalledProcessError as e:
-        # Rollback!
-        run_checked_optional(["git", "reset", "HEAD", "--", str(path.relative_to(config.vault))], cwd=config.vault)
-        if path.exists():
-            path.unlink()
-            # Clean up empty parent directories if created
-            parent_dir = path.parent
-            while parent_dir != config.vault:
-                try:
-                    parent_dir.rmdir()
-                    parent_dir = parent_dir.parent
-                except OSError:
-                    break
+        rollback_created_vault_path(config.vault, path)
         git_stderr = e.stderr or ""
         raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
     return {"id": card_id, "path": str(path)}
+
+
+def new_queue_card_id() -> str:
+    return f"{QUEUE_CARD_ID_PREFIX}-{uuid4().hex.upper()}"
+
+
+def queue_assignments(
+    *,
+    project: str | None,
+    agent: str | None,
+    status: str | None,
+    summary: str | None,
+    timestamp: str | None,
+    links: Sequence[str],
+    extra_assignments: Sequence[str],
+) -> list[str]:
+    assignments: list[str] = []
+    for key, value in (
+        ("project", project),
+        ("agent", agent),
+        ("status", status),
+        ("summary", summary),
+        ("timestamp", timestamp),
+    ):
+        if value is not None:
+            assignments.append(f"{key}={value}")
+    assignments.extend(f"links={link}" for link in links)
+    assignments.extend(extra_assignments)
+    return assignments
+
+
+def add_queue_item(
+    *,
+    project: str | None,
+    agent: str | None,
+    status: str | None,
+    summary: str | None,
+    timestamp: str | None,
+    links: Sequence[str],
+    extra_assignments: Sequence[str],
+    cwd: Path,
+) -> JsonObject:
+    config = config_for_memory_scope(MemoryScope.GLOBAL, cwd)
+    cards_config, models = load_global_queue_card_system(config)
+    card_id = new_queue_card_id()
+    fields = parse_card_fields(
+        cards_config,
+        QUEUE_CARD_TYPE,
+        queue_assignments(
+            project=project,
+            agent=agent,
+            status=status,
+            summary=summary,
+            timestamp=timestamp,
+            links=links,
+            extra_assignments=extra_assignments,
+        ),
+    )
+    body_title = summary if summary is not None else card_id
+    path = create_card(
+        global_queue_root(config),
+        cards_config,
+        models,
+        type_name=QUEUE_CARD_TYPE,
+        card_id=card_id,
+        parent_id=None,
+        fields=fields,
+        body=f"# {body_title}\n",
+    )
+
+    try:
+        commit_vault_changes(config.vault, f"Add queue item: {card_id}", paths=[path])
+    except subprocess.CalledProcessError as e:
+        rollback_created_vault_path(config.vault, path)
+        git_stderr = e.stderr or ""
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
+
+    return {"id": card_id, "path": str(path)}
+
+
+def json_card_value(value: object) -> JsonValue:
+    if value is None or isinstance(value, str | bool | int | float):
+        return value
+    if isinstance(value, list):
+        return json_list([json_card_value(item) for item in value])
+    if isinstance(value, dict):
+        return {str(key): json_card_value(item) for key, item in value.items()}
+    raise AssertionError(f"card metadata value is not JSON-serializable: {value!r}")
+
+
+def queue_item_json(record: CardRecord) -> JsonObject:
+    card_id = record.metadata.get("id")
+    assert isinstance(card_id, str), f"queue item must have string id: {record.path}"
+    return {
+        "id": card_id,
+        "path": str(record.path),
+        "metadata": {str(key): json_card_value(value) for key, value in record.metadata.items()},
+    }
+
+
+def list_queue_items(cwd: Path) -> JsonObject:
+    config = config_for_memory_scope(MemoryScope.GLOBAL, cwd)
+    cards_config, models = load_global_queue_card_system(config)
+    records = load_card_records([global_queue_root(config)], cards_config, models)
+    queue_records = [
+        queue_item_json(record)
+        for _card_id, record in sorted(records.items())
+        if record.type_name == QUEUE_CARD_TYPE
+    ]
+    return {"items": json_list(queue_records)}
 
 
 def update_card_record(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:

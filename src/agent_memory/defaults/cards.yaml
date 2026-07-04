@@ -12,6 +12,9 @@ statuses:
   - approved-and-unstarted
   - decided
   - implemented
+  - pending
+  - handed-off
+  - done
 status_sets:
   standard:
     default: unstarted
@@ -44,6 +47,15 @@ status_sets:
       - needs-human-input
       - decided
       - implemented
+  queue:
+    default: pending
+    required: true
+    options:
+      - pending
+      - in-progress
+      - handed-off
+      - blocked
+      - done
 card_types:
   - name: feature
     id_prefix: FEATURE
@@ -446,8 +458,33 @@ card_types:
         type: string_list
     container: decisions
     own_dir: false
-# Status lifecycle roles ported from ~/ai/planning/status-catalog.yaml (minus "done",
-# which is not a status in this catalog). complete statuses are also started statuses.
+  - name: queue-item
+    id_prefix: QUEUE
+    status_set: queue
+    parents: []
+    fields:
+      - name: id
+        type: string
+        required: true
+      - name: project
+        type: string
+        required: true
+      - name: agent
+        type: user
+      - name: status
+        type: status
+        required: true
+      - name: summary
+        type: text
+        required: true
+      - name: timestamp
+        type: string
+      - name: links
+        type: wikilink_list
+    container: ''
+    own_dir: false
+# Status lifecycle roles ported from ~/ai/planning/status-catalog.yaml. complete statuses
+# are also started statuses.
 workflow_roles:
   started:
     - in-progress
@@ -458,10 +495,13 @@ workflow_roles:
     - blocked
     - decided
     - implemented
+    - handed-off
+    - done
   complete:
     - complete
     - decided
     - implemented
+    - done
   unstarted:
     - unstarted
     - approved-and-unstarted

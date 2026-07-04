@@ -37,9 +37,11 @@ from agent_memory.operations import (
     MalformedMemoryError,
     MemoryOperationError,
     ProjectNotInitializedError,
+    QUEUE_CARD_TYPE,
     VaultCommitError,
     add_card,
     add_memory,
+    add_queue_item,
     basic_doctor,
     bundled_skill_text,
     config_for_schema_advertisement,
@@ -64,6 +66,7 @@ from agent_memory.operations import (
     install_sync_systemd_timer,
     list_cards,
     list_cards_with_unmigrated,
+    list_queue_items,
     load_card_system,
     merge_memory,
     migrate_cards,
@@ -109,6 +112,7 @@ card_app = app.command(App(name="card", help="Operate on schema-defined vault-ba
 sync_app = app.command(App(name="sync", help="Synchronize the configured memory vault with its git remote."))
 links_app = app.command(App(name="links", help="Inspect and rewrite vault links."))
 todo_app = app.command(App(name="todo", help="Mutate structured todos on vault plan records."))
+queue_app = app.command(App(name="queue", help="Append and list global agent work queue items."))
 
 
 class CliUsageError(RuntimeError):
@@ -229,6 +233,47 @@ def todo_set_command(
 ) -> None:
     """Update one todo node in a plan memory record."""
     emit(update_plan_todo(key=key, todo_id=todo_id, status=status, content=content, note=note, cwd=Path.cwd()))
+
+
+def queue_add_command(
+    *,
+    project: Annotated[str | None, Parameter(help="Project id the queue item belongs to.")] = None,
+    agent: Annotated[str | None, Parameter(help="Agent or user handing off the work.")] = None,
+    status: Annotated[str | None, Parameter(help="Queue status from the vault card schema.")] = None,
+    summary: Annotated[str | None, Parameter(help="Queue item summary.")] = None,
+    timestamp: Annotated[str | None, Parameter(help="Optional timestamp string.")] = None,
+    link: Annotated[
+        list[str] | None,
+        Parameter(help="Related wikilink; repeat for multiple links.", negative_iterable=[], allow_leading_hyphen=True),
+    ] = None,
+    set_: Annotated[
+        list[str] | None,
+        Parameter(
+            name="set",
+            help="Additional schema field assignment key=value.",
+            negative_iterable=[],
+            allow_leading_hyphen=True,
+        ),
+    ] = None,
+) -> None:
+    """Add a global queue item using the vault queue-item schema."""
+    emit(
+        add_queue_item(
+            project=project,
+            agent=agent,
+            status=status,
+            summary=summary,
+            timestamp=timestamp,
+            links=link or [],
+            extra_assignments=set_ or [],
+            cwd=Path.cwd(),
+        )
+    )
+
+
+def queue_list_command() -> None:
+    """List global queue items from the configured vault."""
+    emit(list_queue_items(cwd=Path.cwd()))
 
 
 def search_default(
@@ -690,6 +735,7 @@ ROOT_COMMAND_NAMES = {
     "sync",
     "links",
     "todo",
+    "queue",
     "add",
     "update",
     "delete",
@@ -717,6 +763,8 @@ def register_commands(registration_state: CardConfigRegistrationState) -> None:
     app.command(delete_command, name="delete")
     app.command(list_command, name="list")
     todo_app.command(todo_set_command, name="set")
+    queue_app.command(queue_add_command, name="add")
+    queue_app.command(queue_list_command, name="list")
     search_app.default(search_default)
     search_app.command(search_content_command, name="content")
     search_app.command(search_metadata_command, name="metadata")
@@ -761,6 +809,8 @@ def register_commands(registration_state: CardConfigRegistrationState) -> None:
 
 def register_generated_card_type_commands(config: CardSystemConfig) -> None:
     for card_type in config.card_types:
+        if card_type.name == QUEUE_CARD_TYPE:
+            continue
         assert card_type.name not in ROOT_COMMAND_NAMES, f"card type collides with root CLI command: {card_type.name}"
         type_app = app.command(App(name=card_type.name, help=f"{card_type.name} cards from the active card schema."))
         add_command_for_type = generated_card_add_command(card_type)

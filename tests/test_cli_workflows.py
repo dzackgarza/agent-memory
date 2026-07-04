@@ -3537,6 +3537,56 @@ def test_queue_add_rejects_schema_invalid_items_without_writing(tmp_path: Path) 
     assert not queue_root.exists() or list(queue_root.rglob("*.md")) == []
 
 
+def test_queue_add_requires_vault_owned_card_schema(tmp_path: Path) -> None:
+    # Issue #39: the global queue is a vault-owned card surface. Removing the vault schema
+    # must fail loudly rather than falling back to the packaged schema.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    (vault / "_meta" / "cards.yaml").unlink()
+    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
+    run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
+
+    result = run_agent_memory_subprocess(
+        project_a.path,
+        "queue",
+        "add",
+        "--project",
+        project_a.project_id,
+        "--status",
+        "handed-off",
+        "--summary",
+        "Missing vault schema must not write",
+    )
+
+    stderr = assert_structured_cli_error(result)
+    assert "global queue requires vault card schema" in stderr
+    assert list((vault / "queue").rglob("*.md")) == []
+
+
+def test_queue_item_cannot_be_added_through_project_card_command(tmp_path: Path) -> None:
+    # Issue #39: queue-item is a schema-defined card type, but creation belongs to the
+    # global queue command, not the project-local generic card command.
+    workspace = initialized_workspace(tmp_path)
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "card",
+        "add",
+        "queue-item",
+        "QUEUE-LOCAL",
+        "--set",
+        f"project={workspace.project_id}",
+        "--set",
+        "status=handed-off",
+        "--set",
+        "summary=Project-local queue writes are invalid",
+    )
+
+    stderr = assert_structured_cli_error(result)
+    assert "agent-memory queue add" in stderr
+    assert list(workspace.vault.rglob("QUEUE-LOCAL.md")) == []
+
+
 def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Card Schema System (PR #35): `inspect schema` must advertise the card types the
     # *configured* vault will actually enforce and route by. From an unbound cwd with a
