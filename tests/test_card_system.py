@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import zipfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -309,3 +313,41 @@ def test_load_card_system_config_falls_back_to_packaged_defaults_if_project_card
     vault.mkdir()
     config = load_card_system_config(vault)
     assert {card_type.name for card_type in config.card_types} >= {"feature", "plan", "phase", "task"}
+
+
+def test_load_card_system_config_reads_packaged_defaults_from_zip_resource(tmp_path: Path) -> None:
+    package_zip = tmp_path / "agent_memory_pkg.zip"
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    packaged_files = (
+        "agent_memory/__init__.py",
+        "agent_memory/cards/__init__.py",
+        "agent_memory/cards/config.py",
+        "agent_memory/cards/factory.py",
+        "agent_memory/cards/loader.py",
+        "agent_memory/defaults/__init__.py",
+        "agent_memory/defaults/cards.yaml",
+    )
+    with zipfile.ZipFile(package_zip, "w") as archive:
+        for relative_path in packaged_files:
+            archive.write(source_root / relative_path, relative_path)
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(package_zip)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from agent_memory.cards.loader import load_card_system_config; "
+                "config = load_card_system_config(); "
+                "print('\\n'.join(card_type.name for card_type in config.card_types))"
+            ),
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert {"feature", "plan", "task"}.issubset(set(result.stdout.splitlines()))

@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from agent_memory.cards.config import CardSystemConfig, CardTypeSpec
 from agent_memory.cards.loader import CardConfigError
-from agent_memory.cards.storage import CardPlacementError
+from agent_memory.cards.storage import CardLookupError, CardPlacementError
 from agent_memory.models import (
     ContentSearchMode,
     InspectExportFormat,
@@ -678,6 +678,7 @@ ROOT_COMMAND_NAMES = {
     "add",
     "update",
     "delete",
+    "list",
     "retrieve",
     "doctor",
 }
@@ -857,6 +858,7 @@ def main() -> None:
         raise SystemExit(1)
     except (
         CardConfigError,
+        CardLookupError,
         CardPlacementError,
         CardFieldError,
         CliUsageError,
