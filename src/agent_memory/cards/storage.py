@@ -12,9 +12,15 @@ class CardPlacementError(ValueError):
     """Raised when card filesystem placement is invalid for its type."""
 
 
+class CardLookupError(ValueError):
+    """Raised when a card id does not match any configured card type's id prefix."""
+
+
 def card_type_for_id(config: CardSystemConfig, card_id: str) -> CardTypeSpec:
     matches = [card_type for card_type in config.card_types if card_id.startswith(f"{card_type.id_prefix}-")]
-    assert matches, f"no card type matches id prefix: {card_id}"
+    if not matches:
+        known_prefixes = ", ".join(card_type.id_prefix for card_type in config.card_types)
+        raise CardLookupError(f"no card type matches id prefix: {card_id} (known prefixes: {known_prefixes})")
     return max(matches, key=lambda card_type: len(card_type.id_prefix))
 
 

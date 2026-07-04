@@ -4,6 +4,7 @@ import json
 import shutil
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -12,7 +13,8 @@ from cyclopts import App, Parameter
 from pydantic import ValidationError
 
 from agent_memory.cards.config import CardSystemConfig, CardTypeSpec
-from agent_memory.cards.storage import CardPlacementError
+from agent_memory.cards.loader import CardConfigError
+from agent_memory.cards.storage import CardLookupError, CardPlacementError
 from agent_memory.models import (
     ContentSearchMode,
     InspectExportFormat,
@@ -43,6 +45,8 @@ from agent_memory.operations import (
     config_for_schema_advertisement,
     delete_card_record,
     delete_memory,
+    delete_memory_orphaning_backlinks,
+    delete_memory_repointing_backlinks,
     disable_sync_systemd_timer,
     enable_sync_systemd_timer,
     init_global_vault,
@@ -59,6 +63,7 @@ from agent_memory.operations import (
     inspect_tree,
     install_sync_systemd_timer,
     list_cards,
+    list_cards_with_unmigrated,
     load_card_system,
     merge_memory,
     migrate_cards,
@@ -106,6 +111,19 @@ links_app = app.command(App(name="links", help="Inspect and rewrite vault links.
 
 class CliUsageError(RuntimeError):
     """Raised when arguments are coherent CLI syntax but invalid together."""
+
+
+@dataclass(frozen=True)
+class CardConfigAvailable:
+    config: CardSystemConfig
+
+
+@dataclass(frozen=True)
+class CardConfigUnavailable:
+    error: CardConfigError
+
+
+type CardConfigRegistrationState = CardConfigAvailable | CardConfigUnavailable
 
 
 def maintain_init_global(
@@ -188,7 +206,15 @@ def delete_command(
     ] = False,
 ) -> None:
     """Delete a memory and clean its index entry."""
-    emit(delete_memory(key=key, repoint=repoint, orphan_ok=orphan_ok, cwd=Path.cwd()))
+    if repoint is not None and orphan_ok:
+        raise MemoryOperationError("delete accepts --repoint or --orphan-ok, not both")
+    if repoint is not None:
+        emit(delete_memory_repointing_backlinks(key=key, repoint=repoint, cwd=Path.cwd()))
+        return
+    if orphan_ok:
+        emit(delete_memory_orphaning_backlinks(key=key, cwd=Path.cwd()))
+        return
+    emit(delete_memory(key=key, cwd=Path.cwd()))
 
 
 def search_default(
@@ -446,7 +472,10 @@ def list_command(
     unmigrated: Annotated[bool, Parameter(help="Include records stranded outside managed global/project folders.")] = False,
 ) -> None:
     """List managed cards/memories and optionally stranded harness-local records."""
-    emit(list_cards(card_type=type_, scope=scope, include_unmigrated=unmigrated, cwd=Path.cwd()))
+    if unmigrated:
+        emit(list_cards_with_unmigrated(card_type=type_, scope=scope, cwd=Path.cwd()))
+        return
+    emit(list_cards(card_type=type_, scope=scope, cwd=Path.cwd()))
 
 
 def resolve_card_body(card_id: str, body: str | None, body_file: Path | None) -> str:
@@ -649,6 +678,7 @@ ROOT_COMMAND_NAMES = {
     "add",
     "update",
     "delete",
+    "list",
     "retrieve",
     "doctor",
 }
@@ -663,7 +693,7 @@ def active_card_config() -> CardSystemConfig:
     return cards_config
 
 
-def register_commands() -> None:
+def register_commands(registration_state: CardConfigRegistrationState) -> None:
     maintain_app.command(maintain_init_global, name="init-global")
     maintain_app.command(maintain_skill_command, name="skill")
     init_app.command(init_project_command, name="project")
@@ -701,7 +731,8 @@ def register_commands() -> None:
     card_app.command(card_validate_command, name="validate")
     card_app.command(card_dag_command, name="dag")
     card_app.command(card_migrate_command, name="migrate")
-    register_generated_card_type_commands(active_card_config())
+    if isinstance(registration_state, CardConfigAvailable):
+        register_generated_card_type_commands(registration_state.config)
     links_app.command(links_rewrite_command, name="rewrite")
     sync_app.command(sync_run_command, name="run")
     sync_app.command(sync_status_command, name="status")
@@ -766,8 +797,15 @@ def card_type_add_help_text(config: CardSystemConfig, card_type: CardTypeSpec) -
     return "\n".join(doc)
 
 
-card_add_command.__doc__ = card_add_help_text(active_card_config())
-register_commands()
+try:
+    active_config = active_card_config()
+except CardConfigError as error:
+    CARD_CONFIG_REGISTRATION_STATE: CardConfigRegistrationState = CardConfigUnavailable(error)
+else:
+    CARD_CONFIG_REGISTRATION_STATE = CardConfigAvailable(active_config)
+    card_add_command.__doc__ = card_add_help_text(active_config)
+
+register_commands(CARD_CONFIG_REGISTRATION_STATE)
 
 
 def emit(payload: Mapping[str, JsonValue]) -> None:
@@ -787,10 +825,19 @@ def missing_argument_message(error: cyclopts.exceptions.MissingArgumentError, ar
     return message
 
 
+def command_requires_card_schema(arguments: list[str]) -> bool:
+    if not arguments or arguments[0].startswith("-"):
+        return False
+    return arguments[0] == "card" or arguments[0] not in ROOT_COMMAND_NAMES
+
+
 def main() -> None:
     scope_hint = add_command_scope_hint(sys.argv[1:])
     if scope_hint is not None:
         print(f"Error: {scope_hint}", file=sys.stderr)
+        raise SystemExit(1)
+    if isinstance(CARD_CONFIG_REGISTRATION_STATE, CardConfigUnavailable) and command_requires_card_schema(sys.argv[1:]):
+        print(f"Error: {CARD_CONFIG_REGISTRATION_STATE.error}", file=sys.stderr)
         raise SystemExit(1)
 
     try:
@@ -810,6 +857,8 @@ def main() -> None:
         print("Error: Validation failed:\n" + "\n".join(msgs), file=sys.stderr)
         raise SystemExit(1)
     except (
+        CardConfigError,
+        CardLookupError,
         CardPlacementError,
         CardFieldError,
         CliUsageError,
