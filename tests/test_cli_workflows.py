@@ -2548,6 +2548,13 @@ def assert_note_finding(payload: JsonObject, note: Path, workspace: CliWorkspace
     return finding
 
 
+def write_raw_project_plan(workspace: CliWorkspace, slug: str, text: str) -> Path:
+    note = workspace.vault / "projects" / workspace.project_id / "plans" / f"{slug}.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(text, encoding="utf-8")
+    return note
+
+
 def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     good = add_cli_memory(
@@ -2582,6 +2589,67 @@ def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path)
     assert "UTF-8" in json_string(utf8_finding["message"])
     mixed_tags_finding = assert_note_finding(payload, mixed_tags, workspace)
     assert "tags" in json_string(mixed_tags_finding["message"])
+
+
+def test_inspect_export_returns_nested_todo_plan_and_malformed_note_finding(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    good = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Export Survives",
+        content="well-formed export node",
+    )
+    nested_plan = write_raw_project_plan(
+        workspace,
+        "nested-todo-tree",
+        """---
+type: plan
+scope: project
+title: Nested Todo Tree
+description: nested todo_tree must not abort export
+tags: [project, plan]
+timestamp: 2026-07-04T00:00:00Z
+todo_tree:
+  - id: T1
+    content: Reproduce nested plan state
+    status: in-progress
+    children:
+      - id: T1.1
+        content: Child task
+        status: unstarted
+---
+# Nested Todo Tree
+
+Nested todo-tree plan body.
+""",
+    )
+    bad = write_raw_project_note(
+        workspace,
+        "bad-export-tags",
+        "---\ntype: decision\nscope: project\ntitle: Bad Export Tags\ndescription: x\ntags: project\n---\nBody.\n",
+    )
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "inspect",
+        "export",
+        "--scope",
+        "project",
+        "--profile",
+        "map",
+        "--format",
+        "graph-json",
+    )
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    node_keys = {json_string(record["key"]) for record in json_records(payload, "nodes")}
+    assert json_string(good["key"]) in node_keys
+    assert nested_plan.relative_to(workspace.vault).with_suffix("").as_posix() in node_keys
+    finding = assert_note_finding(payload, bad, workspace)
+    assert "tags" in json_string(finding["message"])
 
 
 def test_inspect_overview_reports_malformed_note_findings(tmp_path: Path) -> None:
