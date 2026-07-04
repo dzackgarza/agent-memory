@@ -40,7 +40,15 @@ def seed_feature_chain(root: Path, suffix: str, config: CardSystemConfig, models
         type_name="plan",
         card_id=plan,
         parent_id=feature,
-        fields={"title": "P", "status": "in-progress", "description": "d", "parents": [f"[[{feature}]]"], "successCriteria": ["c"], "tasks": [f"[[{task}]]"], "tags": [feature]},
+        fields={
+            "title": "P",
+            "status": "in-progress",
+            "description": "d",
+            "parents": [f"[[{feature}]]"],
+            "successCriteria": ["c"],
+            "tasks": [f"[[{task}]]"],
+            "tags": [feature],
+        },
         body="# P\n",
     )
     create_card(

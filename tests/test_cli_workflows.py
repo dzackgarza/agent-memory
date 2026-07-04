@@ -4,6 +4,7 @@ import json
 import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -140,9 +141,14 @@ def run_agent_memory(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def run_agent_memory_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_agent_memory_subprocess(
+    cwd: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    pythonpath: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     command_env = env if env is not None else agent_memory_env()
-    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src" if pythonpath is None else pythonpath)
     return subprocess.run(
         [sys.executable, "-m", "agent_memory", *args],
         cwd=cwd,
@@ -1720,18 +1726,7 @@ def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> Non
         plan_title="Managed Plan",
         description_signal="managed",
     )
-    unmigrated = (
-        workspace.vault
-        / "projects"
-        / workspace.project_id
-        / "harnesses"
-        / "codex"
-        / "memories"
-        / "extensions"
-        / "ad_hoc"
-        / "notes"
-        / "stranded-plan.md"
-    )
+    unmigrated = workspace.vault / "projects" / workspace.project_id / "harnesses" / "codex" / "memories" / "extensions" / "ad_hoc" / "notes" / "stranded-plan.md"
     write_unmigrated_plan(unmigrated, "Stranded Harness Plan", workspace.project_id)
 
     doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
@@ -2063,6 +2058,21 @@ def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path
     assert excinfo.value.code == 0
     payload = json.loads(stdout.getvalue())
     assert payload["project_root"] == str(workspace.repo)
+
+
+def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    test_src = tmp_path / "src"
+    shutil.copytree(PROJECT_ROOT / "src", test_src)
+    cards_yaml = test_src / "agent_memory" / "defaults" / "cards.yaml"
+    cards_yaml.write_text("statuses: [unterminated\n", encoding="utf-8")
+
+    result = run_agent_memory_subprocess(workspace.repo, "plan", "validate", pythonpath=test_src)
+
+    stderr = assert_structured_cli_error(result)
+    assert str(cards_yaml) in stderr
+    assert "cards.yaml" in stderr
+    assert "ParserError" not in stderr
 
 
 def test_python_dash_m_agent_memory_module_entrypoint_runs_doctor(tmp_path: Path) -> None:

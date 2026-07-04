@@ -785,9 +785,7 @@ def search_metadata(
     config = config_for_search_scope(scope, cwd)
     created_after_datetime = parse_created_after(created_after)
     note_scan = scan_note_records(config, scope)
-    records = [
-        metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)
-    ]
+    records = [metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)]
     return {
         "scope": scope.value,
         "results": json_list(records[: config.search_max_results]),
