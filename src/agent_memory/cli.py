@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -10,9 +12,9 @@ import cyclopts
 from cyclopts import App, Parameter
 from pydantic import ValidationError
 
-from agent_memory.cards.config import CardSystemConfig
-from agent_memory.cards.loader import CardConfigError, load_card_system_config
-from agent_memory.cards.storage import CardLookupError, CardPlacementError
+from agent_memory.cards.config import CardSystemConfig, CardTypeSpec
+from agent_memory.cards.loader import CardConfigError
+from agent_memory.cards.storage import CardPlacementError
 from agent_memory.models import (
     ContentSearchMode,
     InspectExportFormat,
@@ -36,12 +38,13 @@ from agent_memory.operations import (
     MemoryOperationError,
     ProjectNotInitializedError,
     VaultCommitError,
+    add_card,
     add_memory,
-    add_plan_card,
     basic_doctor,
     bundled_skill_text,
+    config_for_schema_advertisement,
+    delete_card_record,
     delete_memory,
-    delete_plan_card,
     disable_sync_systemd_timer,
     enable_sync_systemd_timer,
     init_global_vault,
@@ -58,8 +61,9 @@ from agent_memory.operations import (
     inspect_tree,
     install_sync_systemd_timer,
     list_cards,
+    load_card_system,
     merge_memory,
-    migrate_plan_cards,
+    migrate_cards,
     move_memory,
     remove_sync_systemd_timer,
     retrieve_memory,
@@ -70,14 +74,15 @@ from agent_memory.operations import (
     search_keys,
     search_memories,
     search_metadata,
+    show_card,
     split_memory,
     squash_memory,
     sync_status,
     sync_vault,
+    update_card_record,
     update_memory,
-    update_plan_card,
-    validate_plan_cards,
-    write_plan_dag,
+    validate_card_records,
+    write_card_dag,
 )
 from agent_memory.operations import (
     doctor as run_doctor,
@@ -96,13 +101,26 @@ init_app = app.command(App(name="init", help="Initialize project memory bindings
 search_app = app.command(App(name="search", help="Query memories by keys, content, or metadata."))
 inspect_app = app.command(App(name="inspect", help="Read-only vault navigation and analysis commands."))
 maintain_app = app.command(App(name="maintain", help="Vault setup and maintenance workflows."))
-plan_app = app.command(App(name="plan", help="Create, migrate, validate, and visualize vault-backed project plan cards."))
+card_app = app.command(App(name="card", help="Operate on schema-defined vault-backed cards."))
 sync_app = app.command(App(name="sync", help="Synchronize the configured memory vault with its git remote."))
 links_app = app.command(App(name="links", help="Inspect and rewrite vault links."))
 
 
 class CliUsageError(RuntimeError):
     """Raised when arguments are coherent CLI syntax but invalid together."""
+
+
+@dataclass(frozen=True)
+class CardConfigAvailable:
+    config: CardSystemConfig
+
+
+@dataclass(frozen=True)
+class CardConfigUnavailable:
+    error: CardConfigError
+
+
+type CardConfigRegistrationState = CardConfigAvailable | CardConfigUnavailable
 
 
 def maintain_init_global(
@@ -262,7 +280,7 @@ def inspect_schema_command(
     output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
 ) -> None:
     """Print the user-facing command and metadata schema."""
-    emit(inspect_schema(output_format=output_format))
+    emit(inspect_schema(output_format=output_format, cwd=Path.cwd()))
 
 
 def inspect_paths_command(
@@ -446,9 +464,20 @@ def list_command(
     emit(list_cards(card_type=type_, scope=scope, include_unmigrated=unmigrated, cwd=Path.cwd()))
 
 
-def plan_add_command(
-    type_name: Annotated[str, Parameter(name="type", help="Card type, e.g. feature, plan, phase, task.")],
-    card_id: Annotated[str, Parameter(name="id", help="Card id, must start with the type's prefix (e.g. TASK-...).")],
+def resolve_card_body(card_id: str, body: str | None, body_file: Path | None) -> str:
+    if body is not None and body_file is not None:
+        raise CliUsageError("Cannot specify both --body and --body-file")
+    if body_file is not None:
+        try:
+            return body_file.read_text(encoding="utf-8")
+        except OSError as e:
+            raise CliUsageError(f"Cannot read --body-file {body_file}: {e.strerror}") from e
+    return body if body is not None else f"# {card_id}\n"
+
+
+def card_add_command(
+    type_name: Annotated[str, Parameter(name="type", help="Card type from the active card schema.")],
+    card_id: Annotated[str, Parameter(name="id", help="Card id; prefix must match the declared card type.")],
     *,
     parent: Annotated[str | None, Parameter(help="Parent card id for non-root cards.")] = None,
     set_: Annotated[
@@ -464,28 +493,21 @@ def plan_add_command(
     body: Annotated[str | None, Parameter(help="Markdown body for the card.")] = None,
     body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing markdown body for the card.")] = None,
 ) -> None:
-    """Add a plan card to the project vault."""
-    if body is not None and body_file is not None:
-        raise CliUsageError("Cannot specify both --body and --body-file")
-    if body_file is not None:
-        try:
-            body = body_file.read_text(encoding="utf-8")
-        except OSError as e:
-            raise CliUsageError(f"Cannot read --body-file {body_file}: {e.strerror}") from e
+    """Add a schema-defined card to the project vault."""
     emit(
-        add_plan_card(
+        add_card(
             type_name=type_name,
             card_id=card_id,
             parent_id=parent,
             assignments=set_ or [],
             empty_set=empty_set,
-            body=body if body is not None else f"# {card_id}\n",
+            body=resolve_card_body(card_id, body, body_file),
             cwd=Path.cwd(),
         )
     )
 
 
-def plan_update_command(
+def card_update_command(
     card_id: Annotated[str, Parameter(name="id", help="Card id to update.")],
     *,
     set_: Annotated[
@@ -498,30 +520,105 @@ def plan_update_command(
         ),
     ] = None,
 ) -> None:
-    """Update fields on an existing plan card."""
-    emit(update_plan_card(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
+    """Update fields on an existing schema-defined card."""
+    emit(update_card_record(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
 
 
-def plan_delete_command(card_id: Annotated[str, Parameter(name="id", help="Card id to delete.")]) -> None:
-    """Delete a plan card."""
-    emit(delete_plan_card(card_id=card_id, cwd=Path.cwd()))
+def card_delete_command(card_id: Annotated[str, Parameter(name="id", help="Card id to delete.")]) -> None:
+    """Delete a schema-defined card."""
+    emit(delete_card_record(card_id=card_id, cwd=Path.cwd()))
 
 
-def plan_validate_command() -> None:
-    """Validate the plan card graph across the whole vault (references, containment, DAG cycles)."""
-    emit(validate_plan_cards(cwd=Path.cwd()))
+def card_show_command(card_id: Annotated[str, Parameter(name="id", help="Card id to show.")]) -> None:
+    """Show one schema-defined card."""
+    emit(show_card(card_id=card_id, cwd=Path.cwd()))
 
 
-def plan_dag_command() -> None:
-    """Render the plan dependency and containment DAG to plan-dag.md."""
-    emit(write_plan_dag(cwd=Path.cwd()))
+def card_validate_command() -> None:
+    """Validate the card graph across the whole vault."""
+    emit(validate_card_records(cwd=Path.cwd()))
 
 
-def plan_migrate_command(
+def card_dag_command() -> None:
+    """Render the dependency and containment DAG to plan-dag.md."""
+    emit(write_card_dag(cwd=Path.cwd()))
+
+
+def card_migrate_command(
     source: Annotated[Path, Parameter(name="from", help="In-repo plans directory to ingest, e.g. .agents/plans.")],
 ) -> None:
     """Migrate an in-repo card tree into the project vault."""
-    emit(migrate_plan_cards(source=source.expanduser(), cwd=Path.cwd()))
+    emit(migrate_cards(source=source.expanduser(), cwd=Path.cwd()))
+
+
+def generated_card_add_command(card_type: CardTypeSpec) -> Callable[..., None]:
+    def add_for_type(
+        card_id: Annotated[str, Parameter(name="id", help="Card id; prefix must match this generated card command.")],
+        *,
+        parent: Annotated[str | None, Parameter(help="Parent card id for non-root cards.")] = None,
+        set_: Annotated[
+            list[str] | None,
+            Parameter(
+                name="set",
+                help="Field assignment key=value; repeat for list fields.",
+                negative_iterable=[],
+                allow_leading_hyphen=True,
+            ),
+        ] = None,
+        empty_set: Annotated[list[str] | None, Parameter(name="empty-set", help="Fields to initialize as empty lists.")] = None,
+        body: Annotated[str | None, Parameter(help="Markdown body for the card.")] = None,
+        body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing markdown body for the card.")] = None,
+    ) -> None:
+        emit(
+            add_card(
+                type_name=card_type.name,
+                card_id=card_id,
+                parent_id=parent,
+                assignments=set_ or [],
+                empty_set=empty_set,
+                body=resolve_card_body(card_id, body, body_file),
+                cwd=Path.cwd(),
+            )
+        )
+
+    add_for_type.__name__ = f"{card_type.name}_add_command"
+    return add_for_type
+
+
+def generated_card_update_command(card_type: CardTypeSpec) -> Callable[..., None]:
+    def update_for_type(
+        card_id: Annotated[str, Parameter(name="id", help="Card id to update.")],
+        *,
+        set_: Annotated[
+            list[str] | None,
+            Parameter(
+                name="set",
+                help="Field assignment key=value; repeat for list fields.",
+                negative_iterable=[],
+                allow_leading_hyphen=True,
+            ),
+        ] = None,
+    ) -> None:
+        emit(update_card_record(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
+
+    update_for_type.__name__ = f"{card_type.name}_update_command"
+    return update_for_type
+
+
+def generated_card_delete_command(card_type: CardTypeSpec) -> Callable[..., None]:
+    def delete_for_type(card_id: Annotated[str, Parameter(name="id", help="Card id to delete.")]) -> None:
+        emit(delete_card_record(card_id=card_id, cwd=Path.cwd()))
+
+    delete_for_type.__name__ = f"{card_type.name}_delete_command"
+    return delete_for_type
+
+
+def generated_card_show_command(card_type: CardTypeSpec) -> Callable[..., None]:
+    def show_for_type(card_id: Annotated[str, Parameter(name="id", help="Card id to show.")]) -> None:
+        emit(show_card(card_id=card_id, cwd=Path.cwd()))
+
+    show_for_type.__name__ = f"{card_type.name}_show_command"
+    return show_for_type
 
 
 def sync_run_command() -> None:
@@ -556,7 +653,32 @@ def sync_remove_command() -> None:
     emit(remove_sync_systemd_timer(cwd=Path.cwd()))
 
 
-def register_commands() -> None:
+ROOT_COMMAND_NAMES = {
+    "init",
+    "search",
+    "inspect",
+    "maintain",
+    "card",
+    "sync",
+    "links",
+    "add",
+    "update",
+    "delete",
+    "retrieve",
+    "doctor",
+}
+
+
+def active_card_config() -> CardSystemConfig:
+    if shutil.which("git") is None:
+        cards_config, _models = load_card_system(None)
+        return cards_config
+    config = config_for_schema_advertisement(Path.cwd())
+    cards_config, _models = load_card_system(config)
+    return cards_config
+
+
+def register_commands(registration_state: CardConfigRegistrationState) -> None:
     maintain_app.command(maintain_init_global, name="init-global")
     maintain_app.command(maintain_skill_command, name="skill")
     init_app.command(init_project_command, name="project")
@@ -587,12 +709,15 @@ def register_commands() -> None:
     maintain_app.command(maintain_move_command, name="move")
     maintain_app.command(maintain_split_command, name="split")
     maintain_app.command(maintain_merge_command, name="merge")
-    plan_app.command(plan_add_command, name="add")
-    plan_app.command(plan_update_command, name="update")
-    plan_app.command(plan_delete_command, name="delete")
-    plan_app.command(plan_validate_command, name="validate")
-    plan_app.command(plan_dag_command, name="dag")
-    plan_app.command(plan_migrate_command, name="migrate")
+    card_app.command(card_add_command, name="add")
+    card_app.command(card_update_command, name="update")
+    card_app.command(card_delete_command, name="delete")
+    card_app.command(card_show_command, name="show")
+    card_app.command(card_validate_command, name="validate")
+    card_app.command(card_dag_command, name="dag")
+    card_app.command(card_migrate_command, name="migrate")
+    if isinstance(registration_state, CardConfigAvailable):
+        register_generated_card_type_commands(registration_state.config)
     links_app.command(links_rewrite_command, name="rewrite")
     sync_app.command(sync_run_command, name="run")
     sync_app.command(sync_status_command, name="status")
@@ -603,6 +728,22 @@ def register_commands() -> None:
     app.command(doctor_command, name="doctor")
 
 
+def register_generated_card_type_commands(config: CardSystemConfig) -> None:
+    for card_type in config.card_types:
+        assert card_type.name not in ROOT_COMMAND_NAMES, f"card type collides with root CLI command: {card_type.name}"
+        type_app = app.command(App(name=card_type.name, help=f"{card_type.name} cards from the active card schema."))
+        add_command_for_type = generated_card_add_command(card_type)
+        add_command_for_type.__doc__ = card_type_add_help_text(config, card_type)
+        type_app.command(add_command_for_type, name="add")
+        type_app.command(generated_card_update_command(card_type), name="update")
+        type_app.command(generated_card_delete_command(card_type), name="delete")
+        type_app.command(generated_card_show_command(card_type), name="show")
+        if card_type.name == "plan":
+            type_app.command(card_validate_command, name="validate")
+            type_app.command(card_dag_command, name="dag")
+            type_app.command(card_migrate_command, name="migrate")
+
+
 def field_help(config: CardSystemConfig, card_type_name: str, field_name: str, field_type: str) -> str:
     if field_type == "status":
         card_type = next(ct for ct in config.card_types if ct.name == card_type_name)
@@ -611,9 +752,9 @@ def field_help(config: CardSystemConfig, card_type_name: str, field_name: str, f
     return f"{field_name} ({field_type})"
 
 
-def plan_add_help_text(config: CardSystemConfig) -> str:
+def card_add_help_text(config: CardSystemConfig) -> str:
     doc = [
-        "Add a plan card to the project vault.",
+        "Add a schema-defined card to the project vault.",
         "",
         "Allowed card types and id prefixes:",
     ]
@@ -627,15 +768,29 @@ def plan_add_help_text(config: CardSystemConfig) -> str:
     return "\n".join(doc)
 
 
-def configure_plan_add_help() -> None:
-    plan_add_command.__doc__ = plan_add_help_text(load_card_system_config())
+def card_type_add_help_text(config: CardSystemConfig, card_type: CardTypeSpec) -> str:
+    doc = [
+        f"Add a {card_type.name} card to the project vault.",
+        "",
+        f"ID prefix: {card_type.id_prefix}-",
+        f"Container: {card_type.container or '<parent>'}",
+        "",
+        "Required --set fields:",
+    ]
+    required_fields = [field_help(config, card_type.name, field.name, field.type) for field in card_type.fields if field.required and field.name != "id"]
+    doc.append(f"  {', '.join(required_fields)}")
+    return "\n".join(doc)
 
 
-def needs_plan_add_help(arguments: list[str]) -> bool:
-    return len(arguments) >= 3 and arguments[:2] == ["plan", "add"] and any(argument in ("--help", "-h") for argument in arguments[2:])
+try:
+    active_config = active_card_config()
+except CardConfigError as error:
+    CARD_CONFIG_REGISTRATION_STATE: CardConfigRegistrationState = CardConfigUnavailable(error)
+else:
+    CARD_CONFIG_REGISTRATION_STATE = CardConfigAvailable(active_config)
+    card_add_command.__doc__ = card_add_help_text(active_config)
 
-
-register_commands()
+register_commands(CARD_CONFIG_REGISTRATION_STATE)
 
 
 def emit(payload: Mapping[str, JsonValue]) -> None:
@@ -655,15 +810,22 @@ def missing_argument_message(error: cyclopts.exceptions.MissingArgumentError, ar
     return message
 
 
+def command_requires_card_schema(arguments: list[str]) -> bool:
+    if not arguments or arguments[0].startswith("-"):
+        return False
+    return arguments[0] == "card" or arguments[0] not in ROOT_COMMAND_NAMES
+
+
 def main() -> None:
     scope_hint = add_command_scope_hint(sys.argv[1:])
     if scope_hint is not None:
         print(f"Error: {scope_hint}", file=sys.stderr)
         raise SystemExit(1)
+    if isinstance(CARD_CONFIG_REGISTRATION_STATE, CardConfigUnavailable) and command_requires_card_schema(sys.argv[1:]):
+        print(f"Error: {CARD_CONFIG_REGISTRATION_STATE.error}", file=sys.stderr)
+        raise SystemExit(1)
 
     try:
-        if needs_plan_add_help(sys.argv[1:]):
-            configure_plan_add_help()
         basic_doctor(Path.cwd())
         app(sys.argv[1:], print_error=False, exit_on_error=False)
     except cyclopts.exceptions.MissingArgumentError as e:
@@ -681,7 +843,6 @@ def main() -> None:
         raise SystemExit(1)
     except (
         CardConfigError,
-        CardLookupError,
         CardPlacementError,
         CardFieldError,
         CliUsageError,

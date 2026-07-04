@@ -26,9 +26,10 @@ OKF_VALUES: dict[str, MetadataValue] = {
     "promotable": False,
     "project_id": PROJECT_ID,
 }
+PRIMARY_TAGS: list[MetadataValue] = ["project", "plan"]
 PRIMARY_COLLAPSED_HEADER: dict[str, MetadataValue] = {
     "title": "Legacy Double Frontmatter Plan",
-    "tags": ["project", "plan"],
+    "tags": PRIMARY_TAGS,
 }
 
 
@@ -59,11 +60,11 @@ def double_frontmatter_note(
     return "\n".join(lines) + "\n"
 
 
-def assert_okf_fields(metadata: Mapping[str, object]) -> None:
+def assert_okf_fields(metadata: Mapping[str, MetadataValue]) -> None:
     for key, value in OKF_VALUES.items():
         assert metadata[key] == value
     assert metadata["title"] == PRIMARY_COLLAPSED_HEADER["title"]
-    assert metadata["tags"] == PRIMARY_COLLAPSED_HEADER["tags"]
+    assert metadata["tags"] == PRIMARY_TAGS
 
 
 def test_reconcile_okf_frontmatter_preserves_embedded_okf_fields() -> None:

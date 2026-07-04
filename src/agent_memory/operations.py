@@ -27,7 +27,8 @@ from agent_memory.cards.dag import PLAN_DAG_FILENAME, render_dag
 from agent_memory.cards.factory import build_card_models
 from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
-from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, update_card
+from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, split_card
+from agent_memory.cards.storage import update_card as write_card_updates
 from agent_memory.cards.validation import load_card_records, validate_cards
 from agent_memory.models import (
     BaseNoteMetadata,
@@ -106,6 +107,7 @@ MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.REFERENCE: "references",
     MemoryType.PLAN: "plans",
 }
+WRITABLE_MEMORY_TYPES: tuple[MemoryType, ...] = tuple(memory_type for memory_type in MemoryType if memory_type is not MemoryType.PLAN)
 
 # The directory names for every memory type, in MemoryType enum order. This is the
 # single source for both the global vault layout and the per-project layout.
@@ -302,12 +304,26 @@ class MemoryDocument:
 
 
 @dataclass(frozen=True)
-class MissingNoteTimestamp:
-    pass
+class NoteTimestamp:
+    value: str
 
+    @classmethod
+    def from_metadata(cls, metadata: dict[str, MetadataValue], path: Path) -> NoteTimestamp:
+        return cls(metadata_string_optional(metadata, "timestamp", path) or "")
 
-type NoteTimestamp = str | MissingNoteTimestamp
-MISSING_NOTE_TIMESTAMP = MissingNoteTimestamp()
+    def is_present(self) -> bool:
+        return self.value != ""
+
+    def is_after(self, lower_bound: datetime) -> bool:
+        return self.is_present() and parse_memory_timestamp(self.value) > lower_bound
+
+    def json_value(self) -> JsonValue:
+        if self.is_present():
+            return self.value
+        return None
+
+    def sort_key(self) -> str:
+        return self.value
 
 
 @dataclass(frozen=True)
@@ -342,25 +358,24 @@ class IndexScan:
 
 
 @dataclass(frozen=True)
-class ManagedCardLocation:
-    key: str
-
-
-@dataclass(frozen=True)
-class UnmanagedCardLocation:
-    suggested_destination: str
-
-
-type CardLocation = ManagedCardLocation | UnmanagedCardLocation
-
-
-@dataclass(frozen=True)
-class CardListing:
+class ManagedCardListing:
     title: str
     card_type: str
     scope: MemoryScope
     path: Path
-    location: CardLocation
+    key: str
+
+
+@dataclass(frozen=True)
+class UnmigratedCardListing:
+    title: str
+    card_type: str
+    scope: MemoryScope
+    path: Path
+    suggested_destination: str
+
+
+type CardListing = ManagedCardListing | UnmigratedCardListing
 
 
 @dataclass(frozen=True)
@@ -515,7 +530,6 @@ def add_memory(
 ) -> JsonObject:
     if memory_type is MemoryType.PLAN:
         raise MemoryOperationError("plain plan memories are not supported; use agent-memory plan add so cards.yaml validates the task tree")
-
     config = config_for_memory_scope(scope, cwd)
     slug = memory_slug(title)
     directory = memory_directory(config, scope, memory_type)
@@ -893,32 +907,31 @@ STRUCTURED_CARD_PREFIX_TYPES = {
 
 
 def card_listing_json(record: CardListing) -> JsonObject:
-    if isinstance(record.location, ManagedCardLocation):
-        managed = True
-        key: JsonValue = record.location.key
-        suggested_destination: JsonValue = None
-    else:
-        managed = False
-        key = None
-        suggested_destination = record.location.suggested_destination
-    return {
+    payload: JsonObject = {
         "title": record.title,
         "type": record.card_type,
         "scope": record.scope.value,
         "path": str(record.path),
-        "managed": managed,
-        "key": key,
-        "suggested_destination": suggested_destination,
     }
+    if isinstance(record, ManagedCardListing):
+        return {**payload, "managed": True, "key": record.key, "suggested_destination": None}
+    return {**payload, "managed": False, "key": None, "suggested_destination": record.suggested_destination}
 
 
 def list_cards(card_type: str, scope: SearchScope, include_unmigrated: bool, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
-    records = managed_card_listings(config, scope)
+    records: list[CardListing] = [*managed_card_listings(config, scope)]
     if include_unmigrated:
         records.extend(unmigrated_card_listings(config, scope))
     filtered = [record for record in records if record.card_type == card_type]
-    filtered.sort(key=lambda record: (isinstance(record.location, ManagedCardLocation), record.scope.value, record.title, str(record.path)))
+    filtered.sort(
+        key=lambda record: (
+            isinstance(record, ManagedCardListing),
+            record.scope.value,
+            record.title,
+            str(record.path),
+        )
+    )
     return {
         "type": card_type,
         "scope": scope.value,
@@ -1843,7 +1856,7 @@ def project_agent_state_records(git_root: Path, project_dir: Path) -> list[JsonV
 
 
 def agents_pointer_section(vault: Path, project_id: str) -> str:
-    add_examples = "".join(f"agent-memory add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in MemoryType)
+    add_examples = "".join(f"agent-memory add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in WRITABLE_MEMORY_TYPES)
     return (
         f"{AGENTS_SECTION_START}\n"
         "# Agent memory\n\n"
@@ -1858,6 +1871,7 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         "```bash\n"
         f"{add_examples}"
         "```\n\n"
+        "Plan work is card-backed. Create and update plan cards with `agent-memory plan add` and `agent-memory plan update`, not `agent-memory add --type plan`.\n\n"
         "Use `agent-memory retrieve <key>`, `agent-memory update <key>`, and `agent-memory delete <key>` for memory CRUD.\n\n"
         "The vault should be committed at all times. Treat staged or unstaged vault changes as an ephemeral error state. "
         f"Before normal memory work resumes, load the bundled vault-maintenance skill with `{VAULT_MAINTENANCE_SKILL_COMMAND}` "
@@ -1995,7 +2009,7 @@ def remove_index_link_by_target(index_path: Path, target: str) -> None:
         index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def metadata_string(metadata: Mapping[str, MetadataValue], key: str, path: Path) -> str:
+def metadata_string(metadata: dict[str, MetadataValue], key: str, path: Path) -> str:
     if key not in metadata:
         raise MalformedMemoryError(path, f"frontmatter missing required field: {key}")
     value = metadata[key]
@@ -2004,7 +2018,7 @@ def metadata_string(metadata: Mapping[str, MetadataValue], key: str, path: Path)
     return value
 
 
-def metadata_string_optional(metadata: Mapping[str, MetadataValue], key: str, path: Path) -> str | None:
+def metadata_string_optional(metadata: dict[str, MetadataValue], key: str, path: Path) -> str | None:
     if key not in metadata:
         return None
     value = metadata[key]
@@ -2017,47 +2031,47 @@ def metadata_string_optional(metadata: Mapping[str, MetadataValue], key: str, pa
     return value
 
 
-def metadata_string_list(metadata: Mapping[str, MetadataValue], key: str, path: Path) -> list[str]:
-    if key not in metadata:
-        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}")
-    value = metadata[key]
+def metadata_bool(metadata: dict[str, MetadataValue], key: str, path: Path) -> bool:
+    try:
+        value = metadata[key]
+    except KeyError as error:
+        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}") from error
+    if not isinstance(value, bool):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a boolean")
+    return value
+
+
+def metadata_string_tuple(metadata: dict[str, MetadataValue], key: str, path: Path) -> tuple[str, ...]:
+    try:
+        value = metadata[key]
+    except KeyError as error:
+        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}") from error
     if not isinstance(value, list):
         raise MalformedMemoryError(path, f"frontmatter field {key} must be a list")
-    values: list[str] = []
+    strings: list[str] = []
     for item in value:
         if not isinstance(item, str):
             raise MalformedMemoryError(path, f"frontmatter field {key} must be a list of strings")
-        values.append(item)
-    return values
+        strings.append(item)
+    return tuple(strings)
 
 
-def require_metadata_literal(metadata: Mapping[str, MetadataValue], key: str, expected: str, path: Path) -> None:
-    value = metadata_string(metadata, key, path)
-    if value != expected:
-        raise MalformedMemoryError(path, f"frontmatter field {key} must be {expected!r}")
+def metadata_memory_type(metadata: dict[str, MetadataValue], path: Path) -> MemoryType:
+    value = metadata_string(metadata, "type", path)
+    try:
+        return MemoryType(value)
+    except ValueError as error:
+        known_types = ", ".join(memory_type.value for memory_type in MemoryType)
+        raise MalformedMemoryError(path, f"frontmatter type {value!r} is not one of: {known_types}") from error
 
 
-def require_metadata_bool(metadata: Mapping[str, MetadataValue], key: str, expected: bool, path: Path) -> None:
-    if key not in metadata:
-        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}")
-    value = metadata[key]
-    if not isinstance(value, bool):
-        raise MalformedMemoryError(path, f"frontmatter field {key} must be a boolean")
-    if value is not expected:
-        raise MalformedMemoryError(path, f"frontmatter field {key} must be {expected!r}")
-
-
-def note_timestamp_from_metadata(metadata: Mapping[str, MetadataValue], path: Path) -> NoteTimestamp:
-    timestamp = metadata_string_optional(metadata, "timestamp", path)
-    if timestamp is None:
-        return MISSING_NOTE_TIMESTAMP
-    return timestamp
-
-
-def note_timestamp_json(timestamp: NoteTimestamp) -> JsonValue:
-    if isinstance(timestamp, MissingNoteTimestamp):
-        return None
-    return timestamp
+def metadata_memory_scope(metadata: dict[str, MetadataValue], path: Path) -> MemoryScope:
+    value = metadata_string(metadata, "scope", path)
+    try:
+        return MemoryScope(value)
+    except ValueError as error:
+        known_scopes = ", ".join(scope.value for scope in MemoryScope)
+        raise MalformedMemoryError(path, f"frontmatter scope {value!r} is not one of: {known_scopes}") from error
 
 
 def updated_memory_body(current_body: str, title: str, content: str | None) -> str:
@@ -2179,6 +2193,23 @@ def global_only_config() -> ProjectConfig:
         search_max_results=starter.search_max_results,
         search_max_tokens=starter.search_max_tokens,
     )
+
+
+def config_for_schema_advertisement(cwd: Path) -> ProjectConfig | None:
+    # The vault whose card schema `inspect schema` should advertise: the cwd's bound
+    # project when bound, else the configured global vault when it is actually
+    # initialized. When no vault is configured+initialized, return None so the caller
+    # advertises the packaged defaults -- the honest answer for a genuinely
+    # unconfigured state. That state is selected here by the explicit initialized-vault
+    # query, never by catching GlobalVaultNotInitializedError. Any other error (e.g. an
+    # empty AGENT_MEMORY_VAULT) still propagates loudly from global_vault_path.
+    config = find_project_config(cwd)
+    if config is not None:
+        return config
+    vault = global_vault_path()
+    if not (vault / ".agents" / "memories" / "config.toml").is_file():
+        return None
+    return global_only_config()
 
 
 def config_for_memory_scope(scope: MemoryScope, cwd: Path) -> ProjectConfig:
@@ -2318,10 +2349,10 @@ def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[
     return tuple(memory_directory(config, memory_scope, memory_type) for memory_scope in scope_order for memory_type in MemoryType)
 
 
-def managed_card_listings(config: ProjectConfig, scope: SearchScope) -> list[CardListing]:
-    listings: list[CardListing] = []
+def managed_card_listings(config: ProjectConfig, scope: SearchScope) -> list[ManagedCardListing]:
+    listings: list[ManagedCardListing] = []
     for path in managed_card_paths(config, scope):
-        listing = card_listing_for_path(config, path, managed=True)
+        listing = managed_card_listing_for_path(config, path)
         if listing is not None:
             listings.append(listing)
     return listings
@@ -2337,10 +2368,10 @@ def managed_card_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path,
     return tuple(sorted(paths))
 
 
-def unmigrated_card_listings(config: ProjectConfig, scope: SearchScope) -> list[CardListing]:
-    listings: list[CardListing] = []
+def unmigrated_card_listings(config: ProjectConfig, scope: SearchScope) -> list[UnmigratedCardListing]:
+    listings: list[UnmigratedCardListing] = []
     for path in unmigrated_card_candidate_paths(config, scope):
-        listing = card_listing_for_path(config, path, managed=False)
+        listing = unmigrated_card_listing_for_path(config, path)
         if listing is not None:
             listings.append(listing)
     return listings
@@ -2376,7 +2407,7 @@ def is_managed_card_path(config: ProjectConfig, path: Path) -> bool:
     return False
 
 
-def card_listing_for_path(config: ProjectConfig, path: Path, *, managed: bool) -> CardListing | None:
+def card_listing_fields_for_path(config: ProjectConfig, path: Path) -> tuple[str, str, MemoryScope] | None:
     try:
         document = read_memory(path)
     except MalformedMemoryError:
@@ -2384,13 +2415,38 @@ def card_listing_for_path(config: ProjectConfig, path: Path, *, managed: bool) -
     card_type = card_type_from_metadata(document.metadata)
     if card_type is None:
         return None
-    scope = card_scope_for_path(config, path, document.metadata)
-    return CardListing(
-        title=card_title_from_metadata(path, document.metadata),
+    return (
+        card_title_from_metadata(path, document.metadata),
+        card_type,
+        card_scope_for_path(config, path, document.metadata),
+    )
+
+
+def managed_card_listing_for_path(config: ProjectConfig, path: Path) -> ManagedCardListing | None:
+    fields = card_listing_fields_for_path(config, path)
+    if fields is None:
+        return None
+    title, card_type, scope = fields
+    return ManagedCardListing(
+        title=title,
         card_type=card_type,
         scope=scope,
         path=path,
-        location=ManagedCardLocation(memory_key(config.vault, path)) if managed else UnmanagedCardLocation(suggested_card_destination(config, scope, card_type)),
+        key=memory_key(config.vault, path),
+    )
+
+
+def unmigrated_card_listing_for_path(config: ProjectConfig, path: Path) -> UnmigratedCardListing | None:
+    fields = card_listing_fields_for_path(config, path)
+    if fields is None:
+        return None
+    title, card_type, scope = fields
+    return UnmigratedCardListing(
+        title=title,
+        card_type=card_type,
+        scope=scope,
+        path=path,
+        suggested_destination=suggested_card_destination(config, scope, card_type),
     )
 
 
@@ -2462,40 +2518,19 @@ def note_finding_for_error(config: ProjectConfig, path: Path, error: MalformedMe
 
 def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
     document = read_memory(path)
-    stored_scope_text = metadata_string(document.metadata, "scope", path)
-    try:
-        stored_scope = MemoryScope(stored_scope_text)
-    except ValueError as error:
-        known_scopes = ", ".join(scope.value for scope in MemoryScope)
-        raise MalformedMemoryError(path, f"frontmatter scope {stored_scope_text!r} is not one of: {known_scopes}") from error
+    stored_scope = metadata_memory_scope(document.metadata, path)
     layout_scope = MemoryScope(inspect_scope_for_path(config, path))
     if stored_scope is not layout_scope:
         raise MalformedMemoryError(path, f"frontmatter scope {stored_scope.value!r} does not match vault layout {layout_scope.value!r}")
-    tags = document.metadata.get("tags")
-    if tags is None:
-        raise MalformedMemoryError(path, "frontmatter must include tags")
-    if not isinstance(tags, list):
-        raise MalformedMemoryError(path, "frontmatter tags must be a list")
-    tag_values: list[str] = []
-    for tag in tags:
-        if not isinstance(tag, str):
-            raise MalformedMemoryError(path, "frontmatter tags must be a list of strings")
-        tag_values.append(tag)
-    memory_type_text = metadata_string(document.metadata, "type", path)
-    try:
-        memory_type = MemoryType(memory_type_text)
-    except ValueError as error:
-        known_types = ", ".join(memory_type.value for memory_type in MemoryType)
-        raise MalformedMemoryError(path, f"frontmatter type {memory_type_text!r} is not one of: {known_types}") from error
-    # read_memory already guarantees every list item is a string.
+    tags = metadata_string_tuple(document.metadata, "tags", path)
     return NoteRecord(
         key=memory_key(config.vault, path),
         path=path,
         title=metadata_string(document.metadata, "title", path),
-        memory_type=memory_type,
+        memory_type=metadata_memory_type(document.metadata, path),
         scope=stored_scope,
-        tags=tuple(tag_values),
-        timestamp=note_timestamp_from_metadata(document.metadata, path),
+        tags=tags,
+        timestamp=NoteTimestamp.from_metadata(document.metadata, path),
         document=document,
     )
 
@@ -2509,7 +2544,7 @@ def note_record_matches_metadata(
     return (
         (memory_type is None or record.memory_type is memory_type)
         and (tag is None or tag in record.tags)
-        and (created_after is None or (isinstance(record.timestamp, str) and parse_memory_timestamp(record.timestamp) > created_after))
+        and (created_after is None or record.timestamp.is_after(created_after))
     )
 
 
@@ -2527,7 +2562,7 @@ def note_record_json(record: NoteRecord) -> JsonObject:
         **note_record_core(record),
         "scope": record.scope.value,
         "tags": json_list(record.tags),
-        "timestamp": note_timestamp_json(record.timestamp),
+        "timestamp": record.timestamp.json_value(),
     }
 
 
@@ -2535,7 +2570,7 @@ def metadata_search_record_json(record: NoteRecord) -> JsonObject:
     return {
         **note_record_core(record),
         "tags": json_list(record.tags),
-        "timestamp": note_timestamp_json(record.timestamp),
+        "timestamp": record.timestamp.json_value(),
     }
 
 
@@ -2668,21 +2703,33 @@ def reconcile_okf_frontmatter(
     return canonical_okf_metadata(path, merged)
 
 
+def validate_okf_contract_defaults(path: Path, metadata: dict[str, MetadataValue]) -> None:
+    if "source" in metadata and metadata_string(metadata, "source", path) != "agent":
+        raise MalformedMemoryError(path, "frontmatter source must be agent")
+    if "confidence" in metadata and metadata_string(metadata, "confidence", path) != "high":
+        raise MalformedMemoryError(path, "frontmatter confidence must be high")
+    if "promotable" in metadata and metadata_bool(metadata, "promotable", path):
+        raise MalformedMemoryError(path, "frontmatter promotable must be false")
+
+
+def reject_unexpected_okf_keys(path: Path, metadata: dict[str, MetadataValue], allowed: frozenset[str]) -> None:
+    for key in metadata:
+        if key not in allowed:
+            raise MalformedMemoryError(path, f"invalid OKF frontmatter field: {key}")
+
+
 def canonical_okf_metadata(path: Path, metadata: Mapping[str, MetadataValue]) -> dict[str, MetadataValue]:
     payload = dict(metadata)
+    memory_type = metadata_memory_type(payload, path)
+    scope = metadata_memory_scope(payload, path)
+    validate_okf_contract_defaults(path, payload)
+    title = metadata_string(payload, "title", path)
+    description = metadata_string(payload, "description", path)
+    tags = list(metadata_string_tuple(payload, "tags", path))
+    timestamp = metadata_string(payload, "timestamp", path)
     try:
-        memory_type = MemoryType(metadata_string(payload, "type", path))
-        scope = MemoryScope(metadata_string(payload, "scope", path))
-        title = metadata_string(payload, "title", path)
-        description = metadata_string(payload, "description", path)
-        tags = metadata_string_list(payload, "tags", path)
-        timestamp = metadata_string(payload, "timestamp", path)
-        require_metadata_literal(payload, "source", "agent", path)
-        require_metadata_literal(payload, "confidence", "high", path)
-        require_metadata_bool(payload, "promotable", False, path)
         if "origin_project_id" in payload:
-            if "project_id" in payload:
-                raise MalformedMemoryError(path, "promoted OKF frontmatter must not include project_id")
+            reject_unexpected_okf_keys(path, payload, frozenset(PromotedNoteMetadata.model_fields))
             return PromotedNoteMetadata(
                 type=memory_type,
                 title=title,
@@ -2693,6 +2740,7 @@ def canonical_okf_metadata(path: Path, metadata: Mapping[str, MetadataValue]) ->
                 origin_project_id=metadata_string(payload, "origin_project_id", path),
             ).to_yaml_payload()
         if scope is MemoryScope.PROJECT:
+            reject_unexpected_okf_keys(path, payload, frozenset(ProjectNoteMetadata.model_fields))
             return ProjectNoteMetadata(
                 type=memory_type,
                 title=title,
@@ -2702,8 +2750,7 @@ def canonical_okf_metadata(path: Path, metadata: Mapping[str, MetadataValue]) ->
                 scope=scope,
                 project_id=metadata_string(payload, "project_id", path),
             ).to_yaml_payload()
-        if "project_id" in payload:
-            raise MalformedMemoryError(path, "global OKF frontmatter must not include project_id")
+        reject_unexpected_okf_keys(path, payload, frozenset(GlobalNoteMetadata.model_fields))
         return GlobalNoteMetadata(
             type=memory_type,
             title=title,
@@ -2712,7 +2759,7 @@ def canonical_okf_metadata(path: Path, metadata: Mapping[str, MetadataValue]) ->
             timestamp=timestamp,
             scope=scope,
         ).to_yaml_payload()
-    except (ValidationError, ValueError) as exc:
+    except ValidationError as exc:
         raise MalformedMemoryError(path, f"invalid OKF frontmatter: {exc}") from exc
 
 
@@ -2773,19 +2820,51 @@ def inspect_overview(
     }
 
 
-def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
+def inspect_schema(*, output_format: InspectOutputFormat, cwd: Path) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect schema currently emits JSON"
+    config = config_for_schema_advertisement(cwd)
+    cards_config, card_model_by_type = load_card_system(config)
     return {
-        "commands": {"inspect": list(INSPECT_COMMAND_NAMES)},
+        "commands": {
+            "inspect": list(INSPECT_COMMAND_NAMES),
+            "card": ["add", "update", "delete", "show", "validate", "dag", "migrate"],
+            "card_types": [card_type.name for card_type in cards_config.card_types],
+        },
         "scopes": [scope.value for scope in SearchScope],
-        "memory_types": [memory_type.value for memory_type in MemoryType],
+        "memory_types": [memory_type.value for memory_type in WRITABLE_MEMORY_TYPES],
         "path_kinds": [kind.value for kind in InspectPathKind],
         "link_directions": [direction.value for direction in InspectLinkDirection],
         "stats_groups": [group.value for group in InspectStatsGroup],
         "export_profiles": [profile.value for profile in InspectExportProfile],
         "formats": {
-            "inspect": [InspectOutputFormat.JSON.value],
-            "export": [InspectExportFormat.GRAPH_JSON.value],
+            "inspect": json_list([InspectOutputFormat.JSON.value]),
+            "export": json_list([InspectExportFormat.GRAPH_JSON.value]),
+        },
+        "card_system": {
+            "root": cards_config.root,
+            "status_count": len(cards_config.statuses),
+            "type_count": len(cards_config.card_types),
+            "status_sets": {
+                status_set_name: {
+                    "default": status_set.default,
+                    "options": json_list(status_set.options),
+                }
+                for status_set_name, status_set in cards_config.status_sets.items()
+            },
+            "types": [
+                {
+                    "name": card_type.name,
+                    "id_prefix": card_type.id_prefix,
+                    "status_set": card_type.status_set,
+                    "parents": json_list(card_type.parents),
+                    "container": card_type.container,
+                    "own_dir": card_type.own_dir,
+                    "required_fields": json_list([field.name for field in card_type.fields if field.required]),
+                    "field_count": len(card_type.fields),
+                }
+                for card_type in cards_config.card_types
+            ],
+            "models": json_list(sorted(card_model_by_type.keys())),
         },
         "metadata_fields": list(ProjectNoteMetadata.model_fields),
     }
@@ -2924,8 +3003,8 @@ def inspect_recent(
     since_datetime = parse_memory_timestamp(since)
     config = load_project_config(cwd)
     note_scan = scan_note_records(config, scope)
-    records = [record for record in note_scan.records if isinstance(record.timestamp, str) and parse_memory_timestamp(record.timestamp) > since_datetime]
-    records.sort(key=lambda record: record.timestamp if isinstance(record.timestamp, str) else "", reverse=True)
+    records = [record for record in note_scan.records if record.timestamp.is_after(since_datetime)]
+    records.sort(key=lambda record: record.timestamp.sort_key(), reverse=True)
     return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records]), "findings": note_findings_json(note_scan.findings)}
 
 
@@ -3018,7 +3097,7 @@ def inspect_counts(values: Sequence[str]) -> JsonObject:
 
 
 def inspect_day_counts(records: Sequence[NoteRecord]) -> JsonObject:
-    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records if isinstance(record.timestamp, str))
+    counts = Counter(parse_memory_timestamp(record.timestamp.value).date().isoformat() for record in records if record.timestamp.is_present())
     return {key: counts[key] for key in sorted(counts)}
 
 
@@ -3462,8 +3541,9 @@ def json_metadata_value(value: MetadataValue) -> JsonValue:
 # --- Plan cards (issue #4): bridge the config-driven card engine to the project vault ---
 
 
-def load_card_system() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
-    cards_config = load_card_system_config()
+def load_card_system(config: ProjectConfig | None = None) -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
+    project_id = None if config is None else config.project_id
+    cards_config = load_card_system_config(config.vault if config is not None else None, project_id)
     return cards_config, build_card_models(cards_config)
 
 
@@ -3533,7 +3613,7 @@ def parse_card_fields(
     return fields
 
 
-def add_plan_card(
+def add_card(
     type_name: str,
     card_id: str,
     parent_id: str | None,
@@ -3543,7 +3623,7 @@ def add_plan_card(
     empty_set: Sequence[str] | None = None,
 ) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     fields = parse_card_fields(cards_config, type_name, assignments, empty_set=empty_set)
     path = create_card(
         project_plans_root(config, cards_config),
@@ -3577,37 +3657,53 @@ def add_plan_card(
     return {"id": card_id, "path": str(path)}
 
 
-def update_plan_card(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:
+def update_card_record(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     type_name = card_type_for_id(cards_config, card_id).name
     updates = parse_card_fields(cards_config, type_name, assignments)
-    path = update_card(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
-    commit_vault_changes(config.vault, f"Update plan card: {card_id}", paths=[path])
+    path = write_card_updates(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
+    commit_vault_changes(config.vault, f"Update card: {card_id}", paths=[path])
     return {"id": card_id, "path": str(path)}
 
 
-def delete_plan_card(card_id: str, cwd: Path) -> JsonObject:
+def delete_card_record(card_id: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, _models = load_card_system()
+    cards_config, _models = load_card_system(config)
     plans_root = project_plans_root(config, cards_config)
     path = find_card_path(plans_root, card_id)
     path.unlink()
-    commit_vault_changes(config.vault, f"Delete plan card: {card_id}", paths=[path])
+    commit_vault_changes(config.vault, f"Delete card: {card_id}", paths=[path])
     return {"deleted": card_id}
 
 
-def validate_plan_cards(cwd: Path) -> JsonObject:
+def show_card(card_id: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
+    card_type = card_type_for_id(cards_config, card_id)
+    path = find_card_path(project_plans_root(config, cards_config), card_id)
+    metadata, body = split_card(path.read_text(encoding="utf-8"))
+    validated = models[card_type.name].model_validate(metadata)
+    return {
+        "id": card_id,
+        "type": card_type.name,
+        "path": str(path),
+        "metadata": validated.model_dump(exclude_unset=True),
+        "body": body,
+    }
+
+
+def validate_card_records(cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    cards_config, models = load_card_system(config)
     records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
     problems = validate_cards(records, cards_config)
     return {"problems": json_list([{"kind": problem.kind, "card": problem.card_id, "detail": problem.detail} for problem in problems])}
 
 
-def write_plan_dag(cwd: Path) -> JsonObject:
+def write_card_dag(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
     plans_root = project_plans_root(config, cards_config)
     plans_root.mkdir(parents=True, exist_ok=True)
@@ -3617,9 +3713,9 @@ def write_plan_dag(cwd: Path) -> JsonObject:
     return {"path": str(path)}
 
 
-def migrate_plan_cards(source: Path, cwd: Path) -> JsonObject:
+def migrate_cards(source: Path, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     paths = migrate_plans(source, project_plans_root(config, cards_config), cards_config, models)
     commit_vault_changes(config.vault, f"Migrate {len(paths)} plan cards", paths=paths)
     return {"migrated": json_list([str(path) for path in paths])}

@@ -18,9 +18,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from agent_memory.cards import load_card_system_config
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
-from agent_memory.models import MemoryType
+from agent_memory.models import InspectOutputFormat, MemoryType
 from agent_memory.operations import (
     OKF_VERSION,
     DependencyCheck,
@@ -30,6 +31,7 @@ from agent_memory.operations import (
     VaultCommitError,
     basic_doctor,
     check_dependency,
+    inspect_schema,
     merge_probe_payloads,
     outgoing_link_keys,
     update_memory,
@@ -154,6 +156,14 @@ def run_agent_memory_subprocess(
         text=True,
         capture_output=True,
     )
+
+
+def assert_structured_cli_error(result: subprocess.CompletedProcess[str]) -> str:
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr.startswith("Error: ")
+    assert not re.search(r"\b(Traceback|AssertionError|ValidationError|FileNotFoundError)\b", result.stderr)
+    return result.stderr
 
 
 def run_agent_memory_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -421,9 +431,8 @@ def add_cli_plan_tree(
 ) -> str:
     run_agent_memory(
         workspace.repo,
-        "plan",
-        "add",
         "feature",
+        "add",
         feature_id,
         "--set",
         f"title={feature_title}",
@@ -438,7 +447,6 @@ def add_cli_plan_tree(
         workspace.repo,
         "plan",
         "add",
-        "plan",
         plan_id,
         "--parent",
         feature_id,
@@ -459,9 +467,8 @@ def add_cli_plan_tree(
     )
     run_agent_memory(
         workspace.repo,
-        "plan",
-        "add",
         "phase",
+        "add",
         phase_id,
         "--parent",
         plan_id,
@@ -484,9 +491,8 @@ def add_cli_plan_tree(
     )
     run_agent_memory(
         workspace.repo,
-        "plan",
-        "add",
         "task",
+        "add",
         task_id,
         "--parent",
         phase_id,
@@ -646,7 +652,9 @@ def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path
     assert "ephemeral error state" in agents_pointer
     pointer_add_types = re.findall(r"agent-memory add --scope project --type (\S+) ", agents_pointer)
     assert pointer_add_types, "agent pointer must demonstrate agent-memory add invocations"
-    assert [MemoryType(token) for token in pointer_add_types] == list(MemoryType)
+    assert [MemoryType(token) for token in pointer_add_types] == [memory_type for memory_type in MemoryType if memory_type is not MemoryType.PLAN]
+    assert "agent-memory add --scope project --type plan" not in agents_pointer
+    assert "agent-memory plan add" in agents_pointer
 
     project_index_path = workspace.vault / "projects" / workspace.project_id / "index.md"
     project_index = project_index_path.read_text()
@@ -726,11 +734,8 @@ def test_init_project_with_explicit_project_id_preserves_no_origin_project_plan_
     initialized = parse_json_stdout(run_agent_memory(repo, "init", "project", "--vault", str(vault), "--project-id", project_id))
     run_agent_memory(
         repo,
-        "plan",
-        "add",
-        "--type",
         "feature",
-        "--id",
+        "add",
         "FEATURE-VENDOR",
         "--set",
         "title=Vendor",
@@ -2064,13 +2069,10 @@ def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path)
 
     result = run_agent_memory_subprocess(workspace.repo, "plan", "validate", pythonpath=test_src)
 
-    assert result.returncode == 1
-    message = result.stderr
-    assert message.startswith("Error: ")
-    assert str(cards_yaml) in message
-    assert "cards.yaml" in message
-    assert "Traceback" not in message
-    assert "ParserError" not in message
+    stderr = assert_structured_cli_error(result)
+    assert str(cards_yaml) in stderr
+    assert "cards.yaml" in stderr
+    assert "ParserError" not in stderr
 
 
 def test_python_dash_m_agent_memory_module_entrypoint_runs_doctor(tmp_path: Path) -> None:
@@ -2141,7 +2143,13 @@ def test_inspect_overview_schema_and_paths_map_real_vault(tmp_path: Path) -> Non
         "export",
     ]
     assert schema["scopes"] == ["project", "global", "both"]
-    assert schema["memory_types"] == ["decision", "trap", "advice", "context", "reference", "plan"]
+    assert schema["memory_types"] == ["decision", "trap", "advice", "context", "reference"]
+    card_system = json_object(schema["card_system"])
+    assert card_system["root"] == "plans"
+    assert isinstance(card_system["status_count"], int)
+    assert card_system["status_count"] >= 3
+    schema_type_names = {json_string(item["name"]) for item in json_records(card_system, "types")}
+    assert {"feature", "plan", "phase", "task"}.issubset(schema_type_names)
 
     paths = inspect_json(workspace, "paths", "--scope", "project", "--kind", "notes", "--format", "json")
     assert paths["scope"] == "project"
@@ -2230,6 +2238,105 @@ def linked_inspect_workspace(tmp_path: Path) -> tuple[CliWorkspace, str, str]:
     assert global_note["key"] == global_key
     assert project_note["key"] == project_key
     return workspace, project_key, global_key
+
+
+def test_card_add_validate_supports_project_cards_yaml_override(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards_path.write_text(
+        """root: plans
+statuses:
+  - todo
+  - blocked
+status_sets:
+  default:
+    default: todo
+    options:
+      - todo
+      - blocked
+card_types:
+  - name: ticket
+    id_prefix: TICKET
+    status_set: default
+    parents: []
+    own_dir: true
+    container: tickets
+    fields:
+      - name: id
+        type: string
+        required: true
+      - name: title
+        type: string
+        required: true
+      - name: status
+        type: status
+        required: true
+""",
+        encoding="utf-8",
+    )
+
+    schema = inspect_json(workspace, "schema", "--format", "json")
+    schema_type_names = {json_string(item["name"]) for item in json_records(json_object(schema["card_system"]), "types")}
+    assert schema_type_names == {"ticket"}
+
+    run_agent_memory(
+        workspace.repo,
+        "card",
+        "add",
+        "ticket",
+        "TICKET-1",
+        "--set",
+        "title=Override ticket",
+        "--set",
+        "status=todo",
+    )
+    ticket_path = workspace.vault / "projects" / workspace.project_id / "plans" / "tickets" / "TICKET-1" / "TICKET-1.md"
+    assert frontmatter(ticket_path) == {"id": "TICKET-1", "title": "Override ticket", "status": "todo"}
+
+    clean = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
+    assert json_array(clean["problems"]) == []
+
+
+def test_inspect_schema_operation_uses_explicit_cwd_for_project_schema(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards_path.write_text(
+        """root: plans
+statuses:
+  - todo
+  - blocked
+status_sets:
+  default:
+    default: todo
+    options:
+      - todo
+      - blocked
+card_types:
+  - name: ticket
+    id_prefix: TICKET
+    status_set: default
+    parents: []
+    own_dir: true
+    container: tickets
+    fields:
+      - name: id
+        type: string
+        required: true
+      - name: title
+        type: string
+        required: true
+      - name: status
+        type: status
+        required: true
+""",
+        encoding="utf-8",
+    )
+
+    schema = inspect_schema(output_format=InspectOutputFormat.JSON, cwd=workspace.repo)
+    schema_type_names = {json_string(item["name"]) for item in json_records(json_object(schema["card_system"]), "types")}
+    assert schema_type_names == {"ticket"}
 
 
 def test_search_content_exact_handles_paths_with_colons(tmp_path: Path) -> None:
@@ -2912,11 +3019,17 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     )
     plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PLAN-DEMO.md"
     assert plan_path.is_file()
+    shown_plan = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "show", "PLAN-DEMO"))
+    assert shown_plan["type"] == "plan"
+    assert shown_plan["path"] == str(plan_path)
+    shown_metadata = json_object(shown_plan["metadata"])
+    assert shown_metadata["title"] == "Plan"
+    assert shown_metadata["status"] == "in-progress"
 
-    clean = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "validate"))
+    clean = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
     assert json_array(clean["problems"]) == []
 
-    dag = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "dag"))
+    dag = parse_json_stdout(run_agent_memory(workspace.repo, "card", "dag"))
     dag_text = Path(json_string(dag["path"])).read_text(encoding="utf-8")
     assert dag_text.count("```mermaid") == 2
 
@@ -2939,17 +3052,17 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
         + "---\n# Migrated\n",
         encoding="utf-8",
     )
-    run_agent_memory(workspace.repo, "plan", "migrate", "--from", str(tmp_path / "incoming" / "plans"))
+    run_agent_memory(workspace.repo, "card", "migrate", "--from", str(tmp_path / "incoming" / "plans"))
     migrated_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-MIG" / "FEATURE-MIG.md"
     assert migrated_path.is_file()
     assert "trackerStatus" not in migrated_path.read_text(encoding="utf-8")
-    assert json_array(parse_json_stdout(run_agent_memory(workspace.repo, "plan", "validate"))["problems"]) == []
+    assert json_array(parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))["problems"]) == []
 
-    run_agent_memory(workspace.repo, "plan", "delete", "FEATURE-MIG")
+    run_agent_memory(workspace.repo, "feature", "delete", "FEATURE-MIG")
     assert not migrated_path.exists()
 
     run_agent_memory(workspace.repo, "plan", "update", "PLAN-DEMO", "--set", "dependsOn=[[TASK-GHOST]]")
-    flagged = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "validate"))
+    flagged = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
     problems = [json_object(item) for item in json_array(flagged["problems"])]
     assert any(json_string(problem["kind"]) == "reference" for problem in problems)
 
@@ -2958,11 +3071,8 @@ def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_cont
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(
         workspace.repo,
-        "plan",
-        "add",
-        "--type",
         "feature",
-        "--id",
+        "add",
         "FEATURE-DELETE",
         "--set",
         "title=Delete feature",
@@ -2977,9 +3087,6 @@ def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_cont
         workspace.repo,
         "plan",
         "add",
-        "--type",
-        "plan",
-        "--id",
         "PLAN-DELETE",
         "--parent",
         "FEATURE-DELETE",
@@ -3010,7 +3117,7 @@ def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_cont
 
     plan_rel = str(plan_path.relative_to(workspace.vault))
     assert not plan_path.exists()
-    assert "Delete plan card: PLAN-DELETE" in git_commit_subjects(workspace.vault)
+    assert "Delete card: PLAN-DELETE" in git_commit_subjects(workspace.vault)
     assert f"A  {unrelated_rel}" in git_status_lines(workspace.vault)
     assert plan_rel not in git_tracked_files(workspace.vault)
     scoped_status = subprocess.run(
@@ -3028,7 +3135,6 @@ def test_plan_add_parented_type_without_parent_fails_cleanly_before_root_write(t
         workspace.repo,
         "plan",
         "add",
-        "plan",
         "PLAN-NO-PARENT",
         "--set",
         "title=No parent",
@@ -3133,6 +3239,68 @@ def test_global_op_error_names_init_global_only_when_vault_missing(tmp_path: Pat
     assert result.returncode != 0
     assert "maintain init-global" in result.stderr
     assert "init project" not in result.stderr
+
+
+def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Card Schema System (PR #35): `inspect schema` must advertise the card types the
+    # *configured* vault will actually enforce and route by. From an unbound cwd with a
+    # global vault configured via AGENT_MEMORY_VAULT, that vault's own `_meta/cards.yaml`
+    # owns the advertised schema -- not the tool's packaged defaults. Here the vault
+    # declares a `signal` type that is absent from the packaged defaults, so a schema that
+    # advertised packaged types would omit it.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    cards_path = vault / "_meta" / "cards.yaml"
+    payload = {
+        "statuses": ["todo", "in-progress", "complete", "blocked"],
+        "status_sets": {
+            "standard": {
+                "default": "todo",
+                "options": ["todo", "in-progress", "complete", "blocked"],
+            },
+        },
+        "card_types": [
+            {
+                "name": "signal",
+                "id_prefix": "SIG",
+                "status_set": "standard",
+                "parents": [],
+                "own_dir": True,
+                "container": "signals",
+                "fields": [
+                    {"name": "id", "type": "string", "required": True},
+                    {"name": "title", "type": "string", "required": True},
+                    {"name": "status", "type": "status", "required": True},
+                ],
+            },
+        ],
+    }
+    cards_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))
+    loose = unbound_dir(tmp_path)
+
+    schema = parse_json_stdout(run_agent_memory(loose, "inspect", "schema", "--format", "json"))
+    card_system = json_object(schema["card_system"])
+    advertised = {json_string(json_object(card_type)["name"]) for card_type in json_array(card_system["types"])}
+    assert "signal" in advertised
+
+
+def test_inspect_schema_advertises_packaged_defaults_when_no_vault_initialized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Card Schema System (PR #35): the honest no-vault branch. From an unbound cwd whose
+    # configured global vault (AGENT_MEMORY_VAULT) is NOT initialized, `inspect schema`
+    # advertises exactly the tool's packaged default card types. It must select that answer
+    # by an explicit state query -- not by naively resolving the global vault, which would
+    # raise GlobalVaultNotInitializedError and abort the command. A regression that dropped
+    # the initialized-vault guard would crash here instead of returning the packaged schema.
+    uninitialized_vault = tmp_path / "empty-vault"
+    uninitialized_vault.mkdir()
+    monkeypatch.setenv("AGENT_MEMORY_VAULT", str(uninitialized_vault))
+    loose = unbound_dir(tmp_path)
+
+    schema = parse_json_stdout(run_agent_memory(loose, "inspect", "schema", "--format", "json"))
+    card_system = json_object(schema["card_system"])
+    advertised = {json_string(json_object(card_type)["name"]) for card_type in json_array(card_system["types"])}
+    assert advertised == {card_type.name for card_type in load_card_system_config().card_types}
 
 
 def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:
@@ -3266,6 +3434,51 @@ def test_init_project_idempotent_when_vault_dir_exists(tmp_path: Path) -> None:
     run_agent_memory(git_repo.path, "init", "project", "--vault", str(vault))
 
 
+def test_generated_plan_add_help_uses_project_plan_card_schema(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards_path.write_text(
+        """root: plans
+statuses:
+  - open
+  - closed
+status_sets:
+  default:
+    default: open
+    options:
+      - open
+      - closed
+card_types:
+  - name: plan
+    id_prefix: PLAN
+    status_set: default
+    parents: []
+    own_dir: true
+    container: plans
+    fields:
+      - name: id
+        type: string
+        required: true
+      - name: title
+        type: string
+        required: true
+      - name: status
+        type: status
+        required: true
+      - name: checkpoint
+        type: string
+        required: true
+""",
+        encoding="utf-8",
+    )
+
+    help_result = run_agent_memory_subprocess(workspace.repo, "plan", "add", "--help")
+    assert help_result.returncode == 0
+    assert "checkpoint" in help_result.stdout
+    assert "successCriteria" not in help_result.stdout
+
+
 def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
@@ -3282,7 +3495,6 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         workspace.repo,
         "plan",
         "add",
-        "plan",
         "PLAN-1",
         "--set",
         "status=bogus",
@@ -3309,7 +3521,6 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         workspace.repo,
         "plan",
         "add",
-        "plan",
         "PLAN-2",
         "--empty-set",
         "parents",
@@ -3336,9 +3547,8 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
 
     run_agent_memory(
         workspace.repo,
-        "plan",
-        "add",
         "feature",
+        "add",
         "FEATURE-BODY",
         "--set",
         "status=in-progress",
@@ -3354,13 +3564,35 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     assert "Markdown body from file" in card_file.read_text(encoding="utf-8")
 
 
+def test_add_rejects_writable_plan_memory_notes(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "add",
+        "--scope",
+        "project",
+        "--type",
+        "plan",
+        "--title",
+        "Legacy Plan Note",
+        "--content",
+        "This would bypass the card schema.",
+    )
+    legacy_path = workspace.vault / "projects" / workspace.project_id / "plans" / "legacy-plan-note.md"
+
+    assert result.returncode != 0
+    assert "plan" in result.stderr
+    assert "card" in result.stderr
+    assert not legacy_path.exists()
+
+
 def test_plan_add_invalid_numeric_field_fails_through_cli_boundary_without_writing_card(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(
         workspace.repo,
-        "plan",
-        "add",
         "feature",
+        "add",
         "FEATURE-NUMERIC",
         "--set",
         "status=in-progress",
@@ -3372,9 +3604,8 @@ def test_plan_add_invalid_numeric_field_fails_through_cli_boundary_without_writi
 
     result = run_agent_memory_subprocess(
         workspace.repo,
-        "plan",
-        "add",
         "spec",
+        "add",
         "SPEC-NUMERIC",
         "--parent",
         "FEATURE-NUMERIC",
@@ -3400,9 +3631,8 @@ def test_plan_add_missing_body_file_fails_through_cli_boundary_without_writing_c
 
     result = run_agent_memory_subprocess(
         workspace.repo,
-        "plan",
-        "add",
         "feature",
+        "add",
         "FEATURE-MISSING-BODY",
         "--set",
         "status=in-progress",
@@ -3425,35 +3655,15 @@ def test_plan_add_missing_body_file_fails_through_cli_boundary_without_writing_c
 
 def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
+    unsupported_type = "milestone"
+    unsupported_id = "MILESTONE-1"
 
-    result = run_agent_memory_subprocess(workspace.repo, "plan", "add", "milestone", "MILESTONE-1")
+    result = run_agent_memory_subprocess(workspace.repo, "card", "add", unsupported_type, unsupported_id)
 
-    assert result.returncode != 0
-    assert result.stderr.startswith("Error: ")
-    assert "unknown card type" in result.stderr
-    assert "feature" in result.stderr
-    assert "task" in result.stderr
-    assert "AssertionError" not in result.stderr
-    assert "Traceback" not in result.stderr
-
-
-def test_plan_update_unrecognized_id_is_structured_cli_error(tmp_path: Path) -> None:
-    workspace = initialized_workspace(tmp_path)
-
-    result = run_agent_memory_subprocess(
-        workspace.repo,
-        "plan",
-        "update",
-        "projects/some-project/plans/some-vault-key",
-        "--set",
-        "status=in-progress",
-    )
-
-    assert result.returncode != 0
-    assert result.stderr.startswith("Error: ")
-    assert "no card type matches id prefix" in result.stderr
-    assert "AssertionError" not in result.stderr
-    assert "Traceback" not in result.stderr
+    stderr = assert_structured_cli_error(result)
+    assert unsupported_type in stderr
+    assert {"feature", "task"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr)))
+    assert list(workspace.vault.rglob(f"{unsupported_id}.md")) == []
 
 
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
@@ -3470,24 +3680,27 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
         "--content",
         "Y",
     )
-    assert r1.returncode != 0
-    assert "Unknown option: --type" in r1.stderr
-    assert "Did you mean --scope?" in r1.stderr
+    stderr1 = assert_structured_cli_error(r1)
+    assert "--type" in stderr1
+    assert "--scope" in stderr1
 
     # Scenario 2: missing modes/arguments
     r2 = run_agent_memory_subprocess(workspace.repo, "search", "content")
-    assert r2.returncode != 0
-    assert "requires an argument" in r2.stderr
-    assert "--mode" in r2.stderr
+    stderr2 = assert_structured_cli_error(r2)
+    assert "--mode" in stderr2
 
     # Scenario 3: invalid search mode
-    r3 = run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", "substring")
-    assert r3.returncode != 0
-    assert "exact" in r3.stderr
-    assert "fuzzy" in r3.stderr
+    unsupported_mode = "substring"
+    r3 = run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", unsupported_mode)
+    stderr3 = assert_structured_cli_error(r3)
+    assert unsupported_mode in stderr3
+    assert {"exact", "fuzzy", "ranked"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr3)))
 
-    # Scenario 4: unknown command
-    r4 = run_agent_memory_subprocess(workspace.repo, "unknown-command")
-    assert r4.returncode != 0
-    assert 'Unknown command "unknown-command"' in r4.stderr
-    assert "Available commands" in r4.stderr
+    # Scenario 4: list is a registered command and requires an explicit type
+    r4 = run_agent_memory_subprocess(workspace.repo, "list")
+    stderr4 = assert_structured_cli_error(r4)
+    assert "--type" in stderr4
+    listed = parse_json_stdout(run_agent_memory_module(workspace.repo, "list", "--type", "plan", "--scope", "both"))
+    assert listed["type"] == "plan"
+    assert listed["scope"] == "both"
+    assert json_array(listed["results"]) == []
