@@ -25,12 +25,13 @@ Audit what #65 already handles as partial boundary cleanup, then either depend o
 
 ## Claim map
 
-- [ ] **#52 - non-conforming notes produce per-note findings without vault-wide aborts**
+- [x] **#52 - non-conforming notes produce per-note findings without vault-wide aborts**
   - Proof obligations claimed: mixed fixture vault; well-formed records returned; offending note named with structured finding; no traceback for expected boundary failures.
   - Partial / not claimed: no todo mutation command and no global queue surface.
-  - Evidence required: committed red reproducer, green real-CLI tests for `search`/`inspect`, and explicit assertions rejecting silent swallow/default behavior.
-  - Current evidence: #65 partially covers malformed schema and unknown-id boundaries only; #52 remains open.
+  - Red proof: `735c19a test: reproduce inspect export missing note findings`.
+  - Green fix: `f40a244 fix: report inspect export note findings`.
+  - Targeted evidence: `direnv exec . uv run --python 3.14 pytest` over the #52 search, overview, export, malformed note, unknown card type, and malformed `cards.yaml` cases passed `10 passed in 34.92s`.
 
 ## Automated gates
 
-Keep draft until the per-note resilience fixture and full boundary-error cases are evidenced, not merely described as handled by partial #65 work.
+Keep draft until full `just` gates pass and the PR body is republished with this claim evidence.
