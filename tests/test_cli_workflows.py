@@ -23,7 +23,7 @@ import yaml
 from agent_memory.cards import load_card_system_config
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
-from agent_memory.models import InspectOutputFormat, MemoryType
+from agent_memory.models import InspectOutputFormat, MemoryType, ProjectConfig
 from agent_memory.operations import (
     OKF_VERSION,
     DependencyCheck,
@@ -759,18 +759,26 @@ def test_init_project_with_explicit_project_id_preserves_no_origin_project_plan_
     assert not (vault / "global" / "plans" / "FEATURE-VENDOR.md").exists()
 
 
-def test_init_project_without_remote_or_project_id_fails_before_global_write(tmp_path: Path) -> None:
+def test_project_config_model_excludes_repo_owned_settings() -> None:
+    assert "project_root_strategy" not in ProjectConfig.model_fields
+    assert "global_scopes" not in ProjectConfig.model_fields
+    assert "search_max_results" not in ProjectConfig.model_fields
+    assert "search_max_tokens" not in ProjectConfig.model_fields
+
+
+def test_init_project_without_remote_or_project_id_uses_git_root_name(tmp_path: Path) -> None:
     repo = tmp_path / "vendor"
     repo.mkdir()
     init_git_repo_without_remote(repo)
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
 
-    result = run_agent_memory_subprocess(repo, "init", "project", "--vault", str(vault))
+    initialized = parse_json_stdout(run_agent_memory(repo, "init", "project", "--vault", str(vault)))
 
-    assert result.returncode != 0
+    assert initialized["project_id"] == "vendor"
     assert not (repo / ".agent-memory.toml").exists()
-    assert tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"] == []
+    assert operations_load_project_config(repo).project_id == "vendor"
+    assert tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"] == [{"project_id": "vendor", "root": str(repo), "remote": ""}]
 
 
 def test_init_global_normalizes_literal_tilde_vault_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1646,7 +1654,7 @@ def test_project_commands_without_config_fail_with_first_time_setup_guidance(
     )
 
     assert result.returncode != 0
-    assert "No project memory config found" in result.stderr
+    assert "No project memory binding found" in result.stderr
     assert "agent-memory init project --vault" in result.stderr
     assert "ProjectNotInitializedError" not in result.stderr
     assert "Traceback" not in result.stderr
@@ -1702,7 +1710,7 @@ def test_load_project_config_raises_project_not_initialized(tmp_path: Path) -> N
     with pytest.raises(ProjectNotInitializedError) as excinfo:
         operations_load_project_config(repo)
     message = str(excinfo.value)
-    assert "No project memory config found" in message
+    assert "No project memory binding found" in message
     assert "agent-memory init project --vault" in message
 
 
@@ -3350,7 +3358,7 @@ def unbound_dir(tmp_path: Path) -> Path:
 def test_global_add_and_search_run_without_project_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Issue #25: storing or searching a *global* memory must not require the cwd to be a
     # bound project. The global vault is resolved from AGENT_MEMORY_VAULT (falling back to
-    # the shipped default) independent of any cwd `.agent-memory.toml`.
+    # the shipped default) independent of any cwd project binding file.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))
