@@ -302,6 +302,15 @@ class MemoryDocument:
 
 
 @dataclass(frozen=True)
+class MissingNoteTimestamp:
+    pass
+
+
+type NoteTimestamp = str | MissingNoteTimestamp
+MISSING_NOTE_TIMESTAMP = MissingNoteTimestamp()
+
+
+@dataclass(frozen=True)
 class NoteRecord:
     key: str
     path: Path
@@ -309,7 +318,7 @@ class NoteRecord:
     memory_type: MemoryType
     scope: MemoryScope
     tags: tuple[str, ...]
-    timestamp: str | None
+    timestamp: NoteTimestamp
     document: MemoryDocument
 
 
@@ -333,14 +342,25 @@ class IndexScan:
 
 
 @dataclass(frozen=True)
+class ManagedCardLocation:
+    key: str
+
+
+@dataclass(frozen=True)
+class UnmanagedCardLocation:
+    suggested_destination: str
+
+
+type CardLocation = ManagedCardLocation | UnmanagedCardLocation
+
+
+@dataclass(frozen=True)
 class CardListing:
     title: str
     card_type: str
     scope: MemoryScope
     path: Path
-    managed: bool
-    key: str | None
-    suggested_destination: str | None
+    location: CardLocation
 
 
 @dataclass(frozen=True)
@@ -751,9 +771,7 @@ def search_metadata(
     config = config_for_search_scope(scope, cwd)
     created_after_datetime = parse_created_after(created_after)
     note_scan = scan_note_records(config, scope)
-    records = [
-        metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)
-    ]
+    records = [metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)]
     return {
         "scope": scope.value,
         "results": json_list(records[: config.search_max_results]),
@@ -875,14 +893,22 @@ STRUCTURED_CARD_PREFIX_TYPES = {
 
 
 def card_listing_json(record: CardListing) -> JsonObject:
+    if isinstance(record.location, ManagedCardLocation):
+        managed = True
+        key: JsonValue = record.location.key
+        suggested_destination: JsonValue = None
+    else:
+        managed = False
+        key = None
+        suggested_destination = record.location.suggested_destination
     return {
         "title": record.title,
         "type": record.card_type,
         "scope": record.scope.value,
         "path": str(record.path),
-        "managed": record.managed,
-        "key": record.key,
-        "suggested_destination": record.suggested_destination,
+        "managed": managed,
+        "key": key,
+        "suggested_destination": suggested_destination,
     }
 
 
@@ -892,7 +918,7 @@ def list_cards(card_type: str, scope: SearchScope, include_unmigrated: bool, cwd
     if include_unmigrated:
         records.extend(unmigrated_card_listings(config, scope))
     filtered = [record for record in records if record.card_type == card_type]
-    filtered.sort(key=lambda record: (record.managed, record.scope.value, record.title, str(record.path)))
+    filtered.sort(key=lambda record: (isinstance(record.location, ManagedCardLocation), record.scope.value, record.title, str(record.path)))
     return {
         "type": card_type,
         "scope": scope.value,
@@ -1969,7 +1995,7 @@ def remove_index_link_by_target(index_path: Path, target: str) -> None:
         index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def metadata_string(metadata: dict[str, MetadataValue], key: str, path: Path) -> str:
+def metadata_string(metadata: Mapping[str, MetadataValue], key: str, path: Path) -> str:
     if key not in metadata:
         raise MalformedMemoryError(path, f"frontmatter missing required field: {key}")
     value = metadata[key]
@@ -1978,7 +2004,7 @@ def metadata_string(metadata: dict[str, MetadataValue], key: str, path: Path) ->
     return value
 
 
-def metadata_string_optional(metadata: dict[str, MetadataValue], key: str, path: Path) -> str | None:
+def metadata_string_optional(metadata: Mapping[str, MetadataValue], key: str, path: Path) -> str | None:
     if key not in metadata:
         return None
     value = metadata[key]
@@ -1989,6 +2015,49 @@ def metadata_string_optional(metadata: dict[str, MetadataValue], key: str, path:
     if value == "":
         return None
     return value
+
+
+def metadata_string_list(metadata: Mapping[str, MetadataValue], key: str, path: Path) -> list[str]:
+    if key not in metadata:
+        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}")
+    value = metadata[key]
+    if not isinstance(value, list):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a list")
+    values: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise MalformedMemoryError(path, f"frontmatter field {key} must be a list of strings")
+        values.append(item)
+    return values
+
+
+def require_metadata_literal(metadata: Mapping[str, MetadataValue], key: str, expected: str, path: Path) -> None:
+    value = metadata_string(metadata, key, path)
+    if value != expected:
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be {expected!r}")
+
+
+def require_metadata_bool(metadata: Mapping[str, MetadataValue], key: str, expected: bool, path: Path) -> None:
+    if key not in metadata:
+        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}")
+    value = metadata[key]
+    if not isinstance(value, bool):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a boolean")
+    if value is not expected:
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be {expected!r}")
+
+
+def note_timestamp_from_metadata(metadata: Mapping[str, MetadataValue], path: Path) -> NoteTimestamp:
+    timestamp = metadata_string_optional(metadata, "timestamp", path)
+    if timestamp is None:
+        return MISSING_NOTE_TIMESTAMP
+    return timestamp
+
+
+def note_timestamp_json(timestamp: NoteTimestamp) -> JsonValue:
+    if isinstance(timestamp, MissingNoteTimestamp):
+        return None
+    return timestamp
 
 
 def updated_memory_body(current_body: str, title: str, content: str | None) -> str:
@@ -2321,9 +2390,7 @@ def card_listing_for_path(config: ProjectConfig, path: Path, *, managed: bool) -
         card_type=card_type,
         scope=scope,
         path=path,
-        managed=managed,
-        key=memory_key(config.vault, path) if managed else None,
-        suggested_destination=None if managed else suggested_card_destination(config, scope, card_type),
+        location=ManagedCardLocation(memory_key(config.vault, path)) if managed else UnmanagedCardLocation(suggested_card_destination(config, scope, card_type)),
     )
 
 
@@ -2409,8 +2476,11 @@ def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
         raise MalformedMemoryError(path, "frontmatter must include tags")
     if not isinstance(tags, list):
         raise MalformedMemoryError(path, "frontmatter tags must be a list")
-    if not all(isinstance(tag, str) for tag in tags):
-        raise MalformedMemoryError(path, "frontmatter tags must be a list of strings")
+    tag_values: list[str] = []
+    for tag in tags:
+        if not isinstance(tag, str):
+            raise MalformedMemoryError(path, "frontmatter tags must be a list of strings")
+        tag_values.append(tag)
     memory_type_text = metadata_string(document.metadata, "type", path)
     try:
         memory_type = MemoryType(memory_type_text)
@@ -2424,8 +2494,8 @@ def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
         title=metadata_string(document.metadata, "title", path),
         memory_type=memory_type,
         scope=stored_scope,
-        tags=tuple(tags),
-        timestamp=metadata_string_optional(document.metadata, "timestamp", path),
+        tags=tuple(tag_values),
+        timestamp=note_timestamp_from_metadata(document.metadata, path),
         document=document,
     )
 
@@ -2439,7 +2509,7 @@ def note_record_matches_metadata(
     return (
         (memory_type is None or record.memory_type is memory_type)
         and (tag is None or tag in record.tags)
-        and (created_after is None or (record.timestamp is not None and parse_memory_timestamp(record.timestamp) > created_after))
+        and (created_after is None or (isinstance(record.timestamp, str) and parse_memory_timestamp(record.timestamp) > created_after))
     )
 
 
@@ -2457,7 +2527,7 @@ def note_record_json(record: NoteRecord) -> JsonObject:
         **note_record_core(record),
         "scope": record.scope.value,
         "tags": json_list(record.tags),
-        "timestamp": record.timestamp,
+        "timestamp": note_timestamp_json(record.timestamp),
     }
 
 
@@ -2465,7 +2535,7 @@ def metadata_search_record_json(record: NoteRecord) -> JsonObject:
     return {
         **note_record_core(record),
         "tags": json_list(record.tags),
-        "timestamp": record.timestamp,
+        "timestamp": note_timestamp_json(record.timestamp),
     }
 
 
@@ -2600,15 +2670,49 @@ def reconcile_okf_frontmatter(
 
 def canonical_okf_metadata(path: Path, metadata: Mapping[str, MetadataValue]) -> dict[str, MetadataValue]:
     payload = dict(metadata)
-    payload["type"] = MemoryType(metadata_string(payload, "type", path))
-    payload["scope"] = MemoryScope(metadata_string(payload, "scope", path))
     try:
+        memory_type = MemoryType(metadata_string(payload, "type", path))
+        scope = MemoryScope(metadata_string(payload, "scope", path))
+        title = metadata_string(payload, "title", path)
+        description = metadata_string(payload, "description", path)
+        tags = metadata_string_list(payload, "tags", path)
+        timestamp = metadata_string(payload, "timestamp", path)
+        require_metadata_literal(payload, "source", "agent", path)
+        require_metadata_literal(payload, "confidence", "high", path)
+        require_metadata_bool(payload, "promotable", False, path)
         if "origin_project_id" in payload:
-            return PromotedNoteMetadata(**payload).to_yaml_payload()
-        if payload["scope"] is MemoryScope.PROJECT:
-            return ProjectNoteMetadata(**payload).to_yaml_payload()
-        return GlobalNoteMetadata(**payload).to_yaml_payload()
-    except ValidationError as exc:
+            if "project_id" in payload:
+                raise MalformedMemoryError(path, "promoted OKF frontmatter must not include project_id")
+            return PromotedNoteMetadata(
+                type=memory_type,
+                title=title,
+                description=description,
+                tags=tags,
+                timestamp=timestamp,
+                scope=scope,
+                origin_project_id=metadata_string(payload, "origin_project_id", path),
+            ).to_yaml_payload()
+        if scope is MemoryScope.PROJECT:
+            return ProjectNoteMetadata(
+                type=memory_type,
+                title=title,
+                description=description,
+                tags=tags,
+                timestamp=timestamp,
+                scope=scope,
+                project_id=metadata_string(payload, "project_id", path),
+            ).to_yaml_payload()
+        if "project_id" in payload:
+            raise MalformedMemoryError(path, "global OKF frontmatter must not include project_id")
+        return GlobalNoteMetadata(
+            type=memory_type,
+            title=title,
+            description=description,
+            tags=tags,
+            timestamp=timestamp,
+            scope=scope,
+        ).to_yaml_payload()
+    except (ValidationError, ValueError) as exc:
         raise MalformedMemoryError(path, f"invalid OKF frontmatter: {exc}") from exc
 
 
@@ -2820,8 +2924,8 @@ def inspect_recent(
     since_datetime = parse_memory_timestamp(since)
     config = load_project_config(cwd)
     note_scan = scan_note_records(config, scope)
-    records = [record for record in note_scan.records if record.timestamp is not None and parse_memory_timestamp(record.timestamp) > since_datetime]
-    records.sort(key=lambda record: record.timestamp or "", reverse=True)
+    records = [record for record in note_scan.records if isinstance(record.timestamp, str) and parse_memory_timestamp(record.timestamp) > since_datetime]
+    records.sort(key=lambda record: record.timestamp if isinstance(record.timestamp, str) else "", reverse=True)
     return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records]), "findings": note_findings_json(note_scan.findings)}
 
 
@@ -2914,7 +3018,7 @@ def inspect_counts(values: Sequence[str]) -> JsonObject:
 
 
 def inspect_day_counts(records: Sequence[NoteRecord]) -> JsonObject:
-    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records if record.timestamp is not None)
+    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records if isinstance(record.timestamp, str))
     return {key: counts[key] for key in sorted(counts)}
 
 

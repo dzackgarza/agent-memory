@@ -627,7 +627,14 @@ def plan_add_help_text(config: CardSystemConfig) -> str:
     return "\n".join(doc)
 
 
-plan_add_command.__doc__ = plan_add_help_text(load_card_system_config())
+def configure_plan_add_help() -> None:
+    plan_add_command.__doc__ = plan_add_help_text(load_card_system_config())
+
+
+def needs_plan_add_help(arguments: list[str]) -> bool:
+    return len(arguments) >= 3 and arguments[:2] == ["plan", "add"] and any(argument in ("--help", "-h") for argument in arguments[2:])
+
+
 register_commands()
 
 
@@ -655,6 +662,8 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
+        if needs_plan_add_help(sys.argv[1:]):
+            configure_plan_add_help()
         basic_doctor(Path.cwd())
         app(sys.argv[1:], print_error=False, exit_on_error=False)
     except cyclopts.exceptions.MissingArgumentError as e:

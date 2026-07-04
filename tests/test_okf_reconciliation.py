@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
+from agent_memory.models import MetadataValue
 from agent_memory.operations import (
     MalformedMemoryError,
+    MemoryDocument,
     extract_embedded_frontmatter_blocks,
     read_memory,
     reconcile_memory_file,
@@ -13,7 +16,7 @@ from agent_memory.operations import (
 )
 
 PROJECT_ID = "github.com__dzackgarza__agent-memory"
-OKF_VALUES = {
+OKF_VALUES: dict[str, MetadataValue] = {
     "type": "plan",
     "description": "Preserve normalization-owned OKF metadata.",
     "timestamp": "2026-07-02T00:00:00Z",
@@ -23,13 +26,16 @@ OKF_VALUES = {
     "promotable": False,
     "project_id": PROJECT_ID,
 }
-PRIMARY_COLLAPSED_HEADER = {
+PRIMARY_COLLAPSED_HEADER: dict[str, MetadataValue] = {
     "title": "Legacy Double Frontmatter Plan",
     "tags": ["project", "plan"],
 }
 
 
-def double_frontmatter_note(extra: dict[str, object] | None = None, primary: dict[str, object] | None = None) -> str:
+def double_frontmatter_note(
+    extra: Mapping[str, MetadataValue] | None = None,
+    primary: Mapping[str, MetadataValue] | None = None,
+) -> str:
     extra_payload = OKF_VALUES if extra is None else extra
     lines = [
         "---",
@@ -53,7 +59,7 @@ def double_frontmatter_note(extra: dict[str, object] | None = None, primary: dic
     return "\n".join(lines) + "\n"
 
 
-def assert_okf_fields(metadata: dict[str, object]) -> None:
+def assert_okf_fields(metadata: Mapping[str, object]) -> None:
     for key, value in OKF_VALUES.items():
         assert metadata[key] == value
     assert metadata["title"] == PRIMARY_COLLAPSED_HEADER["title"]
@@ -110,7 +116,7 @@ def test_reconcile_memory_file_fails_loudly_on_unknown_extra_key(tmp_path: Path)
     assert note_path.read_text(encoding="utf-8") == original
 
 
-def read_memory_from_text(tmp_path: Path, text: str):
+def read_memory_from_text(tmp_path: Path, text: str) -> MemoryDocument:
     note_path = tmp_path / "okf-reconciliation-inline.md"
     note_path.write_text(text, encoding="utf-8")
     return read_memory(note_path)

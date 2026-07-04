@@ -4,6 +4,7 @@ import json
 import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -138,9 +139,14 @@ def run_agent_memory(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def run_agent_memory_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_agent_memory_subprocess(
+    cwd: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    pythonpath: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     command_env = env if env is not None else agent_memory_env()
-    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src" if pythonpath is None else pythonpath)
     return subprocess.run(
         [sys.executable, "-m", "agent_memory", *args],
         cwd=cwd,
@@ -1715,18 +1721,7 @@ def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> Non
         plan_title="Managed Plan",
         description_signal="managed",
     )
-    unmigrated = (
-        workspace.vault
-        / "projects"
-        / workspace.project_id
-        / "harnesses"
-        / "codex"
-        / "memories"
-        / "extensions"
-        / "ad_hoc"
-        / "notes"
-        / "stranded-plan.md"
-    )
+    unmigrated = workspace.vault / "projects" / workspace.project_id / "harnesses" / "codex" / "memories" / "extensions" / "ad_hoc" / "notes" / "stranded-plan.md"
     write_unmigrated_plan(unmigrated, "Stranded Harness Plan", workspace.project_id)
 
     doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
@@ -2060,45 +2055,17 @@ def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path
     assert payload["project_root"] == str(workspace.repo)
 
 
-def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    cards_yaml = tmp_path / "cards.yaml"
+    test_src = tmp_path / "src"
+    shutil.copytree(PROJECT_ROOT / "src", test_src)
+    cards_yaml = test_src / "agent_memory" / "defaults" / "cards.yaml"
     cards_yaml.write_text("statuses: [unterminated\n", encoding="utf-8")
 
-    import agent_memory.cards.loader as card_loader
+    result = run_agent_memory_subprocess(workspace.repo, "plan", "validate", pythonpath=test_src)
 
-    original_files = card_loader.resources.files
-
-    class FakeDefaults:
-        def __init__(self, real_defaults: object) -> None:
-            self.real_defaults = real_defaults
-
-        def joinpath(self, name: str) -> Path:
-            if name == "cards.yaml":
-                return cards_yaml
-            return self.real_defaults.joinpath(name)
-
-    monkeypatch.setattr(card_loader.resources, "files", lambda package: FakeDefaults(original_files(package)))
-    command_env = agent_memory_env()
-    original_cwd = Path.cwd()
-    original_argv = sys.argv.copy()
-    original_env = os.environ.copy()
-    stderr = StringIO()
-    try:
-        os.chdir(workspace.repo)
-        os.environ.clear()
-        os.environ.update(command_env)
-        sys.argv = ["agent-memory", "plan", "validate"]
-        with redirect_stderr(stderr), pytest.raises(SystemExit) as excinfo:
-            cli_main()
-    finally:
-        os.chdir(original_cwd)
-        sys.argv = original_argv
-        os.environ.clear()
-        os.environ.update(original_env)
-
-    assert excinfo.value.code == 1
-    message = stderr.getvalue()
+    assert result.returncode == 1
+    message = result.stderr
     assert message.startswith("Error: ")
     assert str(cards_yaml) in message
     assert "cards.yaml" in message
@@ -3519,8 +3486,8 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     assert "exact" in r3.stderr
     assert "fuzzy" in r3.stderr
 
-    # Scenario 4: unknown commands list
-    r4 = run_agent_memory_subprocess(workspace.repo, "list")
+    # Scenario 4: unknown command
+    r4 = run_agent_memory_subprocess(workspace.repo, "unknown-command")
     assert r4.returncode != 0
-    assert 'Unknown command "list"' in r4.stderr
+    assert 'Unknown command "unknown-command"' in r4.stderr
     assert "Available commands" in r4.stderr
