@@ -21,7 +21,9 @@ Vault reads are schema-driven and resilient: one malformed or non-conforming not
 
 ## Implementation plan
 
-Audit what #65 already handles as partial boundary cleanup, then either depend on those commits or absorb equivalent fixes. Add the missing real-vault CLI fixture from #52: mixed well-formed notes plus the nested `todo_tree`/non-conforming note. Change the reader path so failures are attached to the offending note and the rest of the result set survives, while still failing loudly for schema/config failures that cannot produce a valid reader.
+Audit what #65 already handles as partial boundary cleanup, then either depend on those commits or absorb equivalent fixes.
+Add the missing real-vault CLI fixture from #52: mixed well-formed notes plus the nested `todo_tree`/non-conforming note.
+Change the reader path so failures are attached to the offending note and the rest of the result set survives, while still failing loudly for schema/config failures that cannot produce a valid reader.
 
 ## Claim map
 
