@@ -30,6 +30,7 @@ from agent_memory.models import (
 from agent_memory.operations import (
     BUNDLED_SKILL_NAMES,
     INSPECT_COMMAND_NAMES,
+    QUEUE_CARD_TYPE,
     CardFieldError,
     DependencyError,
     GlobalVaultNotInitializedError,
@@ -37,7 +38,6 @@ from agent_memory.operations import (
     MalformedMemoryError,
     MemoryOperationError,
     ProjectNotInitializedError,
-    QUEUE_CARD_TYPE,
     VaultCommitError,
     add_card,
     add_memory,

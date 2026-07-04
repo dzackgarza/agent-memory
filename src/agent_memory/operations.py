@@ -4004,11 +4004,7 @@ def list_queue_items(cwd: Path) -> JsonObject:
     config = config_for_memory_scope(MemoryScope.GLOBAL, cwd)
     cards_config, models = load_global_queue_card_system(config)
     records = load_card_records([global_queue_root(config)], cards_config, models)
-    queue_records = [
-        queue_item_json(record)
-        for _card_id, record in sorted(records.items())
-        if record.type_name == QUEUE_CARD_TYPE
-    ]
+    queue_records = [queue_item_json(record) for _card_id, record in sorted(records.items()) if record.type_name == QUEUE_CARD_TYPE]
     return {"items": json_list(queue_records)}
 
 
