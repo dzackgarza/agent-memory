@@ -12,6 +12,7 @@ import tomllib
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from io import StringIO
 from pathlib import Path
 
@@ -292,11 +293,16 @@ def json_string(value: JsonValue) -> str:
     return value
 
 
+class ExpectedSyncAutoState(Enum):
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+
+
 def expected_sync_auto_status(
     env: dict[str, str] | None = None,
     interval_seconds: int | None = None,
     *,
-    enabled: bool = False,
+    state: ExpectedSyncAutoState = ExpectedSyncAutoState.DISABLED,
 ) -> JsonObject:
     source_env = env if env is not None else os.environ
     xdg_config_home = source_env.get("XDG_CONFIG_HOME")
@@ -305,7 +311,7 @@ def expected_sync_auto_status(
     timer_path = config_home / "systemd" / "user" / "agent-memory-sync.timer"
     timer_wants_path = config_home / "systemd" / "user" / "timers.target.wants" / "agent-memory-sync.timer"
     status: JsonObject = {
-        "enabled": enabled,
+        "enabled": state is ExpectedSyncAutoState.ENABLED,
         "installed": interval_seconds is not None,
         "service_path": str(service_path),
         "timer_path": str(timer_path),
@@ -1932,13 +1938,13 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert enabled.returncode == 0
     assert parse_json_stdout(enabled) == {
-        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED),
         "vault": str(vault),
     }
     assert timer_wants_path.is_symlink()
     assert timer_wants_path.resolve() == timer_path.resolve()
     enabled_status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
-    assert enabled_status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300, enabled=True)
+    assert enabled_status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED)
 
     disabled = run_agent_memory_subprocess(loose, "sync", "disable", env=env)
 
@@ -1953,7 +1959,7 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert enabled_again.returncode == 0
     assert parse_json_stdout(enabled_again) == {
-        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED),
         "vault": str(vault),
     }
 
