@@ -44,9 +44,10 @@ def _numeric_field(field: FieldSpec) -> tuple[Any, Any]:
 
 
 def _list_field(field: FieldSpec) -> tuple[Any, Any]:
+    field_info = Field(min_length=field.min_items)
     if field.required:
-        return (list[str], Field())
-    return (list[str], Field(default_factory=list))
+        return (list[str], field_info)
+    return (list[str], Field(default_factory=list, min_length=field.min_items))
 
 
 def _scalar_field(field: FieldSpec) -> tuple[Any, Any]:
@@ -69,9 +70,10 @@ def _object_list_field(field: FieldSpec, status_set: StatusSetSpec) -> tuple[Any
     # The element model is created at runtime, so build list[item_model] via a value-level
     # call (not a type expression) — mypy cannot statically type a dynamic model.
     list_type: Any = list.__class_getitem__(item_model)
+    field_info = Field(min_length=field.min_items)
     if field.required:
-        return (list_type, Field())
-    return (list_type, Field(default_factory=list))
+        return (list_type, field_info)
+    return (list_type, Field(default_factory=list, min_length=field.min_items))
 
 
 def field_definition(field: FieldSpec, status_set: StatusSetSpec) -> tuple[Any, Any]:

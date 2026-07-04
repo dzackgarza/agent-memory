@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import zipfile
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from agent_memory.cards import CardSystemConfig, build_card_models, load_card_models, load_card_system_config
@@ -229,11 +235,17 @@ def test_shipped_plan_model_requires_success_criteria() -> None:
         "status": "approved-and-unstarted",
         "description": "Drive the category spec program.",
         "successCriteria": ["The vertical slice compiles."],
+        "tasks": ["[[TASK-CATEGORY-SPEC-FIRST-SLICE]]"],
     }
     assert models["plan"].model_validate(base).model_dump()["status"] == "approved-and-unstarted"
     missing = {key: value for key, value in base.items() if key != "successCriteria"}
     with pytest.raises(ValidationError):
         models["plan"].model_validate(missing)
+    missing_tasks = {key: value for key, value in base.items() if key != "tasks"}
+    with pytest.raises(ValidationError):
+        models["plan"].model_validate(missing_tasks)
+    with pytest.raises(ValidationError):
+        models["plan"].model_validate({**base, "tasks": []})
 
 
 def test_shipped_task_model_enforces_complexity_range() -> None:
@@ -249,3 +261,93 @@ def test_shipped_task_model_enforces_complexity_range() -> None:
     assert models["task"].model_validate({**base, "complexity": 42}).model_dump()["complexity"] == 42
     with pytest.raises(ValidationError):
         models["task"].model_validate({**base, "complexity": 150})
+
+
+def test_load_card_system_config_prefers_project_cards_yaml(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    project_id = "example-project"
+
+    def payload_for(name: str, id_prefix: str, container: str) -> dict[str, Any]:
+        return {
+            "root": "plans",
+            "statuses": ["todo", "in-progress", "complete", "blocked"],
+            "status_sets": {
+                "standard": {
+                    "default": "todo",
+                    "options": ["todo", "in-progress", "complete", "blocked"],
+                },
+            },
+            "card_types": [
+                {
+                    "name": name,
+                    "id_prefix": id_prefix,
+                    "status_set": "standard",
+                    "parents": [],
+                    "own_dir": True,
+                    "container": container,
+                    "fields": [
+                        {"name": "id", "type": "string", "required": True},
+                        {"name": "title", "type": "string", "required": True},
+                        {"name": "status", "type": "status", "required": True},
+                    ],
+                },
+            ],
+        }
+
+    vault_cards_path = vault / "_meta" / "cards.yaml"
+    vault_cards_path.parent.mkdir(parents=True)
+    vault_cards_path.write_text(yaml.safe_dump(payload_for("global_signal", "GSIG", "global-signals")), encoding="utf-8")
+
+    cards_path = vault / "projects" / project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards_path.write_text(yaml.safe_dump(payload_for("signal", "SIG", "signals")), encoding="utf-8")
+
+    config = load_card_system_config(vault, project_id)
+    assert config.root == "plans"
+    type_names = {card_type.name for card_type in config.card_types}
+    assert type_names == {"signal"}
+
+
+def test_load_card_system_config_falls_back_to_packaged_defaults_if_project_cards_yaml_missing(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = load_card_system_config(vault)
+    assert {card_type.name for card_type in config.card_types} >= {"feature", "plan", "phase", "task"}
+
+
+def test_load_card_system_config_reads_packaged_defaults_from_zip_resource(tmp_path: Path) -> None:
+    package_zip = tmp_path / "agent_memory_pkg.zip"
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    packaged_files = (
+        "agent_memory/__init__.py",
+        "agent_memory/cards/__init__.py",
+        "agent_memory/cards/config.py",
+        "agent_memory/cards/factory.py",
+        "agent_memory/cards/loader.py",
+        "agent_memory/defaults/__init__.py",
+        "agent_memory/defaults/cards.yaml",
+    )
+    with zipfile.ZipFile(package_zip, "w") as archive:
+        for relative_path in packaged_files:
+            archive.write(source_root / relative_path, relative_path)
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(package_zip)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from agent_memory.cards.loader import load_card_system_config; "
+                "config = load_card_system_config(); "
+                "print('\\n'.join(card_type.name for card_type in config.card_types))"
+            ),
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert {"feature", "plan", "task"}.issubset(set(result.stdout.splitlines()))

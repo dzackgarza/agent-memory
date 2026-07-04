@@ -35,7 +35,14 @@ def make_plan(root: Path, config: CardSystemConfig, models: dict[str, type[BaseM
         type_name="plan",
         card_id=f"PLAN-{suffix}",
         parent_id=parent,
-        fields={"title": "P", "status": status, "description": "d", "parents": [f"[[{parent}]]"], "successCriteria": ["c"]},
+        fields={
+            "title": "P",
+            "status": status,
+            "description": "d",
+            "parents": [f"[[{parent}]]"],
+            "successCriteria": ["c"],
+            "tasks": [f"[[TASK-{suffix}]]"],
+        },
         body="# P\n",
     )
 

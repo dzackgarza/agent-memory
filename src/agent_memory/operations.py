@@ -9,15 +9,19 @@ import subprocess
 import sys
 import tomllib
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
+from enum import Enum
 from importlib import resources
 from pathlib import Path
 
+import frontmatter
 import tomli_w
 import yaml
-from pydantic import BaseModel
+from markdown_it import MarkdownIt
+from pydantic import BaseModel, ValidationError
 
 from agent_memory import iwe
 from agent_memory.cards.config import CardSystemConfig
@@ -25,9 +29,11 @@ from agent_memory.cards.dag import PLAN_DAG_FILENAME, render_dag
 from agent_memory.cards.factory import build_card_models
 from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
-from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, update_card
+from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, split_card
+from agent_memory.cards.storage import update_card as write_card_updates
 from agent_memory.cards.validation import load_card_records, validate_cards
 from agent_memory.models import (
+    BaseNoteMetadata,
     GlobalNoteMetadata,
     InspectExportFormat,
     InspectExportProfile,
@@ -67,6 +73,34 @@ class SyncSystemdPaths:
 
 
 @dataclass(frozen=True)
+class DeleteBacklinksBlocked:
+    pass
+
+
+@dataclass(frozen=True)
+class DeleteBacklinksOrphaned:
+    pass
+
+
+@dataclass(frozen=True)
+class DeleteBacklinksRepointed:
+    target: str
+
+
+type DeleteBacklinkDisposition = DeleteBacklinksBlocked | DeleteBacklinksOrphaned | DeleteBacklinksRepointed
+
+
+class CardListingSource(Enum):
+    MANAGED = "managed"
+    MANAGED_AND_UNMIGRATED = "managed_and_unmigrated"
+
+
+class SyncCommitState(Enum):
+    CLEAN = "clean"
+    COMMITTED = "committed"
+
+
+@dataclass(frozen=True)
 class WikilinkRewrite:
     from_key: str
     to_target: str
@@ -75,7 +109,7 @@ class WikilinkRewrite:
 
 
 OKF_VERSION = "0.1"
-MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+MARKDOWN_PARSER = MarkdownIt("commonmark")
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 AGENTS_SECTION_START = "<!-- agent-memory:start -->"
 AGENTS_SECTION_END = "<!-- agent-memory:end -->"
@@ -103,6 +137,23 @@ MEMORY_TYPE_DIRECTORIES: dict[MemoryType, str] = {
     MemoryType.REFERENCE: "references",
     MemoryType.PLAN: "plans",
 }
+WRITABLE_MEMORY_TYPES: tuple[MemoryType, ...] = tuple(memory_type for memory_type in MemoryType if memory_type is not MemoryType.PLAN)
+PLAN_TODO_STATUSES: frozenset[str] = frozenset(
+    (
+        "pending",
+        "unstarted",
+        "approved-and-unstarted",
+        "in-progress",
+        "needs-agent-review",
+        "needs-human-input",
+        "revision-required",
+        "blocked",
+        "complete",
+        "decided",
+        "implemented",
+    )
+)
+PLAN_TODO_CHILD_KEYS: tuple[str, ...] = ("children", "todos", "tasks")
 
 # The directory names for every memory type, in MemoryType enum order. This is the
 # single source for both the global vault layout and the per-project layout.
@@ -299,6 +350,29 @@ class MemoryDocument:
 
 
 @dataclass(frozen=True)
+class NoteTimestamp:
+    value: str
+
+    @classmethod
+    def from_metadata(cls, metadata: dict[str, MetadataValue], path: Path) -> NoteTimestamp:
+        return cls(metadata_string_optional(metadata, "timestamp", path) or "")
+
+    def is_present(self) -> bool:
+        return self.value != ""
+
+    def is_after(self, lower_bound: datetime) -> bool:
+        return self.is_present() and parse_memory_timestamp(self.value) > lower_bound
+
+    def json_value(self) -> JsonValue:
+        if self.is_present():
+            return self.value
+        return None
+
+    def sort_key(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
 class NoteRecord:
     key: str
     path: Path
@@ -306,8 +380,61 @@ class NoteRecord:
     memory_type: MemoryType
     scope: MemoryScope
     tags: tuple[str, ...]
-    timestamp: str
+    timestamp: NoteTimestamp
     document: MemoryDocument
+
+
+@dataclass(frozen=True)
+class NoteFinding:
+    path: Path
+    key: str
+    message: str
+
+
+@dataclass(frozen=True)
+class NoteScan:
+    records: tuple[NoteRecord, ...]
+    findings: tuple[NoteFinding, ...]
+
+
+@dataclass(frozen=True)
+class IndexScan:
+    records: tuple[JsonObject, ...]
+    findings: tuple[NoteFinding, ...]
+
+
+@dataclass(frozen=True)
+class InspectExportRecord:
+    key: str
+    path: Path
+    document: MemoryDocument
+
+
+@dataclass(frozen=True)
+class InspectExportScan:
+    records: tuple[InspectExportRecord, ...]
+    findings: tuple[NoteFinding, ...]
+
+
+@dataclass(frozen=True)
+class ManagedCardListing:
+    title: str
+    card_type: str
+    scope: MemoryScope
+    path: Path
+    key: str
+
+
+@dataclass(frozen=True)
+class UnmigratedCardListing:
+    title: str
+    card_type: str
+    scope: MemoryScope
+    path: Path
+    suggested_destination: str
+
+
+type CardListing = ManagedCardListing | UnmigratedCardListing
 
 
 @dataclass(frozen=True)
@@ -460,6 +587,8 @@ def add_memory(
     content: str,
     cwd: Path,
 ) -> JsonObject:
+    if memory_type is MemoryType.PLAN:
+        raise MemoryOperationError("plain plan memories are not supported; use agent-memory plan add so cards.yaml validates the task tree")
     config = config_for_memory_scope(scope, cwd)
     slug = memory_slug(title)
     directory = memory_directory(config, scope, memory_type)
@@ -509,14 +638,17 @@ def memory_transition(
 ) -> MemoryTransition:
     source_path = config.vault / f"{key}.md"
     document = read_memory(source_path)
-    old_title = metadata_string(document.metadata, "title")
-    scope = MemoryScope(metadata_string(document.metadata, "scope"))
-    old_type = MemoryType(metadata_string(document.metadata, "type"))
+    old_title = metadata_string(document.metadata, "title", source_path)
+    scope = MemoryScope(metadata_string(document.metadata, "scope", source_path))
+    old_type = MemoryType(metadata_string(document.metadata, "type", source_path))
     new_title = title if title is not None else old_title
     new_type = memory_type if memory_type is not None else old_type
     body = updated_memory_body(document.body, new_title, content)
     description = okf_description(content if content is not None else body)
-    metadata = note_metadata(config, scope, new_type, new_title, description)
+    metadata = {
+        **document.metadata,
+        **note_metadata(config, scope, new_type, new_title, description),
+    }
     destination_path = memory_directory(config, scope, new_type) / f"{memory_slug(new_title)}.md"
     return MemoryTransition(
         old_key=key,
@@ -602,21 +734,141 @@ def update_memory(
     return result
 
 
+def update_plan_todo(
+    *,
+    key: str,
+    todo_id: str,
+    status: str | None,
+    content: str | None,
+    note: str | None,
+    cwd: Path,
+) -> JsonObject:
+    if status is None and content is None and note is None:
+        raise MemoryOperationError("todo set requires at least one of --status, --content, or --note")
+    if status is not None and status not in PLAN_TODO_STATUSES:
+        allowed = ", ".join(sorted(PLAN_TODO_STATUSES))
+        raise MemoryOperationError(f"invalid todo status {status!r}; allowed statuses: {allowed}")
+    if content is not None and not content.strip():
+        raise MemoryOperationError("todo content must not be empty")
+    if not todo_id.strip():
+        raise MemoryOperationError("todo id must not be empty")
+
+    config = load_project_config(cwd)
+    path = (config.vault / f"{key}.md").resolve()
+    if not path.is_relative_to(config.vault.resolve()) or not path.is_file():
+        raise MemoryOperationError(f"plan memory not found: {key}")
+
+    original_body = raw_memory_body(path)
+    document = read_memory(path)
+    if metadata_memory_type(document.metadata, path) is not MemoryType.PLAN:
+        raise MemoryOperationError(f"todo set requires a plan memory key, got {metadata_string(document.metadata, 'type', path)!r}: {key}")
+    todos_value = document.metadata.get("todos")
+    if not isinstance(todos_value, list):
+        raise MemoryOperationError(f"plan memory has no todos list: {key}")
+
+    metadata = deepcopy(document.metadata)
+    copied_todos = metadata["todos"]
+    assert isinstance(copied_todos, list), "deep-copied todos must preserve list type"
+    target = mutate_todo_tree(copied_todos, todo_id=todo_id, status=status, content=content, note=note, path=path)
+    if target is None:
+        raise MemoryOperationError(f"todo id not found: {todo_id}")
+
+    write_memory(path, metadata, original_body)
+    index_zk_notebook(config.vault)
+    title = metadata_string(metadata, "title", path)
+    try:
+        commit_vault_changes(config.vault, f"Update todo {todo_id} in plan: {title}", paths=[path])
+    except subprocess.CalledProcessError as e:
+        git_stderr = e.stderr or ""
+        raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
+
+    result: JsonObject = {"key": key, "path": str(path), "todo_id": todo_id}
+    if status is not None:
+        result["status"] = status
+    if content is not None:
+        result["content"] = content
+    if note is not None:
+        result["note"] = note
+    return result
+
+
+def mutate_todo_tree(
+    todos: list[MetadataValue],
+    *,
+    todo_id: str,
+    status: str | None,
+    content: str | None,
+    note: str | None,
+    path: Path,
+) -> dict[str, MetadataValue] | None:
+    found: dict[str, MetadataValue] | None = None
+    for item in todos:
+        todo = todo_mapping(item, path)
+        item_id = todo.get("id")
+        if item_id == todo_id:
+            if found is not None:
+                raise MemoryOperationError(f"todo id is not unique: {todo_id}")
+            if status is not None:
+                todo["status"] = status
+            if content is not None:
+                todo["content"] = content
+            if note is not None:
+                todo["note"] = note
+            found = todo
+        for child_key in PLAN_TODO_CHILD_KEYS:
+            children = todo.get(child_key)
+            if children is None:
+                continue
+            if not isinstance(children, list):
+                raise MalformedMemoryError(path, f"todo field {child_key} must be a list")
+            child_match = mutate_todo_tree(children, todo_id=todo_id, status=status, content=content, note=note, path=path)
+            if child_match is not None:
+                if found is not None:
+                    raise MemoryOperationError(f"todo id is not unique: {todo_id}")
+                found = child_match
+    return found
+
+
+def todo_mapping(value: MetadataValue, path: Path) -> dict[str, MetadataValue]:
+    if not isinstance(value, dict):
+        raise MalformedMemoryError(path, "todo entries must be mappings")
+    for key in value:
+        if not isinstance(key, str):
+            raise MalformedMemoryError(path, "todo entry keys must be strings")
+    todo_id = value.get("id")
+    if not isinstance(todo_id, str) or not todo_id.strip():
+        raise MalformedMemoryError(path, "todo entries must contain a nonempty string id")
+    return value
+
+
+def raw_memory_body(path: Path) -> str:
+    raw = path.read_text(encoding="utf-8")
+    parts = raw.split("---\n", 2)
+    if len(parts) != 3 or parts[0] != "":
+        return read_memory(path).body
+    return parts[2]
+
+
 def delete_backlink_disposition_error(key: str, inbound_keys: Sequence[str]) -> str:
     return f"delete would orphan inbound wikilinks for {key}; inbound={', '.join(inbound_keys)}; rerun with --repoint <key-or-url> or --orphan-ok"
 
 
-def delete_memory(
-    key: str,
-    cwd: Path,
-    repoint: str | None = None,
-    orphan_ok: bool = False,
-) -> JsonObject:
+def delete_memory(key: str, cwd: Path) -> JsonObject:
+    return _delete_memory(key, cwd, DeleteBacklinksBlocked())
+
+
+def delete_memory_orphaning_backlinks(key: str, cwd: Path) -> JsonObject:
+    return _delete_memory(key, cwd, DeleteBacklinksOrphaned())
+
+
+def delete_memory_repointing_backlinks(key: str, cwd: Path, repoint: str) -> JsonObject:
+    return _delete_memory(key, cwd, DeleteBacklinksRepointed(repoint))
+
+
+def _delete_memory(key: str, cwd: Path, backlink_disposition: DeleteBacklinkDisposition) -> JsonObject:
     config = load_project_config(cwd)
-    if repoint is not None and orphan_ok:
-        raise MemoryOperationError("delete accepts --repoint or --orphan-ok, not both")
     inbound_keys = non_index_incoming_link_keys(config, key)
-    if inbound_keys and repoint is None and not orphan_ok:
+    if inbound_keys and isinstance(backlink_disposition, DeleteBacklinksBlocked):
         raise MemoryOperationError(delete_backlink_disposition_error(key, inbound_keys))
     path = config.vault / f"{key}.md"
     try:
@@ -627,14 +879,14 @@ def delete_memory(
             path.unlink()
         commit_message = f"Delete memory: {key}"
     else:
-        title = metadata_string(document.metadata, "title")
+        title = metadata_string(document.metadata, "title", path)
         remove_index_link(path.parent / "index.md", title)
         commit_message = f"Delete memory: {title}"
         iwe.delete(config.vault, key)
 
     rewritten: list[JsonObject] = []
-    if repoint is not None:
-        rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, repoint),))
+    if isinstance(backlink_disposition, DeleteBacklinksRepointed):
+        rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, backlink_disposition.target),))
     index_zk_notebook(config.vault)
     try:
         commit_vault_changes(
@@ -652,17 +904,18 @@ def delete_memory(
         raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
     result: JsonObject = {"deleted": key}
-    if repoint is not None:
-        result["repointed_to"] = repoint
+    if isinstance(backlink_disposition, DeleteBacklinksRepointed):
+        result["repointed_to"] = backlink_disposition.target
         result["rewritten"] = json_list(rewritten)
-    if orphan_ok:
+    if isinstance(backlink_disposition, DeleteBacklinksOrphaned):
         result["orphaned"] = json_list(inbound_keys)
     return result
 
 
 def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
-    key_matches = key_search_records(config, scope, query)
+    note_scan = scan_note_records(config, scope)
+    key_matches = key_search_records_from_notes(note_scan.records, query, config.search_max_results)
     exact_matches = exact_content_records(config, scope, query)
     fuzzy_matches = fuzzy_content_records(config, scope, query)
     results = dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[: config.search_max_results]
@@ -677,15 +930,18 @@ def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
         "exact_content_matches": json_list(exact_matches),
         "fuzzy_content_matches": json_list(fuzzy_matches),
         "ranked_content_matches": ranked_results,
+        "findings": note_findings_json(note_scan.findings),
     }
 
 
 def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
+    note_scan = scan_note_records(config, scope)
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_list(key_search_records(config, scope, query)),
+        "results": json_list(key_search_records_from_notes(note_scan.records, query, config.search_max_results)),
+        "findings": note_findings_json(note_scan.findings),
     }
 
 
@@ -707,26 +963,30 @@ def search_metadata(
 ) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
     created_after_datetime = parse_created_after(created_after)
-    records = [
-        metadata_search_record_json(record) for record in inspect_note_records(config, scope) if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)
-    ]
+    note_scan = scan_note_records(config, scope)
+    records = [metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)]
     return {
         "scope": scope.value,
         "results": json_list(records[: config.search_max_results]),
+        "findings": note_findings_json(note_scan.findings),
     }
 
 
 def key_search_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    return key_search_records_from_notes(inspect_note_records(config, scope), query, config.search_max_results)
+
+
+def key_search_records_from_notes(records: Sequence[NoteRecord], query: str, limit: int) -> list[JsonObject]:
     query_text = query.casefold()
-    records: list[JsonObject] = []
-    for record in inspect_note_records(config, scope):
+    matched_records: list[JsonObject] = []
+    for record in records:
         key_matches = query_text in record.key.casefold()
         title_matches = query_text in record.title.casefold()
         if key_matches or title_matches:
             json_record = note_record_json(record)
             json_record["source"] = "keys"
-            records.append(json_record)
-    return dedupe_records_by_key(records)[: config.search_max_results]
+            matched_records.append(json_record)
+    return dedupe_records_by_key(matched_records)[:limit]
 
 
 def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
@@ -740,6 +1000,7 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
     output = run_ripgrep_search(
         [
             "rg",
+            "--json",
             "--line-number",
             "--with-filename",
             "--fixed-strings",
@@ -749,15 +1010,28 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
         cwd=config.vault,
     )
     records: list[JsonObject] = []
-    for line in output.splitlines():
-        path_text, line_number_text, text = line.split(":", 2)
-        path = Path(path_text).resolve()
+    for raw_match in output.splitlines():
+        payload = json.loads(raw_match)
+        if payload.get("type") != "match":
+            continue
+        data = payload["data"]
+        assert isinstance(data, dict), f"unexpected rg match payload: {payload}"
+        path_text = data["path"]["text"]
+        line_number = data["line_number"]
+        lines = data["lines"]["text"]
+        assert isinstance(path_text, str), f"unexpected rg path type: {payload}"
+        assert isinstance(line_number, int), f"unexpected rg line number: {payload}"
+        assert isinstance(lines, str), f"unexpected rg line text: {payload}"
+        path = Path(path_text)
+        if not path.is_absolute():
+            path = config.vault / path
+        path = path.resolve()
         records.append(
             {
                 "key": memory_key(config.vault, path),
                 "path": str(path),
-                "line": int(line_number_text),
-                "text": text,
+                "line": line_number,
+                "text": lines.rstrip(),
                 "source": "exact",
             }
         )
@@ -799,6 +1073,59 @@ def json_list(values: Sequence[JsonValue]) -> list[JsonValue]:
     # JsonObject slots. Sequence is covariant, so list[JsonObject] and list[str] inputs
     # satisfy Sequence[JsonValue]; the copy decouples the emitted payload from callers.
     return list(values)
+
+
+STRUCTURED_CARD_PREFIX_TYPES = {
+    "FEATURE": "feature",
+    "PLAN": "plan",
+    "PHASE": "phase",
+    "TASK": "task",
+    "SPEC": "spec",
+    "DECISION": "decision",
+}
+
+
+def card_listing_json(record: CardListing) -> JsonObject:
+    payload: JsonObject = {
+        "title": record.title,
+        "type": record.card_type,
+        "scope": record.scope.value,
+        "path": str(record.path),
+    }
+    if isinstance(record, ManagedCardListing):
+        return {**payload, "managed": True, "key": record.key, "suggested_destination": None}
+    return {**payload, "managed": False, "key": None, "suggested_destination": record.suggested_destination}
+
+
+def list_cards(card_type: str, scope: SearchScope, cwd: Path) -> JsonObject:
+    return _list_cards(card_type, scope, CardListingSource.MANAGED, cwd)
+
+
+def list_cards_with_unmigrated(card_type: str, scope: SearchScope, cwd: Path) -> JsonObject:
+    return _list_cards(card_type, scope, CardListingSource.MANAGED_AND_UNMIGRATED, cwd)
+
+
+def _list_cards(card_type: str, scope: SearchScope, listing_source: CardListingSource, cwd: Path) -> JsonObject:
+    config = config_for_search_scope(scope, cwd)
+    records: list[CardListing] = [*managed_card_listings(config, scope)]
+    include_unmigrated = listing_source is CardListingSource.MANAGED_AND_UNMIGRATED
+    if listing_source is CardListingSource.MANAGED_AND_UNMIGRATED:
+        records.extend(unmigrated_card_listings(config, scope))
+    filtered = [record for record in records if record.card_type == card_type]
+    filtered.sort(
+        key=lambda record: (
+            isinstance(record, ManagedCardListing),
+            record.scope.value,
+            record.title,
+            str(record.path),
+        )
+    )
+    return {
+        "type": card_type,
+        "scope": scope.value,
+        "include_unmigrated": include_unmigrated,
+        "results": json_list([card_listing_json(record) for record in filtered]),
+    }
 
 
 def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
@@ -1015,10 +1342,11 @@ def squash_memory(key: str, depth: int, cwd: Path) -> str:
 
 def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    source_document = read_memory(memory_path_for_key(config, key))
-    source_title = metadata_string(source_document.metadata, "title")
-    memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
-    scope = MemoryScope(metadata_string(source_document.metadata, "scope"))
+    source_path = memory_path_for_key(config, key)
+    source_document = read_memory(source_path)
+    source_title = metadata_string(source_document.metadata, "title", source_path)
+    memory_type = MemoryType(metadata_string(source_document.metadata, "type", source_path))
+    scope = MemoryScope(metadata_string(source_document.metadata, "scope", source_path))
     affected_keys = iwe.extract(config.vault, key, section)
     extracted_keys: list[str] = []
     for affected_key in affected_keys:
@@ -1058,13 +1386,13 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    reference_document = read_memory(memory_path_for_key(config, reference))
-    reference_title = metadata_string(reference_document.metadata, "title")
+    reference_path = memory_path_for_key(config, reference)
+    reference_document = read_memory(reference_path)
+    reference_title = metadata_string(reference_document.metadata, "title", reference_path)
     affected_keys = iwe.inline(config.vault, key, reference)
-    rewritten = rewrite_wikilink_files(
+    rewritten = rewrite_non_index_wikilink_files(
         config,
         (wikilink_rewrite(reference, f"{key}#{reference_title}"),),
-        include_indexes=False,
     )
     index_zk_notebook(config.vault)
     # Build pathspecs without asserting existence -- iwe.inline deletes the
@@ -1085,9 +1413,9 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     assert destination_path.parent.is_dir(), "move destination directory must exist"
 
     source_document = read_memory(source_path)
-    memory_type = MemoryType(metadata_string(source_document.metadata, "type"))
-    title = metadata_string(source_document.metadata, "title")
-    description = metadata_string(source_document.metadata, "description")
+    memory_type = MemoryType(metadata_string(source_document.metadata, "type", source_path))
+    title = metadata_string(source_document.metadata, "title", source_path)
+    description = metadata_string(source_document.metadata, "description", source_path)
     iwe.rename(config.vault, key, destination_key)
 
     moved_document = read_memory(destination_path)
@@ -1181,6 +1509,7 @@ def doctor(cwd: Path) -> JsonObject:
         "project_root": str(git_root),
         "project_bound": True,
         "agent_state": project_agent_state_records(git_root, project_dir),
+        "unmigrated_cards": json_list([card_listing_json(record) for record in unmigrated_card_listings(config, SearchScope.BOTH)]),
         "auto_sync": sync_auto_status(),
         "last_sync": sync_state(),
         "tools": basic["tools"],
@@ -1570,7 +1899,7 @@ def sync_status(cwd: Path) -> JsonObject:
     }
 
 
-def push_sync_conflict_branch(vault: Path, remote: str, branch: str, committed: bool, conflict_head: str) -> JsonObject:
+def push_sync_conflict_branch(vault: Path, remote: str, branch: str, commit_state: SyncCommitState, conflict_head: str) -> JsonObject:
     conflict_branch = sync_conflict_branch_name(branch, conflict_head)
     run_checked(["git", "rebase", "--abort"], cwd=vault)
     run_checked(["git", "branch", conflict_branch, conflict_head], cwd=vault)
@@ -1582,7 +1911,7 @@ def push_sync_conflict_branch(vault: Path, remote: str, branch: str, committed: 
         "vault": str(vault),
         "remote": remote,
         "branch": branch,
-        "committed": committed,
+        "committed": commit_state is SyncCommitState.COMMITTED,
         "pushed": False,
         "head": git_head(vault),
         "worktree_clean": True,
@@ -1605,7 +1934,8 @@ def sync_vault(cwd: Path) -> JsonObject:
     run_checked(["git", "fetch", "origin", branch], cwd=vault)
     rebase = run_checked_optional(["git", "rebase", f"origin/{branch}"], cwd=vault)
     if rebase.returncode != 0:
-        result = push_sync_conflict_branch(vault, remote, branch, committed, sync_head)
+        commit_state = SyncCommitState.COMMITTED if committed else SyncCommitState.CLEAN
+        result = push_sync_conflict_branch(vault, remote, branch, commit_state, sync_head)
         write_sync_state(result)
         return result
     run_checked(["git", "push", "origin", branch], cwd=vault)
@@ -1679,20 +2009,42 @@ def migrate_directory_contents(source: Path, destination: Path) -> None:
         shutil.move(str(child), str(target))
 
 
+def describe_non_symlink_path(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    if path.is_dir():
+        return "a regular directory"
+    if path.is_file():
+        return "a regular file"
+    return "not a symlink"
+
+
 def project_agent_state_records(git_root: Path, project_dir: Path) -> list[JsonValue]:
     records: list[JsonValue] = []
     for name in PROJECT_AGENT_STATE_DIRECTORIES:
         repo_path = git_root / name
         vault_path = project_dir
-        assert vault_path.is_dir(), f"project agent state directory is missing: {vault_path}"
-        assert repo_path.is_symlink(), f"project agent state path is not a symlink: {repo_path}"
-        assert repo_path.resolve() == vault_path.resolve(), f"project agent state path points outside the vault project: {repo_path}"
-        records.append({"name": name, "repo_path": str(repo_path), "vault_path": str(vault_path)})
+        issues: list[JsonValue] = []
+        if not vault_path.is_dir():
+            issues.append(f"vault project directory is missing: {vault_path}")
+        if not repo_path.is_symlink():
+            issues.append(f"{repo_path} must be a symlink into the vault project, but it is {describe_non_symlink_path(repo_path)}")
+        elif repo_path.resolve() != vault_path.resolve():
+            issues.append(f"{repo_path} points outside the vault project: it resolves to {repo_path.resolve()}")
+        records.append(
+            {
+                "name": name,
+                "repo_path": str(repo_path),
+                "vault_path": str(vault_path),
+                "ok": not issues,
+                "issues": issues,
+            }
+        )
     return records
 
 
 def agents_pointer_section(vault: Path, project_id: str) -> str:
-    add_examples = "".join(f"agent-memory add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in MemoryType)
+    add_examples = "".join(f"agent-memory add --scope project --type {memory_type.value} --title <title> --content <content>\n" for memory_type in WRITABLE_MEMORY_TYPES)
     return (
         f"{AGENTS_SECTION_START}\n"
         "# Agent memory\n\n"
@@ -1707,6 +2059,7 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         "```bash\n"
         f"{add_examples}"
         "```\n\n"
+        "Plan work is card-backed. Create and update plan cards with `agent-memory plan add` and `agent-memory plan update`, not `agent-memory add --type plan`.\n\n"
         "Use `agent-memory retrieve <key>`, `agent-memory update <key>`, and `agent-memory delete <key>` for memory CRUD.\n\n"
         "The vault should be committed at all times. Treat staged or unstaged vault changes as an ephemeral error state. "
         f"Before normal memory work resumes, load the bundled vault-maintenance skill with `{VAULT_MAINTENANCE_SKILL_COMMAND}` "
@@ -1798,25 +2151,33 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
         index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
 
 
-def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int]:
+def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int | None]:
     assert index_path.is_file(), "index must exist before editing a link"
     # IWE rewrites the OKF bullet marker to "-" when it renames linked notes, so an
     # entry may start with either bullet. This is the single owner of that contract.
     link_prefixes = (f"* [{title}](", f"- [{title}](")
     lines = index_path.read_text(encoding="utf-8").splitlines()
     matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
-    assert len(matching_indexes) == 1, "index must contain exactly one link for the title"
+    if len(matching_indexes) > 1:
+        raise MemoryOperationError(f"index {index_path} contains multiple links for title: {title}")
+    if not matching_indexes:
+        return lines, None
     return lines, matching_indexes[0]
 
 
 def replace_index_link(index_path: Path, existing_title: str, new_title: str, target: str, description: str) -> None:
     lines, entry_start = locate_index_link(index_path, existing_title)
-    lines[entry_start] = okf_index_entry(new_title, target, description)
+    if entry_start is None:
+        lines.append(okf_index_entry(new_title, target, description))
+    else:
+        lines[entry_start] = okf_index_entry(new_title, target, description)
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def remove_index_link(index_path: Path, title: str) -> None:
     lines, entry_start = locate_index_link(index_path, title)
+    if entry_start is None:
+        return
     del lines[entry_start]
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1836,10 +2197,69 @@ def remove_index_link_by_target(index_path: Path, target: str) -> None:
         index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def metadata_string(metadata: dict[str, MetadataValue], key: str) -> str:
+def metadata_string(metadata: dict[str, MetadataValue], key: str, path: Path) -> str:
+    if key not in metadata:
+        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}")
     value = metadata[key]
-    assert isinstance(value, str), f"metadata field {key} must be a string"
+    if not isinstance(value, str):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a string")
     return value
+
+
+def metadata_string_optional(metadata: dict[str, MetadataValue], key: str, path: Path) -> str | None:
+    if key not in metadata:
+        return None
+    value = metadata[key]
+    if not isinstance(value, str):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a string")
+    # An empty string reads as ABSENT: missing and empty are both "no value", so a blank
+    # optional field never reaches a consumer (e.g. parse_memory_timestamp) as "".
+    if value == "":
+        return None
+    return value
+
+
+def metadata_bool(metadata: dict[str, MetadataValue], key: str, path: Path) -> bool:
+    try:
+        value = metadata[key]
+    except KeyError as error:
+        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}") from error
+    if not isinstance(value, bool):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a boolean")
+    return value
+
+
+def metadata_string_tuple(metadata: dict[str, MetadataValue], key: str, path: Path) -> tuple[str, ...]:
+    try:
+        value = metadata[key]
+    except KeyError as error:
+        raise MalformedMemoryError(path, f"frontmatter missing required field: {key}") from error
+    if not isinstance(value, list):
+        raise MalformedMemoryError(path, f"frontmatter field {key} must be a list")
+    strings: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise MalformedMemoryError(path, f"frontmatter field {key} must be a list of strings")
+        strings.append(item)
+    return tuple(strings)
+
+
+def metadata_memory_type(metadata: dict[str, MetadataValue], path: Path) -> MemoryType:
+    value = metadata_string(metadata, "type", path)
+    try:
+        return MemoryType(value)
+    except ValueError as error:
+        known_types = ", ".join(memory_type.value for memory_type in MemoryType)
+        raise MalformedMemoryError(path, f"frontmatter type {value!r} is not one of: {known_types}") from error
+
+
+def metadata_memory_scope(metadata: dict[str, MetadataValue], path: Path) -> MemoryScope:
+    value = metadata_string(metadata, "scope", path)
+    try:
+        return MemoryScope(value)
+    except ValueError as error:
+        known_scopes = ", ".join(scope.value for scope in MemoryScope)
+        raise MalformedMemoryError(path, f"frontmatter scope {value!r} is not one of: {known_scopes}") from error
 
 
 def updated_memory_body(current_body: str, title: str, content: str | None) -> str:
@@ -1963,6 +2383,23 @@ def global_only_config() -> ProjectConfig:
     )
 
 
+def config_for_schema_advertisement(cwd: Path) -> ProjectConfig | None:
+    # The vault whose card schema `inspect schema` should advertise: the cwd's bound
+    # project when bound, else the configured global vault when it is actually
+    # initialized. When no vault is configured+initialized, return None so the caller
+    # advertises the packaged defaults -- the honest answer for a genuinely
+    # unconfigured state. That state is selected here by the explicit initialized-vault
+    # query, never by catching GlobalVaultNotInitializedError. Any other error (e.g. an
+    # empty AGENT_MEMORY_VAULT) still propagates loudly from global_vault_path.
+    config = find_project_config(cwd)
+    if config is not None:
+        return config
+    vault = global_vault_path()
+    if not (vault / ".agents" / "memories" / "config.toml").is_file():
+        return None
+    return global_only_config()
+
+
 def config_for_memory_scope(scope: MemoryScope, cwd: Path) -> ProjectConfig:
     # A bound repo's configured vault is authoritative for every scope, including global,
     # since its global memory lives in that same vault. Only an unbound directory falls
@@ -2080,9 +2517,7 @@ def run_ripgrep_search(args: Sequence[str], cwd: Path) -> str:
     if result.returncode == 0:
         return result.stdout
     assert result.returncode == 1, f"ripgrep search failed with exit code {result.returncode}: {result.stderr}"
-    assert result.stdout == ""
-    assert result.stderr == ""
-    return ""
+    return result.stdout
 
 
 def search_roots(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
@@ -2102,26 +2537,185 @@ def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[
     return tuple(memory_directory(config, memory_scope, memory_type) for memory_scope in scope_order for memory_type in MemoryType)
 
 
+def managed_card_listings(config: ProjectConfig, scope: SearchScope) -> list[ManagedCardListing]:
+    listings: list[ManagedCardListing] = []
+    for path in managed_card_paths(config, scope):
+        listing = managed_card_listing_for_path(config, path)
+        if listing is not None:
+            listings.append(listing)
+    return listings
+
+
+def managed_card_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
+    paths: set[Path] = set()
+    for directory in memory_note_directories(config, scope):
+        paths.update(path for path in directory.glob("*.md") if path.name != "index.md")
+    if scope in (SearchScope.PROJECT, SearchScope.BOTH):
+        plans_root = memory_directory(config, MemoryScope.PROJECT, MemoryType.PLAN)
+        paths.update(path for path in plans_root.rglob("*.md") if path.name not in ("index.md", PLAN_DAG_FILENAME))
+    return tuple(sorted(paths))
+
+
+def unmigrated_card_listings(config: ProjectConfig, scope: SearchScope) -> list[UnmigratedCardListing]:
+    listings: list[UnmigratedCardListing] = []
+    for path in unmigrated_card_candidate_paths(config, scope):
+        listing = unmigrated_card_listing_for_path(config, path)
+        if listing is not None:
+            listings.append(listing)
+    return listings
+
+
+def unmigrated_card_candidate_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    if scope in (SearchScope.PROJECT, SearchScope.BOTH):
+        roots.append(scope_root(config, MemoryScope.PROJECT))
+    if scope in (SearchScope.GLOBAL, SearchScope.BOTH):
+        roots.extend([config.vault / "harnesses", config.vault / "global"])
+    candidates: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.md"):
+            if is_internal_vault_path(path) or is_managed_card_path(config, path) or path.name == "index.md":
+                continue
+            candidates.add(path)
+    return tuple(sorted(candidates))
+
+
+def is_internal_vault_path(path: Path) -> bool:
+    return any(part in (".git", ".zk") for part in path.parts)
+
+
+def is_managed_card_path(config: ProjectConfig, path: Path) -> bool:
+    for scope in (MemoryScope.GLOBAL, MemoryScope.PROJECT):
+        for memory_type in MemoryType:
+            directory = memory_directory(config, scope, memory_type)
+            if path.is_relative_to(directory):
+                return True
+    return False
+
+
+def card_listing_fields_for_path(config: ProjectConfig, path: Path) -> tuple[str, str, MemoryScope] | None:
+    try:
+        document = read_memory(path)
+    except MalformedMemoryError:
+        return None
+    card_type = card_type_from_metadata(document.metadata)
+    if card_type is None:
+        return None
+    return (
+        card_title_from_metadata(path, document.metadata),
+        card_type,
+        card_scope_for_path(config, path, document.metadata),
+    )
+
+
+def managed_card_listing_for_path(config: ProjectConfig, path: Path) -> ManagedCardListing | None:
+    fields = card_listing_fields_for_path(config, path)
+    if fields is None:
+        return None
+    title, card_type, scope = fields
+    return ManagedCardListing(
+        title=title,
+        card_type=card_type,
+        scope=scope,
+        path=path,
+        key=memory_key(config.vault, path),
+    )
+
+
+def unmigrated_card_listing_for_path(config: ProjectConfig, path: Path) -> UnmigratedCardListing | None:
+    fields = card_listing_fields_for_path(config, path)
+    if fields is None:
+        return None
+    title, card_type, scope = fields
+    return UnmigratedCardListing(
+        title=title,
+        card_type=card_type,
+        scope=scope,
+        path=path,
+        suggested_destination=suggested_card_destination(config, scope, card_type),
+    )
+
+
+def card_type_from_metadata(metadata: Mapping[str, MetadataValue]) -> str | None:
+    type_value = metadata.get("type")
+    if isinstance(type_value, str):
+        return type_value
+    id_value = metadata.get("id")
+    if isinstance(id_value, str):
+        prefix = id_value.split("-", 1)[0]
+        return STRUCTURED_CARD_PREFIX_TYPES.get(prefix)
+    return None
+
+
+def card_title_from_metadata(path: Path, metadata: Mapping[str, MetadataValue]) -> str:
+    title = metadata.get("title")
+    if isinstance(title, str):
+        return title
+    card_id = metadata.get("id")
+    if isinstance(card_id, str):
+        return card_id
+    return path.stem
+
+
+def card_scope_for_path(config: ProjectConfig, path: Path, metadata: Mapping[str, MetadataValue]) -> MemoryScope:
+    scope = metadata.get("scope")
+    if isinstance(scope, str) and scope in (MemoryScope.PROJECT.value, MemoryScope.GLOBAL.value):
+        return MemoryScope(scope)
+    if path.is_relative_to(scope_root(config, MemoryScope.PROJECT)):
+        return MemoryScope.PROJECT
+    return MemoryScope.GLOBAL
+
+
+def suggested_card_destination(config: ProjectConfig, scope: MemoryScope, card_type: str) -> str:
+    try:
+        directory = MEMORY_TYPE_DIRECTORIES[MemoryType(card_type)]
+    except ValueError:
+        directory = MEMORY_TYPE_DIRECTORIES[MemoryType.PLAN]
+    if scope is MemoryScope.GLOBAL:
+        return f"global/{directory}"
+    return f"projects/{require_project_id(config)}/{directory}"
+
+
 def inspect_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[NoteRecord, ...]:
-    return tuple(note_record_for_path(config, path) for path in memory_files(config, scope))
+    return scan_note_records(config, scope).records
+
+
+def scan_note_records(config: ProjectConfig, scope: SearchScope) -> NoteScan:
+    records: list[NoteRecord] = []
+    findings: list[NoteFinding] = []
+    for path in memory_files(config, scope):
+        try:
+            records.append(note_record_for_path(config, path))
+        except MalformedMemoryError as error:
+            findings.append(note_finding_for_error(config, path, error))
+    return NoteScan(records=tuple(records), findings=tuple(findings))
+
+
+def note_finding_for_error(config: ProjectConfig, path: Path, error: MalformedMemoryError) -> NoteFinding:
+    return NoteFinding(
+        path=path,
+        key=memory_key(config.vault, path),
+        message=str(error),
+    )
 
 
 def note_record_for_path(config: ProjectConfig, path: Path) -> NoteRecord:
     document = read_memory(path)
-    stored_scope = MemoryScope(metadata_string(document.metadata, "scope"))
+    stored_scope = metadata_memory_scope(document.metadata, path)
     layout_scope = MemoryScope(inspect_scope_for_path(config, path))
-    assert stored_scope is layout_scope, "memory note metadata scope must match vault layout"
-    tags = document.metadata["tags"]
-    assert isinstance(tags, list), "memory tags must be a list"
-    assert all(isinstance(tag_value, str) for tag_value in tags), "memory tags must contain strings"
+    if stored_scope is not layout_scope:
+        raise MalformedMemoryError(path, f"frontmatter scope {stored_scope.value!r} does not match vault layout {layout_scope.value!r}")
+    tags = metadata_string_tuple(document.metadata, "tags", path)
     return NoteRecord(
         key=memory_key(config.vault, path),
         path=path,
-        title=metadata_string(document.metadata, "title"),
-        memory_type=MemoryType(metadata_string(document.metadata, "type")),
+        title=metadata_string(document.metadata, "title", path),
+        memory_type=metadata_memory_type(document.metadata, path),
         scope=stored_scope,
-        tags=tuple(tags),
-        timestamp=metadata_string(document.metadata, "timestamp"),
+        tags=tags,
+        timestamp=NoteTimestamp.from_metadata(document.metadata, path),
         document=document,
     )
 
@@ -2135,7 +2729,7 @@ def note_record_matches_metadata(
     return (
         (memory_type is None or record.memory_type is memory_type)
         and (tag is None or tag in record.tags)
-        and (created_after is None or parse_memory_timestamp(record.timestamp) > created_after)
+        and (created_after is None or record.timestamp.is_after(created_after))
     )
 
 
@@ -2153,7 +2747,7 @@ def note_record_json(record: NoteRecord) -> JsonObject:
         **note_record_core(record),
         "scope": record.scope.value,
         "tags": json_list(record.tags),
-        "timestamp": record.timestamp,
+        "timestamp": record.timestamp.json_value(),
     }
 
 
@@ -2161,7 +2755,7 @@ def metadata_search_record_json(record: NoteRecord) -> JsonObject:
     return {
         **note_record_core(record),
         "tags": json_list(record.tags),
-        "timestamp": record.timestamp,
+        "timestamp": record.timestamp.json_value(),
     }
 
 
@@ -2170,6 +2764,18 @@ def note_path_record_json(record: NoteRecord) -> JsonObject:
         **note_record_core(record),
         "scope": record.scope.value,
     }
+
+
+def note_finding_json(finding: NoteFinding) -> JsonObject:
+    return {
+        "path": str(finding.path),
+        "key": finding.key,
+        "message": finding.message,
+    }
+
+
+def note_findings_json(findings: Sequence[NoteFinding]) -> list[JsonValue]:
+    return json_list([note_finding_json(finding) for finding in findings])
 
 
 def parse_created_after(value: str | None) -> datetime | None:
@@ -2199,39 +2805,176 @@ def render_memory(metadata: dict[str, MetadataValue], body: str) -> str:
     return f"---\n{frontmatter}---\n{body}"
 
 
+OKF_FRONTMATTER_KEYS = frozenset(BaseNoteMetadata.model_fields) | {"project_id", "origin_project_id"}
+
+
+def yaml_metadata_value(path: Path, key: str, value: object) -> MetadataValue:
+    if isinstance(value, datetime):
+        if key == "timestamp":
+            if value.tzinfo is None:
+                raise MalformedMemoryError(path, "timestamp must include timezone information")
+            return value.isoformat().replace("+00:00", "Z")
+        return value.isoformat()
+    if isinstance(value, date):
+        if key == "timestamp":
+            raise MalformedMemoryError(path, "timestamp must include timezone information")
+        return value.isoformat()
+    if value is None or isinstance(value, str | bool | int | float):
+        return value
+    if isinstance(value, list):
+        return [yaml_metadata_value(path, key, item) for item in value]
+    if isinstance(value, dict):
+        normalized: dict[str, MetadataValue] = {}
+        for nested_key, nested_value in value.items():
+            if not isinstance(nested_key, str):
+                raise MalformedMemoryError(path, "frontmatter mapping keys must be strings")
+            normalized[nested_key] = yaml_metadata_value(path, nested_key, nested_value)
+        return normalized
+    raise MalformedMemoryError(path, "frontmatter values must be YAML scalars, lists, or mappings")
+
+
+def extract_embedded_frontmatter_blocks(path: Path, body: str) -> tuple[str, list[dict[str, MetadataValue]]]:
+    lines = body.splitlines(keepends=True)
+    cleaned: list[str] = []
+    extras: list[dict[str, MetadataValue]] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != "---":
+            cleaned.append(lines[index])
+            index += 1
+            continue
+
+        end = next((candidate for candidate in range(index + 1, len(lines)) if lines[candidate].strip() == "---"), None)
+        if end is None:
+            cleaned.append(lines[index])
+            index += 1
+            continue
+
+        block_text = "".join(lines[index + 1 : end])
+        try:
+            parsed = yaml.safe_load(block_text)
+        except yaml.YAMLError as exc:
+            raise MalformedMemoryError(path, "embedded frontmatter block must be valid YAML") from exc
+        if not isinstance(parsed, dict):
+            cleaned.extend(lines[index : end + 1])
+            index = end + 1
+            continue
+
+        extra: dict[str, MetadataValue] = {}
+        for key, value in parsed.items():
+            if not isinstance(key, str):
+                raise MalformedMemoryError(path, "embedded frontmatter keys must be strings")
+            extra[key] = yaml_metadata_value(path, key, value)
+        extras.append(extra)
+        index = end + 1
+    return "".join(cleaned), extras
+
+
+def reconcile_okf_frontmatter(
+    path: Path,
+    primary: Mapping[str, MetadataValue],
+    extras: Sequence[Mapping[str, MetadataValue]],
+) -> dict[str, MetadataValue]:
+    merged = dict(primary)
+    for extra in extras:
+        for key, value in extra.items():
+            if key not in OKF_FRONTMATTER_KEYS:
+                raise MalformedMemoryError(path, f"unreconcilable extra frontmatter key: {key}")
+            if key in merged:
+                if merged[key] != value:
+                    raise MalformedMemoryError(path, f"conflicting values for {key}: {merged[key]!r} vs {value!r}")
+                continue
+            merged[key] = value
+    return canonical_okf_metadata(path, merged)
+
+
+def validate_okf_contract_defaults(path: Path, metadata: dict[str, MetadataValue]) -> None:
+    if "source" in metadata and metadata_string(metadata, "source", path) != "agent":
+        raise MalformedMemoryError(path, "frontmatter source must be agent")
+    if "confidence" in metadata and metadata_string(metadata, "confidence", path) != "high":
+        raise MalformedMemoryError(path, "frontmatter confidence must be high")
+    if "promotable" in metadata and metadata_bool(metadata, "promotable", path):
+        raise MalformedMemoryError(path, "frontmatter promotable must be false")
+
+
+def reject_unexpected_okf_keys(path: Path, metadata: dict[str, MetadataValue], allowed: frozenset[str]) -> None:
+    for key in metadata:
+        if key not in allowed:
+            raise MalformedMemoryError(path, f"invalid OKF frontmatter field: {key}")
+
+
+def canonical_okf_metadata(path: Path, metadata: Mapping[str, MetadataValue]) -> dict[str, MetadataValue]:
+    payload = dict(metadata)
+    memory_type = metadata_memory_type(payload, path)
+    scope = metadata_memory_scope(payload, path)
+    validate_okf_contract_defaults(path, payload)
+    title = metadata_string(payload, "title", path)
+    description = metadata_string(payload, "description", path)
+    tags = list(metadata_string_tuple(payload, "tags", path))
+    timestamp = metadata_string(payload, "timestamp", path)
+    try:
+        if "origin_project_id" in payload:
+            reject_unexpected_okf_keys(path, payload, frozenset(PromotedNoteMetadata.model_fields))
+            return PromotedNoteMetadata(
+                type=memory_type,
+                title=title,
+                description=description,
+                tags=tags,
+                timestamp=timestamp,
+                scope=scope,
+                origin_project_id=metadata_string(payload, "origin_project_id", path),
+            ).to_yaml_payload()
+        if scope is MemoryScope.PROJECT:
+            reject_unexpected_okf_keys(path, payload, frozenset(ProjectNoteMetadata.model_fields))
+            return ProjectNoteMetadata(
+                type=memory_type,
+                title=title,
+                description=description,
+                tags=tags,
+                timestamp=timestamp,
+                scope=scope,
+                project_id=metadata_string(payload, "project_id", path),
+            ).to_yaml_payload()
+        reject_unexpected_okf_keys(path, payload, frozenset(GlobalNoteMetadata.model_fields))
+        return GlobalNoteMetadata(
+            type=memory_type,
+            title=title,
+            description=description,
+            tags=tags,
+            timestamp=timestamp,
+            scope=scope,
+        ).to_yaml_payload()
+    except ValidationError as exc:
+        raise MalformedMemoryError(path, f"invalid OKF frontmatter: {exc}") from exc
+
+
+def reconcile_memory_file(path: Path) -> None:
+    document = read_memory(path)
+    body, extras = extract_embedded_frontmatter_blocks(path, document.body)
+    metadata = reconcile_okf_frontmatter(path, document.metadata, extras)
+    write_memory(path, metadata, body)
+
+
 def read_memory(path: Path) -> MemoryDocument:
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise MalformedMemoryError(path, "memory file must be valid UTF-8") from error
+    if not raw.startswith("---"):
         raise MalformedMemoryError(path, "memory must start with frontmatter")
     try:
-        closing_index = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    except StopIteration as e:
-        raise MalformedMemoryError(path, "frontmatter must end with a closing delimiter") from e
-    try:
-        parsed = yaml.safe_load("".join(lines[1:closing_index]))
-    except yaml.YAMLError as e:
+        document = frontmatter.loads(raw)
+    except (ValueError, yaml.YAMLError) as e:
         raise MalformedMemoryError(path, "frontmatter must be valid YAML") from e
+    parsed = document.metadata
+    body = document.content
     if not isinstance(parsed, dict):
         raise MalformedMemoryError(path, "frontmatter must be a mapping")
     metadata: dict[str, MetadataValue] = {}
     for key, value in parsed.items():
         if not isinstance(key, str):
             raise MalformedMemoryError(path, "frontmatter keys must be strings")
-        if isinstance(value, datetime):
-            if key != "timestamp":
-                raise MalformedMemoryError(path, "only timestamp may be parsed as a YAML datetime")
-            if value.tzinfo is None:
-                raise MalformedMemoryError(path, "timestamp must include timezone information")
-            metadata[key] = value.isoformat().replace("+00:00", "Z")
-        elif isinstance(value, list):
-            if not all(isinstance(item, str) for item in value):
-                raise MalformedMemoryError(path, "frontmatter lists must contain strings")
-            metadata[key] = value
-        else:
-            if not isinstance(value, str | bool):
-                raise MalformedMemoryError(path, "frontmatter values must be strings, booleans, datetimes, or string lists")
-            metadata[key] = value
-    body = "".join(lines[closing_index + 1 :])
+        metadata[key] = yaml_metadata_value(path, key, value)
     return MemoryDocument(metadata=metadata, body=body)
 
 
@@ -2243,8 +2986,10 @@ def inspect_overview(
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect overview currently emits JSON"
     config = load_project_config(cwd)
-    notes = inspect_note_records(config, scope)
-    indexes = inspect_index_records(config, scope)
+    note_scan = scan_note_records(config, scope)
+    notes = note_scan.records
+    index_scan = scan_index_records(config, scope)
+    indexes = index_scan.records
     return {
         "vault": str(config.vault),
         "project_id": require_project_id(config),
@@ -2256,22 +3001,56 @@ def inspect_overview(
         },
         "notes_by_scope": inspect_counts([note.scope.value for note in notes]),
         "notes_by_type": inspect_counts([note.memory_type.value for note in notes]),
+        "findings": note_findings_json((*note_scan.findings, *index_scan.findings)),
     }
 
 
-def inspect_schema(*, output_format: InspectOutputFormat) -> JsonObject:
+def inspect_schema(*, output_format: InspectOutputFormat, cwd: Path) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect schema currently emits JSON"
+    config = config_for_schema_advertisement(cwd)
+    cards_config, card_model_by_type = load_card_system(config)
     return {
-        "commands": {"inspect": list(INSPECT_COMMAND_NAMES)},
+        "commands": {
+            "inspect": list(INSPECT_COMMAND_NAMES),
+            "card": ["add", "update", "delete", "show", "validate", "dag", "migrate"],
+            "todo": ["set"],
+            "card_types": [card_type.name for card_type in cards_config.card_types],
+        },
         "scopes": [scope.value for scope in SearchScope],
-        "memory_types": [memory_type.value for memory_type in MemoryType],
+        "memory_types": [memory_type.value for memory_type in WRITABLE_MEMORY_TYPES],
         "path_kinds": [kind.value for kind in InspectPathKind],
         "link_directions": [direction.value for direction in InspectLinkDirection],
         "stats_groups": [group.value for group in InspectStatsGroup],
         "export_profiles": [profile.value for profile in InspectExportProfile],
         "formats": {
-            "inspect": [InspectOutputFormat.JSON.value],
-            "export": [InspectExportFormat.GRAPH_JSON.value],
+            "inspect": json_list([InspectOutputFormat.JSON.value]),
+            "export": json_list([InspectExportFormat.GRAPH_JSON.value]),
+        },
+        "card_system": {
+            "root": cards_config.root,
+            "status_count": len(cards_config.statuses),
+            "type_count": len(cards_config.card_types),
+            "status_sets": {
+                status_set_name: {
+                    "default": status_set.default,
+                    "options": json_list(status_set.options),
+                }
+                for status_set_name, status_set in cards_config.status_sets.items()
+            },
+            "types": [
+                {
+                    "name": card_type.name,
+                    "id_prefix": card_type.id_prefix,
+                    "status_set": card_type.status_set,
+                    "parents": json_list(card_type.parents),
+                    "container": card_type.container,
+                    "own_dir": card_type.own_dir,
+                    "required_fields": json_list([field.name for field in card_type.fields if field.required]),
+                    "field_count": len(card_type.fields),
+                }
+                for card_type in cards_config.card_types
+            ],
+            "models": json_list(sorted(card_model_by_type.keys())),
         },
         "metadata_fields": list(ProjectNoteMetadata.model_fields),
     }
@@ -2287,19 +3066,30 @@ def inspect_paths(
     assert output_format is InspectOutputFormat.JSON, "inspect paths currently emits JSON"
     config = load_project_config(cwd)
     root_records = inspect_root_records(config, scope)
-    index_records = inspect_index_records(config, scope)
-    note_records = inspect_path_note_records(config, scope)
+    index_scan = scan_index_records(config, scope)
+    index_records = index_scan.records
+    note_scan = scan_note_records(config, scope)
+    note_records = tuple(note_path_record_json(record) for record in note_scan.records)
     records_by_kind = {
         InspectPathKind.ROOTS: root_records,
         InspectPathKind.INDEXES: index_records,
         InspectPathKind.NOTES: note_records,
         InspectPathKind.ALL: (*root_records, *index_records, *note_records),
     }
-    return {
+    result: JsonObject = {
         "scope": scope.value,
         "kind": kind.value,
         "paths": json_list(records_by_kind[kind]),
+        "findings": note_findings_json(
+            {
+                InspectPathKind.ROOTS: (),
+                InspectPathKind.INDEXES: index_scan.findings,
+                InspectPathKind.NOTES: note_scan.findings,
+                InspectPathKind.ALL: (*index_scan.findings, *note_scan.findings),
+            }[kind]
+        ),
     }
+    return result
 
 
 def inspect_tree(
@@ -2378,13 +3168,14 @@ def inspect_stats(
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect stats currently emits JSON"
     config = load_project_config(cwd)
-    notes = inspect_note_records(config, scope)
+    note_scan = scan_note_records(config, scope)
+    notes = note_scan.records
     counts_by_group = {
         InspectStatsGroup.TYPE: inspect_counts([note.memory_type.value for note in notes]),
         InspectStatsGroup.SCOPE: inspect_counts([note.scope.value for note in notes]),
         InspectStatsGroup.DAY: inspect_day_counts(notes),
     }
-    return {"scope": scope.value, "by": group.value, "counts": counts_by_group[group]}
+    return {"scope": scope.value, "by": group.value, "counts": counts_by_group[group], "findings": note_findings_json(note_scan.findings)}
 
 
 def inspect_recent(
@@ -2397,9 +3188,10 @@ def inspect_recent(
     assert output_format is InspectOutputFormat.JSON, "inspect recent currently emits JSON"
     since_datetime = parse_memory_timestamp(since)
     config = load_project_config(cwd)
-    records = [record for record in inspect_note_records(config, scope) if parse_memory_timestamp(record.timestamp) > since_datetime]
-    records.sort(key=lambda record: record.timestamp, reverse=True)
-    return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records])}
+    note_scan = scan_note_records(config, scope)
+    records = [record for record in note_scan.records if record.timestamp.is_after(since_datetime)]
+    records.sort(key=lambda record: record.timestamp.sort_key(), reverse=True)
+    return {"scope": scope.value, "since": since, "results": json_list([note_record_json(record) for record in records]), "findings": note_findings_json(note_scan.findings)}
 
 
 def inspect_export(
@@ -2411,13 +3203,13 @@ def inspect_export(
 ) -> JsonObject:
     assert output_format is InspectExportFormat.GRAPH_JSON, "inspect export currently emits graph-json"
     config = load_project_config(cwd)
-    paths = inspect_markdown_paths(config, scope)
-    path_by_key = {memory_key(config.vault, path): path for path in paths}
-    nodes = [inspect_export_node(config, key, path, profile) for key, path in sorted(path_by_key.items())]
+    scan = scan_inspect_export_records(config, scope)
+    records_by_key = {record.key: record for record in scan.records}
+    nodes = [inspect_export_node(config, record.key, record.path, record.document, profile) for record in sorted(records_by_key.values(), key=lambda record: record.key)]
     edges: list[JsonObject] = []
-    for key, path in sorted(path_by_key.items()):
-        for target in outgoing_link_keys(config, path):
-            if target in path_by_key:
+    for key, record in sorted(records_by_key.items()):
+        for target in outgoing_link_keys(config, record.path):
+            if target in records_by_key:
                 edges.append({"source": key, "target": target})
     return {
         "scope": scope.value,
@@ -2425,7 +3217,33 @@ def inspect_export(
         "format": output_format.value,
         "nodes": json_list(nodes),
         "edges": json_list(edges),
+        "findings": note_findings_json(scan.findings),
     }
+
+
+def scan_inspect_export_records(config: ProjectConfig, scope: SearchScope) -> InspectExportScan:
+    records: list[InspectExportRecord] = []
+    findings: list[NoteFinding] = []
+    for path in inspect_markdown_paths(config, scope):
+        try:
+            document = inspect_export_document(config, path)
+        except MalformedMemoryError as error:
+            findings.append(note_finding_for_error(config, path, error))
+            continue
+        records.append(InspectExportRecord(key=memory_key(config.vault, path), path=path, document=document))
+    return InspectExportScan(records=tuple(records), findings=tuple(findings))
+
+
+def inspect_export_document(config: ProjectConfig, path: Path) -> MemoryDocument:
+    if is_direct_memory_note_path(config, path):
+        return note_record_for_path(config, path).document
+    return read_memory(path)
+
+
+def is_direct_memory_note_path(config: ProjectConfig, path: Path) -> bool:
+    if path.name in ("index.md", PLAN_DAG_FILENAME):
+        return False
+    return any(path.parent == directory for directory in memory_note_directories(config, SearchScope.BOTH))
 
 
 def inspect_root_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
@@ -2456,11 +3274,20 @@ def inspect_markdown_paths(config: ProjectConfig, scope: SearchScope) -> tuple[P
 
 
 def inspect_index_records(config: ProjectConfig, scope: SearchScope) -> tuple[JsonObject, ...]:
+    return scan_index_records(config, scope).records
+
+
+def scan_index_records(config: ProjectConfig, scope: SearchScope) -> IndexScan:
     records: list[JsonObject] = []
+    findings: list[NoteFinding] = []
     for path in inspect_markdown_paths(config, scope):
         if path.name != "index.md":
             continue
-        document = read_memory(path)
+        try:
+            document = read_memory(path)
+        except MalformedMemoryError as error:
+            findings.append(note_finding_for_error(config, path, error))
+            continue
         records.append(
             {
                 "key": memory_key(config.vault, path),
@@ -2469,7 +3296,7 @@ def inspect_index_records(config: ProjectConfig, scope: SearchScope) -> tuple[Js
                 "scope": inspect_scope_for_path(config, path),
             }
         )
-    return tuple(records)
+    return IndexScan(records=tuple(records), findings=tuple(findings))
 
 
 def inspect_path_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[JsonObject, ...]:
@@ -2482,7 +3309,7 @@ def inspect_counts(values: Sequence[str]) -> JsonObject:
 
 
 def inspect_day_counts(records: Sequence[NoteRecord]) -> JsonObject:
-    counts = Counter(parse_memory_timestamp(record.timestamp).date().isoformat() for record in records)
+    counts = Counter(parse_memory_timestamp(record.timestamp.value).date().isoformat() for record in records if record.timestamp.is_present())
     return {key: counts[key] for key in sorted(counts)}
 
 
@@ -2502,38 +3329,81 @@ def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
 
 
 def first_heading_title(markdown: str) -> str:
-    headings = [line[2:].strip() for line in markdown.splitlines() if line.startswith("# ")]
-    assert headings, "markdown document must contain a top-level heading"
-    title = headings[0]
-    assert title, "heading title must be nonempty"
-    return title
+    tokens = MARKDOWN_PARSER.parse(markdown)
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open" or token.tag != "h1":
+            continue
+        assert index + 1 < len(tokens), "markdown heading must have body content"
+        body = tokens[index + 1]
+        assert body.type == "inline", "markdown heading body must be inline"
+        title = body.content.strip()
+        assert title, "heading title must be nonempty"
+        return title
+    assert False, "markdown document must contain a top-level heading"
 
 
 def markdown_headings(markdown: str) -> tuple[JsonObject, ...]:
+    tokens = MARKDOWN_PARSER.parse(markdown)
     headings: list[JsonObject] = []
-    for line_number, line in enumerate(markdown.splitlines(), start=1):
-        stripped = line.lstrip()
-        marker_length = len(stripped) - len(stripped.lstrip("#"))
-        if marker_length == 0:
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open":
             continue
-        assert marker_length <= 6, "markdown heading level must be between 1 and 6"
-        assert stripped[marker_length : marker_length + 1] == " ", "markdown heading marker must be followed by a space"
-        title = stripped[marker_length + 1 :].strip()
+        assert token.tag.startswith("h"), f"unexpected heading tag: {token.tag}"
+        level = int(token.tag[1:])
+        assert 1 <= level <= 6, "markdown heading level must be between 1 and 6"
+        assert index + 1 < len(tokens), "markdown heading must have body content"
+        body = tokens[index + 1]
+        assert body.type == "inline", "markdown heading body must be inline"
+        title = body.content.strip()
         assert title, "markdown heading title must be nonempty"
-        headings.append({"level": marker_length, "title": title, "line": line_number})
+        assert token.map is not None, "markdown heading must provide source map"
+        line_number = token.map[0] + 1
+        headings.append({"level": level, "title": title, "line": line_number})
     return tuple(headings)
 
 
+def _markdown_link_target(link_token: object) -> str | None:
+    href = None
+    if hasattr(link_token, "attrs"):
+        attrs = getattr(link_token, "attrs")
+        if isinstance(attrs, dict):
+            href = attrs.get("href")
+        elif isinstance(attrs, list):
+            attrs = dict(attrs)
+            href = attrs.get("href")
+    if href is None:
+        return None
+    assert isinstance(href, str), "markdown link target must be text"
+    return href
+
+
 def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
-    text = path.read_text(encoding="utf-8")
+    markdown = path.read_text(encoding="utf-8")
+    tokens = MARKDOWN_PARSER.parse(markdown)
     keys: list[str] = []
-    for match in MARKDOWN_LINK_PATTERN.finditer(text):
-        target = match.group(1).split("#", 1)[0]
-        assert target.endswith(".md"), f"markdown link target must point to a Markdown file: {target}"
-        target_path = (path.parent / target).resolve()
-        vault = config.vault.resolve()
-        assert target_path.is_relative_to(vault), f"markdown link leaves memory vault: {target}"
-        keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
+    for token in tokens:
+        if token.type != "inline":
+            continue
+        for child in token.children or []:
+            if child.type != "link_open":
+                continue
+            href = _markdown_link_target(child)
+            if href is None:
+                continue
+            target = href.split("#", 1)[0]
+            if not target:
+                continue
+            # outgoing_link_keys owns intra-vault note-to-note edges only. The markdown-it
+            # walk yields every link (external URLs, autolinks, reference-style, non-.md);
+            # a target that is not a vault-relative .md file is simply not an outgoing vault
+            # edge, so skip it by contract. This is a membership test, not error handling.
+            if not target.endswith(".md"):
+                continue
+            target_path = (path.parent / target).resolve()
+            vault = config.vault.resolve()
+            if not target_path.is_relative_to(vault):
+                continue
+            keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
     return tuple(keys)
 
 
@@ -2646,16 +3516,20 @@ def rewrite_wikilinks_in_text(
     return WIKILINK_PATTERN.sub(replace, text), replacements
 
 
-def rewrite_wikilink_files(
-    config: ProjectConfig,
-    rewrites: Sequence[WikilinkRewrite],
-    *,
-    include_indexes: bool = True,
-) -> list[JsonObject]:
+def rewrite_wikilink_files(config: ProjectConfig, rewrites: Sequence[WikilinkRewrite]) -> list[JsonObject]:
+    return rewrite_wikilink_paths(inspect_markdown_paths(config, SearchScope.BOTH), rewrites)
+
+
+def rewrite_non_index_wikilink_files(config: ProjectConfig, rewrites: Sequence[WikilinkRewrite]) -> list[JsonObject]:
+    return rewrite_wikilink_paths(
+        [path for path in inspect_markdown_paths(config, SearchScope.BOTH) if path.name != "index.md"],
+        rewrites,
+    )
+
+
+def rewrite_wikilink_paths(paths: Sequence[Path], rewrites: Sequence[WikilinkRewrite]) -> list[JsonObject]:
     records: list[JsonObject] = []
-    for path in inspect_markdown_paths(config, SearchScope.BOTH):
-        if not include_indexes and path.name == "index.md":
-            continue
+    for path in paths:
         rewritten = path.read_text(encoding="utf-8")
         replacements = 0
         for rewrite in rewrites:
@@ -2761,14 +3635,14 @@ def inspect_tree_node(config: ProjectConfig, key: str, depth: int) -> JsonObject
     return {
         "key": key,
         "path": str(path),
-        "title": inspect_title_for_document(document),
+        "title": inspect_title_for_document(document, path),
         "children": json_list(children),
     }
 
 
-def inspect_title_for_document(document: MemoryDocument) -> str:
+def inspect_title_for_document(document: MemoryDocument, path: Path) -> str:
     if "title" in document.metadata:
-        return metadata_string(document.metadata, "title")
+        return metadata_string(document.metadata, "title", path)
     return first_heading_title(document.body)
 
 
@@ -2824,7 +3698,7 @@ def traverse_link_records(
                 related_path = memory_path_for_key(config, related_key)
                 related_document = read_memory(related_path)
                 record_depth = current_depth + 1
-                records.append(LinkRecord(related_key, related_path, inspect_title_for_document(related_document), record_depth))
+                records.append(LinkRecord(related_key, related_path, inspect_title_for_document(related_document, related_path), record_depth))
                 frontier.append((related_key, record_depth))
     return tuple(records)
 
@@ -2850,17 +3724,17 @@ def inspect_export_node(
     config: ProjectConfig,
     key: str,
     path: Path,
+    document: MemoryDocument,
     profile: InspectExportProfile,
 ) -> JsonObject:
-    document = read_memory(path)
     node: JsonObject = {
         "key": key,
         "path": str(path),
-        "title": inspect_title_for_document(document),
+        "title": inspect_title_for_document(document, path),
         "scope": inspect_scope_for_path(config, path),
     }
     if "type" in document.metadata:
-        node["type"] = metadata_string(document.metadata, "type")
+        node["type"] = metadata_string(document.metadata, "type", path)
     if profile is InspectExportProfile.MAP:
         return node
     if profile is InspectExportProfile.CONTEXT:
@@ -2873,16 +3747,19 @@ def inspect_export_node(
 
 
 def json_metadata_value(value: MetadataValue) -> JsonValue:
-    if isinstance(value, str | bool):
+    if value is None or isinstance(value, str | bool | int | float):
         return value
-    return json_list(value)
+    if isinstance(value, list):
+        return json_list([json_metadata_value(item) for item in value])
+    return {key: json_metadata_value(item) for key, item in value.items()}
 
 
 # --- Plan cards (issue #4): bridge the config-driven card engine to the project vault ---
 
 
-def load_card_system() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
-    cards_config = load_card_system_config()
+def load_card_system(config: ProjectConfig | None = None) -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
+    project_id = None if config is None else config.project_id
+    cards_config = load_card_system_config(config.vault if config is not None else None, project_id)
     return cards_config, build_card_models(cards_config)
 
 
@@ -2921,7 +3798,9 @@ def parse_card_fields(
     empty_set: Sequence[str] | None = None,
 ) -> dict[str, object]:
     spec = next((card_type for card_type in cards_config.card_types if card_type.name == type_name), None)
-    assert spec is not None, f"unknown card type: {type_name}"
+    if spec is None:
+        known_types = ", ".join(card_type.name for card_type in cards_config.card_types)
+        raise CardFieldError(f"unknown card type {type_name}; known card types: {known_types}")
     field_types = {field.name: field.type for field in spec.fields}
     fields: dict[str, object] = {}
     for assignment in assignments:
@@ -2950,7 +3829,7 @@ def parse_card_fields(
     return fields
 
 
-def add_plan_card(
+def add_card(
     type_name: str,
     card_id: str,
     parent_id: str | None,
@@ -2960,7 +3839,7 @@ def add_plan_card(
     empty_set: Sequence[str] | None = None,
 ) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     fields = parse_card_fields(cards_config, type_name, assignments, empty_set=empty_set)
     path = create_card(
         project_plans_root(config, cards_config),
@@ -2994,37 +3873,53 @@ def add_plan_card(
     return {"id": card_id, "path": str(path)}
 
 
-def update_plan_card(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:
+def update_card_record(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     type_name = card_type_for_id(cards_config, card_id).name
     updates = parse_card_fields(cards_config, type_name, assignments)
-    path = update_card(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
-    commit_vault_changes(config.vault, f"Update plan card: {card_id}", paths=[path])
+    path = write_card_updates(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
+    commit_vault_changes(config.vault, f"Update card: {card_id}", paths=[path])
     return {"id": card_id, "path": str(path)}
 
 
-def delete_plan_card(card_id: str, cwd: Path) -> JsonObject:
+def delete_card_record(card_id: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, _models = load_card_system()
+    cards_config, _models = load_card_system(config)
     plans_root = project_plans_root(config, cards_config)
     path = find_card_path(plans_root, card_id)
     path.unlink()
-    commit_vault_changes(config.vault, f"Delete plan card: {card_id}", paths=[path])
+    commit_vault_changes(config.vault, f"Delete card: {card_id}", paths=[path])
     return {"deleted": card_id}
 
 
-def validate_plan_cards(cwd: Path) -> JsonObject:
+def show_card(card_id: str, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
+    card_type = card_type_for_id(cards_config, card_id)
+    path = find_card_path(project_plans_root(config, cards_config), card_id)
+    metadata, body = split_card(path.read_text(encoding="utf-8"))
+    validated = models[card_type.name].model_validate(metadata)
+    return {
+        "id": card_id,
+        "type": card_type.name,
+        "path": str(path),
+        "metadata": validated.model_dump(exclude_unset=True),
+        "body": body,
+    }
+
+
+def validate_card_records(cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    cards_config, models = load_card_system(config)
     records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
     problems = validate_cards(records, cards_config)
     return {"problems": json_list([{"kind": problem.kind, "card": problem.card_id, "detail": problem.detail} for problem in problems])}
 
 
-def write_plan_dag(cwd: Path) -> JsonObject:
+def write_card_dag(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
     plans_root = project_plans_root(config, cards_config)
     plans_root.mkdir(parents=True, exist_ok=True)
@@ -3034,9 +3929,9 @@ def write_plan_dag(cwd: Path) -> JsonObject:
     return {"path": str(path)}
 
 
-def migrate_plan_cards(source: Path, cwd: Path) -> JsonObject:
+def migrate_cards(source: Path, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
-    cards_config, models = load_card_system()
+    cards_config, models = load_card_system(config)
     paths = migrate_plans(source, project_plans_root(config, cards_config), cards_config, models)
     commit_vault_changes(config.vault, f"Migrate {len(paths)} plan cards", paths=paths)
     return {"migrated": json_list([str(path) for path in paths])}
