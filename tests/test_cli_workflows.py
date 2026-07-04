@@ -3672,6 +3672,37 @@ def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> N
     assert list(workspace.vault.rglob(f"{unsupported_id}.md")) == []
 
 
+def test_generated_card_update_unknown_id_prefix_is_structured_cli_error(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    unsupported_id = "MILESTONE-1"
+
+    result = run_agent_memory_subprocess(workspace.repo, "plan", "update", unsupported_id, "--set", "title=x")
+
+    stderr = assert_structured_cli_error(result)
+    assert unsupported_id in stderr
+    assert {"FEATURE", "PLAN", "TASK"}.issubset(set(re.findall(r"[A-Z][A-Z_-]+", stderr)))
+
+
+def test_root_list_global_memory_type_does_not_require_project_card_schema(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    global_decision = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="decision",
+        title="Schema Independent Decision",
+        content="Global memory listing must not depend on project card schema.",
+    )
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True, exist_ok=True)
+    cards_path.write_text("not: [valid\n", encoding="utf-8")
+
+    listed = parse_json_stdout(run_agent_memory_module(workspace.repo, "list", "--type", "decision", "--scope", "global"))
+
+    assert listed["type"] == "decision"
+    assert listed["scope"] == "global"
+    assert set(records_by_key(listed, "results")) == {global_decision["key"]}
+
+
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
