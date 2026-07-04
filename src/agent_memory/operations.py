@@ -14,6 +14,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
+from functools import cache
 from importlib import resources
 from pathlib import Path
 
@@ -321,6 +322,7 @@ class DependencyError(RuntimeError):
         super().__init__(message)
 
 
+@cache
 def starter_config() -> StarterConfig:
     payload = tomllib.loads(resources.files("agent_memory.defaults").joinpath("global.toml").read_text(encoding="utf-8"))
     default_vault = payload["default_vault"]
@@ -2292,7 +2294,8 @@ def git_remote_or_empty(git_root: Path) -> str:
         remote = result.stdout.strip()
         assert remote, "git origin remote must be nonempty when configured"
         return remote
-    assert result.returncode == 2 and "No such remote" in result.stderr, f"git remote lookup failed: {result.stderr}"
+    remotes = run_checked(["git", "remote"], cwd=git_root).stdout.splitlines()
+    assert "origin" not in remotes, f"git origin remote lookup failed: {result.stderr}"
     return ""
 
 
