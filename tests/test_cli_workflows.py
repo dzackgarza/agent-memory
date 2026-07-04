@@ -23,7 +23,7 @@ import yaml
 from agent_memory.cards import load_card_system_config
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
-from agent_memory.models import InspectOutputFormat, MemoryType
+from agent_memory.models import InspectOutputFormat, MemoryType, ProjectConfig
 from agent_memory.operations import (
     OKF_VERSION,
     DependencyCheck,
@@ -759,18 +759,26 @@ def test_init_project_with_explicit_project_id_preserves_no_origin_project_plan_
     assert not (vault / "global" / "plans" / "FEATURE-VENDOR.md").exists()
 
 
-def test_init_project_without_remote_or_project_id_fails_before_global_write(tmp_path: Path) -> None:
+def test_project_config_model_excludes_repo_owned_settings() -> None:
+    assert "project_root_strategy" not in ProjectConfig.model_fields
+    assert "global_scopes" not in ProjectConfig.model_fields
+    assert "search_max_results" not in ProjectConfig.model_fields
+    assert "search_max_tokens" not in ProjectConfig.model_fields
+
+
+def test_init_project_without_remote_or_project_id_uses_git_root_name(tmp_path: Path) -> None:
     repo = tmp_path / "vendor"
     repo.mkdir()
     init_git_repo_without_remote(repo)
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
 
-    result = run_agent_memory_subprocess(repo, "init", "project", "--vault", str(vault))
+    initialized = parse_json_stdout(run_agent_memory(repo, "init", "project", "--vault", str(vault)))
 
-    assert result.returncode != 0
+    assert initialized["project_id"] == "vendor"
     assert not (repo / ".agent-memory.toml").exists()
-    assert tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"] == []
+    assert operations_load_project_config(repo).project_id == "vendor"
+    assert tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"] == [{"project_id": "vendor", "root": str(repo), "remote": ""}]
 
 
 def test_init_global_normalizes_literal_tilde_vault_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
