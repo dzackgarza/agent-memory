@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from io import StringIO
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -1012,7 +1013,7 @@ def test_todo_set_mutates_nested_plan_todo_and_preserves_record(tmp_path: Path) 
     metadata = frontmatter(plan_path)
     assert metadata["custom_state"] == {"owner": "plan-runner", "preserve": True}
     assert plan_path.read_text(encoding="utf-8").split("---\n", 2)[2] == before_body
-    parent = json_object(json_array(metadata["todos"])[0])
+    parent = json_object(json_array(cast(JsonValue, metadata["todos"]))[0])
     assert parent["note"] == "Keep parent note"
     target = json_object(json_array(parent["children"])[0])
     assert target["id"] == "T1"
