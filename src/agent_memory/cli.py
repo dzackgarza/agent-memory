@@ -45,6 +45,8 @@ from agent_memory.operations import (
     config_for_schema_advertisement,
     delete_card_record,
     delete_memory,
+    delete_memory_orphaning_backlinks,
+    delete_memory_repointing_backlinks,
     disable_sync_systemd_timer,
     enable_sync_systemd_timer,
     init_global_vault,
@@ -61,6 +63,7 @@ from agent_memory.operations import (
     inspect_tree,
     install_sync_systemd_timer,
     list_cards,
+    list_cards_with_unmigrated,
     load_card_system,
     merge_memory,
     migrate_cards,
@@ -203,7 +206,15 @@ def delete_command(
     ] = False,
 ) -> None:
     """Delete a memory and clean its index entry."""
-    emit(delete_memory(key=key, repoint=repoint, orphan_ok=orphan_ok, cwd=Path.cwd()))
+    if repoint is not None and orphan_ok:
+        raise MemoryOperationError("delete accepts --repoint or --orphan-ok, not both")
+    if repoint is not None:
+        emit(delete_memory_repointing_backlinks(key=key, repoint=repoint, cwd=Path.cwd()))
+        return
+    if orphan_ok:
+        emit(delete_memory_orphaning_backlinks(key=key, cwd=Path.cwd()))
+        return
+    emit(delete_memory(key=key, cwd=Path.cwd()))
 
 
 def search_default(
@@ -461,7 +472,10 @@ def list_command(
     unmigrated: Annotated[bool, Parameter(help="Include records stranded outside managed global/project folders.")] = False,
 ) -> None:
     """List managed cards/memories and optionally stranded harness-local records."""
-    emit(list_cards(card_type=type_, scope=scope, include_unmigrated=unmigrated, cwd=Path.cwd()))
+    if unmigrated:
+        emit(list_cards_with_unmigrated(card_type=type_, scope=scope, cwd=Path.cwd()))
+        return
+    emit(list_cards(card_type=type_, scope=scope, cwd=Path.cwd()))
 
 
 def resolve_card_body(card_id: str, body: str | None, body_file: Path | None) -> str:

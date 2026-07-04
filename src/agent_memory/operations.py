@@ -12,6 +12,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from enum import Enum
 from importlib import resources
 from pathlib import Path
 
@@ -68,6 +69,34 @@ class SyncSystemdPaths:
     service: Path
     timer: Path
     timer_wants: Path
+
+
+@dataclass(frozen=True)
+class DeleteBacklinksBlocked:
+    pass
+
+
+@dataclass(frozen=True)
+class DeleteBacklinksOrphaned:
+    pass
+
+
+@dataclass(frozen=True)
+class DeleteBacklinksRepointed:
+    target: str
+
+
+type DeleteBacklinkDisposition = DeleteBacklinksBlocked | DeleteBacklinksOrphaned | DeleteBacklinksRepointed
+
+
+class CardListingSource(Enum):
+    MANAGED = "managed"
+    MANAGED_AND_UNMIGRATED = "managed_and_unmigrated"
+
+
+class SyncCommitState(Enum):
+    CLEAN = "clean"
+    COMMITTED = "committed"
 
 
 @dataclass(frozen=True)
@@ -679,17 +708,22 @@ def delete_backlink_disposition_error(key: str, inbound_keys: Sequence[str]) -> 
     return f"delete would orphan inbound wikilinks for {key}; inbound={', '.join(inbound_keys)}; rerun with --repoint <key-or-url> or --orphan-ok"
 
 
-def delete_memory(
-    key: str,
-    cwd: Path,
-    repoint: str | None = None,
-    orphan_ok: bool = False,
-) -> JsonObject:
+def delete_memory(key: str, cwd: Path) -> JsonObject:
+    return _delete_memory(key, cwd, DeleteBacklinksBlocked())
+
+
+def delete_memory_orphaning_backlinks(key: str, cwd: Path) -> JsonObject:
+    return _delete_memory(key, cwd, DeleteBacklinksOrphaned())
+
+
+def delete_memory_repointing_backlinks(key: str, cwd: Path, repoint: str) -> JsonObject:
+    return _delete_memory(key, cwd, DeleteBacklinksRepointed(repoint))
+
+
+def _delete_memory(key: str, cwd: Path, backlink_disposition: DeleteBacklinkDisposition) -> JsonObject:
     config = load_project_config(cwd)
-    if repoint is not None and orphan_ok:
-        raise MemoryOperationError("delete accepts --repoint or --orphan-ok, not both")
     inbound_keys = non_index_incoming_link_keys(config, key)
-    if inbound_keys and repoint is None and not orphan_ok:
+    if inbound_keys and isinstance(backlink_disposition, DeleteBacklinksBlocked):
         raise MemoryOperationError(delete_backlink_disposition_error(key, inbound_keys))
     path = config.vault / f"{key}.md"
     try:
@@ -706,8 +740,8 @@ def delete_memory(
         iwe.delete(config.vault, key)
 
     rewritten: list[JsonObject] = []
-    if repoint is not None:
-        rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, repoint),))
+    if isinstance(backlink_disposition, DeleteBacklinksRepointed):
+        rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, backlink_disposition.target),))
     index_zk_notebook(config.vault)
     try:
         commit_vault_changes(
@@ -725,10 +759,10 @@ def delete_memory(
         raise VaultCommitError(vault_commit_error_message(git_stderr)) from e
 
     result: JsonObject = {"deleted": key}
-    if repoint is not None:
-        result["repointed_to"] = repoint
+    if isinstance(backlink_disposition, DeleteBacklinksRepointed):
+        result["repointed_to"] = backlink_disposition.target
         result["rewritten"] = json_list(rewritten)
-    if orphan_ok:
+    if isinstance(backlink_disposition, DeleteBacklinksOrphaned):
         result["orphaned"] = json_list(inbound_keys)
     return result
 
@@ -918,10 +952,19 @@ def card_listing_json(record: CardListing) -> JsonObject:
     return {**payload, "managed": False, "key": None, "suggested_destination": record.suggested_destination}
 
 
-def list_cards(card_type: str, scope: SearchScope, include_unmigrated: bool, cwd: Path) -> JsonObject:
+def list_cards(card_type: str, scope: SearchScope, cwd: Path) -> JsonObject:
+    return _list_cards(card_type, scope, CardListingSource.MANAGED, cwd)
+
+
+def list_cards_with_unmigrated(card_type: str, scope: SearchScope, cwd: Path) -> JsonObject:
+    return _list_cards(card_type, scope, CardListingSource.MANAGED_AND_UNMIGRATED, cwd)
+
+
+def _list_cards(card_type: str, scope: SearchScope, listing_source: CardListingSource, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
     records: list[CardListing] = [*managed_card_listings(config, scope)]
-    if include_unmigrated:
+    include_unmigrated = listing_source is CardListingSource.MANAGED_AND_UNMIGRATED
+    if listing_source is CardListingSource.MANAGED_AND_UNMIGRATED:
         records.extend(unmigrated_card_listings(config, scope))
     filtered = [record for record in records if record.card_type == card_type]
     filtered.sort(
@@ -1202,10 +1245,9 @@ def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     reference_document = read_memory(reference_path)
     reference_title = metadata_string(reference_document.metadata, "title", reference_path)
     affected_keys = iwe.inline(config.vault, key, reference)
-    rewritten = rewrite_wikilink_files(
+    rewritten = rewrite_non_index_wikilink_files(
         config,
         (wikilink_rewrite(reference, f"{key}#{reference_title}"),),
-        include_indexes=False,
     )
     index_zk_notebook(config.vault)
     # Build pathspecs without asserting existence -- iwe.inline deletes the
@@ -1712,7 +1754,7 @@ def sync_status(cwd: Path) -> JsonObject:
     }
 
 
-def push_sync_conflict_branch(vault: Path, remote: str, branch: str, committed: bool, conflict_head: str) -> JsonObject:
+def push_sync_conflict_branch(vault: Path, remote: str, branch: str, commit_state: SyncCommitState, conflict_head: str) -> JsonObject:
     conflict_branch = sync_conflict_branch_name(branch, conflict_head)
     run_checked(["git", "rebase", "--abort"], cwd=vault)
     run_checked(["git", "branch", conflict_branch, conflict_head], cwd=vault)
@@ -1724,7 +1766,7 @@ def push_sync_conflict_branch(vault: Path, remote: str, branch: str, committed: 
         "vault": str(vault),
         "remote": remote,
         "branch": branch,
-        "committed": committed,
+        "committed": commit_state is SyncCommitState.COMMITTED,
         "pushed": False,
         "head": git_head(vault),
         "worktree_clean": True,
@@ -1747,7 +1789,8 @@ def sync_vault(cwd: Path) -> JsonObject:
     run_checked(["git", "fetch", "origin", branch], cwd=vault)
     rebase = run_checked_optional(["git", "rebase", f"origin/{branch}"], cwd=vault)
     if rebase.returncode != 0:
-        result = push_sync_conflict_branch(vault, remote, branch, committed, sync_head)
+        commit_state = SyncCommitState.COMMITTED if committed else SyncCommitState.CLEAN
+        result = push_sync_conflict_branch(vault, remote, branch, commit_state, sync_head)
         write_sync_state(result)
         return result
     run_checked(["git", "push", "origin", branch], cwd=vault)
@@ -2473,11 +2516,8 @@ def card_title_from_metadata(path: Path, metadata: Mapping[str, MetadataValue]) 
 
 def card_scope_for_path(config: ProjectConfig, path: Path, metadata: Mapping[str, MetadataValue]) -> MemoryScope:
     scope = metadata.get("scope")
-    if isinstance(scope, str):
-        try:
-            return MemoryScope(scope)
-        except ValueError:
-            pass
+    if isinstance(scope, str) and scope in (MemoryScope.PROJECT.value, MemoryScope.GLOBAL.value):
+        return MemoryScope(scope)
     if path.is_relative_to(scope_root(config, MemoryScope.PROJECT)):
         return MemoryScope.PROJECT
     return MemoryScope.GLOBAL
@@ -3304,16 +3344,20 @@ def rewrite_wikilinks_in_text(
     return WIKILINK_PATTERN.sub(replace, text), replacements
 
 
-def rewrite_wikilink_files(
-    config: ProjectConfig,
-    rewrites: Sequence[WikilinkRewrite],
-    *,
-    include_indexes: bool = True,
-) -> list[JsonObject]:
+def rewrite_wikilink_files(config: ProjectConfig, rewrites: Sequence[WikilinkRewrite]) -> list[JsonObject]:
+    return rewrite_wikilink_paths(inspect_markdown_paths(config, SearchScope.BOTH), rewrites)
+
+
+def rewrite_non_index_wikilink_files(config: ProjectConfig, rewrites: Sequence[WikilinkRewrite]) -> list[JsonObject]:
+    return rewrite_wikilink_paths(
+        [path for path in inspect_markdown_paths(config, SearchScope.BOTH) if path.name != "index.md"],
+        rewrites,
+    )
+
+
+def rewrite_wikilink_paths(paths: Sequence[Path], rewrites: Sequence[WikilinkRewrite]) -> list[JsonObject]:
     records: list[JsonObject] = []
-    for path in inspect_markdown_paths(config, SearchScope.BOTH):
-        if not include_indexes and path.name == "index.md":
-            continue
+    for path in paths:
         rewritten = path.read_text(encoding="utf-8")
         replacements = 0
         for rewrite in rewrites:
