@@ -36,8 +36,9 @@ Bind a repository to that vault:
 agent-memory init project --vault <vault>
 ```
 
-This writes `.agent-memory.toml` in the repository, adds an `AGENTS.md` pointer to the project memory key, and symlinks the repository `.agents` and `.hermes` paths to the same vault-owned project directory.
+This registers the project in the vault's `_meta/projects.toml`, adds an `AGENTS.md` pointer to the project memory key, and symlinks the repository `.agents` and `.hermes` paths to the same vault-owned project directory.
 Existing local `.agents` or `.hermes` contents are merged into that vault-owned project directory during initialization.
+The project id is derived from the GitHub origin remote when available and from the git root folder name otherwise; use `--project-id <name>` only when that derived name should be overridden.
 
 ### Global operations from an unbound directory
 

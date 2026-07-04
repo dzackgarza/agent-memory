@@ -1654,7 +1654,7 @@ def test_project_commands_without_config_fail_with_first_time_setup_guidance(
     )
 
     assert result.returncode != 0
-    assert "No project memory config found" in result.stderr
+    assert "No project memory binding found" in result.stderr
     assert "agent-memory init project --vault" in result.stderr
     assert "ProjectNotInitializedError" not in result.stderr
     assert "Traceback" not in result.stderr
@@ -1710,7 +1710,7 @@ def test_load_project_config_raises_project_not_initialized(tmp_path: Path) -> N
     with pytest.raises(ProjectNotInitializedError) as excinfo:
         operations_load_project_config(repo)
     message = str(excinfo.value)
-    assert "No project memory config found" in message
+    assert "No project memory binding found" in message
     assert "agent-memory init project --vault" in message
 
 
@@ -3358,7 +3358,7 @@ def unbound_dir(tmp_path: Path) -> Path:
 def test_global_add_and_search_run_without_project_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Issue #25: storing or searching a *global* memory must not require the cwd to be a
     # bound project. The global vault is resolved from AGENT_MEMORY_VAULT (falling back to
-    # the shipped default) independent of any cwd `.agent-memory.toml`.
+    # the shipped default) independent of any cwd project binding file.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))

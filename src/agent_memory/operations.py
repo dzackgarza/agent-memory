@@ -221,7 +221,6 @@ BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
 @dataclass(frozen=True)
 class StarterConfig:
     default_vault: Path
-    global_scopes: tuple[str, ...]
     search_max_results: int
     search_max_tokens: int
 
@@ -230,7 +229,7 @@ class ProjectNotInitializedError(RuntimeError):
     """Raised when a project command runs before project memory setup is done."""
 
     GUIDANCE = (
-        "No project memory config found. Run `agent-memory maintain init-global --vault "
+        "No project memory binding found. Run `agent-memory maintain init-global --vault "
         "{default_vault}` once if the global vault does not exist, then run "
         "`agent-memory init project --vault <path-to-global-vault>` from this repository."
     )
@@ -325,19 +324,15 @@ class DependencyError(RuntimeError):
 def starter_config() -> StarterConfig:
     payload = tomllib.loads(resources.files("agent_memory.defaults").joinpath("global.toml").read_text(encoding="utf-8"))
     default_vault = payload["default_vault"]
-    global_scopes = payload["global_scopes"]
     search_max_results = payload["search_max_results"]
     search_max_tokens = payload["search_max_tokens"]
     assert isinstance(default_vault, str), "starter config default_vault must be a string"
-    assert isinstance(global_scopes, list), "starter config global_scopes must be a list"
-    assert all(isinstance(scope, str) for scope in global_scopes), "starter config global_scopes entries must be strings"
     assert isinstance(search_max_results, int), "starter config search_max_results must be an integer"
     assert isinstance(search_max_tokens, int), "starter config search_max_tokens must be an integer"
     assert search_max_results > 0, "starter config search_max_results must be positive"
     assert search_max_tokens > 0, "starter config search_max_tokens must be positive"
     return StarterConfig(
         default_vault=normalize_vault_path(Path(default_vault)),
-        global_scopes=tuple(global_scopes),
         search_max_results=search_max_results,
         search_max_tokens=search_max_tokens,
     )
@@ -515,8 +510,8 @@ def init_project(vault: Path, cwd: Path, project_id: str | None = None) -> JsonO
     vault = normalize_vault_path(vault)
     assert (vault / ".agents" / "memories" / "config.toml").is_file(), "vault must be initialized with agent-memory metadata"
     git_root = git_root_for(cwd)
-    remote = "" if project_id is not None else git_remote(git_root)
-    project_id = validate_project_id(project_id) if project_id is not None else project_id_from_remote(remote)
+    remote = git_remote_or_empty(git_root)
+    project_id = validate_project_id(project_id) if project_id is not None else project_id_from_git_root(git_root, remote)
     project_dir = vault / "projects" / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
 
@@ -914,11 +909,12 @@ def _delete_memory(key: str, cwd: Path, backlink_disposition: DeleteBacklinkDisp
 
 def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
+    limit = starter_config().search_max_results
     note_scan = scan_note_records(config, scope)
-    key_matches = key_search_records_from_notes(note_scan.records, query, config.search_max_results)
+    key_matches = key_search_records_from_notes(note_scan.records, query, limit)
     exact_matches = exact_content_records(config, scope, query)
     fuzzy_matches = fuzzy_content_records(config, scope, query)
-    results = dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[: config.search_max_results]
+    results = dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[:limit]
     ranked_matches = search_content_ranked(scope, query, cwd)
     ranked_results = ranked_matches["results"]
     assert isinstance(ranked_results, list), "ranked search results must be a JSON list"
@@ -940,7 +936,7 @@ def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_list(key_search_records_from_notes(note_scan.records, query, config.search_max_results)),
+        "results": json_list(key_search_records_from_notes(note_scan.records, query, starter_config().search_max_results)),
         "findings": note_findings_json(note_scan.findings),
     }
 
@@ -962,18 +958,19 @@ def search_metadata(
     cwd: Path,
 ) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
+    limit = starter_config().search_max_results
     created_after_datetime = parse_created_after(created_after)
     note_scan = scan_note_records(config, scope)
     records = [metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)]
     return {
         "scope": scope.value,
-        "results": json_list(records[: config.search_max_results]),
+        "results": json_list(records[:limit]),
         "findings": note_findings_json(note_scan.findings),
     }
 
 
 def key_search_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
-    return key_search_records_from_notes(inspect_note_records(config, scope), query, config.search_max_results)
+    return key_search_records_from_notes(inspect_note_records(config, scope), query, starter_config().search_max_results)
 
 
 def key_search_records_from_notes(records: Sequence[NoteRecord], query: str, limit: int) -> list[JsonObject]:
@@ -990,6 +987,7 @@ def key_search_records_from_notes(records: Sequence[NoteRecord], query: str, lim
 
 
 def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    limit = starter_config().search_max_results
     roots = [str(root) for root in search_roots(config, scope)]
     # span plan cards too, so one query covers both memories and plans (issue #4). Plans
     # are project-scoped, so include them whenever the scope reaches the project.
@@ -1035,10 +1033,11 @@ def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str)
                 "source": "exact",
             }
         )
-    return dedupe_records_by_key(records)[: config.search_max_results]
+    return dedupe_records_by_key(records)[:limit]
 
 
 def zk_search_scope(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
+    limit = starter_config().search_max_results
     results: list[JsonObject] = []
     for root in search_roots(config, scope):
         results.extend(
@@ -1046,14 +1045,14 @@ def zk_search_scope(config: ProjectConfig, scope: SearchScope, query: str) -> li
                 vault=config.vault,
                 root=root,
                 query=query,
-                limit=config.search_max_results,
+                limit=limit,
             )
         )
     return results
 
 
 def fuzzy_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
-    return dedupe_records_by_key(zk_search_scope(config, scope, query))[: config.search_max_results]
+    return dedupe_records_by_key(zk_search_scope(config, scope, query))[: starter_config().search_max_results]
 
 
 def dedupe_records_by_key(records: Sequence[JsonObject]) -> list[JsonObject]:
@@ -1130,14 +1129,15 @@ def _list_cards(card_type: str, scope: SearchScope, listing_source: CardListingS
 
 def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
+    starter = starter_config()
     roots = search_roots(config, scope)
-    per_root_tokens = config.search_max_tokens // len(roots)
+    per_root_tokens = starter.search_max_tokens // len(roots)
     assert per_root_tokens > 0, "ranked content search token budget must cover every selected scope root"
     payloads = [
         probe_search_root(
             root=root,
             query=query,
-            max_results=config.search_max_results,
+            max_results=starter.search_max_results,
             max_tokens=per_root_tokens,
             cwd=config.vault,
         )
@@ -1145,8 +1145,8 @@ def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObje
     ]
     return merge_probe_payloads(
         payloads,
-        max_results=config.search_max_results,
-        max_tokens=config.search_max_tokens,
+        max_results=starter.search_max_results,
+        max_tokens=starter.search_max_tokens,
     )
 
 
@@ -1156,7 +1156,7 @@ def search_content_fuzzy(scope: SearchScope, query: str, cwd: Path) -> JsonObjec
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_list(records[: config.search_max_results]),
+        "results": json_list(records[: starter_config().search_max_results]),
     }
 
 
@@ -2286,6 +2286,16 @@ def git_remote(git_root: Path) -> str:
     return remote
 
 
+def git_remote_or_empty(git_root: Path) -> str:
+    result = subprocess.run(["git", "remote", "get-url", "origin"], cwd=git_root, check=False, text=True, capture_output=True)
+    if result.returncode == 0:
+        remote = result.stdout.strip()
+        assert remote, "git origin remote must be nonempty when configured"
+        return remote
+    assert result.returncode == 2 and "No such remote" in result.stderr, f"git remote lookup failed: {result.stderr}"
+    return ""
+
+
 def project_id_from_remote(remote: str) -> str:
     stripped = remote.removesuffix(".git")
     is_ssh_remote = stripped.startswith("git@github.com:")
@@ -2299,13 +2309,18 @@ def project_id_from_remote(remote: str) -> str:
     return f"github.com__{owner}__{repo}"
 
 
+def project_id_from_git_root(git_root: Path, remote: str) -> str:
+    if remote:
+        return project_id_from_remote(remote)
+    return validate_project_id(git_root.name)
+
+
 def validate_project_id(project_id: str) -> str:
     assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project_id), f"invalid project id: {project_id}"
     return project_id
 
 
 def config_from_agent_state_link(git_root: Path) -> ProjectConfig | None:
-    starter = starter_config()
     linked_project_dirs: list[Path] = []
     for name in PROJECT_AGENT_STATE_DIRECTORIES:
         repo_path = git_root / name
@@ -2322,10 +2337,6 @@ def config_from_agent_state_link(git_root: Path) -> ProjectConfig | None:
     return ProjectConfig(
         vault=normalize_vault_path(vault),
         project_id=project_id,
-        project_root_strategy="git-root",
-        global_scopes=starter.global_scopes,
-        search_max_results=starter.search_max_results,
-        search_max_tokens=starter.search_max_tokens,
     )
 
 
@@ -2369,17 +2380,12 @@ def global_only_config() -> ProjectConfig:
     # Config for operations whose scope is global only. The global vault is the known
     # location, so no cwd project binding is required; project_id stays None because the
     # global scope root never reads it.
-    starter = starter_config()
     vault = global_vault_path()
     if not (vault / ".agents" / "memories" / "config.toml").is_file():
         raise GlobalVaultNotInitializedError(vault)
     return ProjectConfig(
         vault=vault,
         project_id=None,
-        project_root_strategy="git-root",
-        global_scopes=starter.global_scopes,
-        search_max_results=starter.search_max_results,
-        search_max_tokens=starter.search_max_tokens,
     )
 
 
