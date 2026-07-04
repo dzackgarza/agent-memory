@@ -404,6 +404,19 @@ class IndexScan:
 
 
 @dataclass(frozen=True)
+class InspectExportRecord:
+    key: str
+    path: Path
+    document: MemoryDocument
+
+
+@dataclass(frozen=True)
+class InspectExportScan:
+    records: tuple[InspectExportRecord, ...]
+    findings: tuple[NoteFinding, ...]
+
+
+@dataclass(frozen=True)
 class ManagedCardListing:
     title: str
     card_type: str
@@ -3190,13 +3203,13 @@ def inspect_export(
 ) -> JsonObject:
     assert output_format is InspectExportFormat.GRAPH_JSON, "inspect export currently emits graph-json"
     config = load_project_config(cwd)
-    paths = inspect_markdown_paths(config, scope)
-    path_by_key = {memory_key(config.vault, path): path for path in paths}
-    nodes = [inspect_export_node(config, key, path, profile) for key, path in sorted(path_by_key.items())]
+    scan = scan_inspect_export_records(config, scope)
+    records_by_key = {record.key: record for record in scan.records}
+    nodes = [inspect_export_node(config, record.key, record.path, record.document, profile) for record in sorted(records_by_key.values(), key=lambda record: record.key)]
     edges: list[JsonObject] = []
-    for key, path in sorted(path_by_key.items()):
-        for target in outgoing_link_keys(config, path):
-            if target in path_by_key:
+    for key, record in sorted(records_by_key.items()):
+        for target in outgoing_link_keys(config, record.path):
+            if target in records_by_key:
                 edges.append({"source": key, "target": target})
     return {
         "scope": scope.value,
@@ -3204,7 +3217,33 @@ def inspect_export(
         "format": output_format.value,
         "nodes": json_list(nodes),
         "edges": json_list(edges),
+        "findings": note_findings_json(scan.findings),
     }
+
+
+def scan_inspect_export_records(config: ProjectConfig, scope: SearchScope) -> InspectExportScan:
+    records: list[InspectExportRecord] = []
+    findings: list[NoteFinding] = []
+    for path in inspect_markdown_paths(config, scope):
+        try:
+            document = inspect_export_document(config, path)
+        except MalformedMemoryError as error:
+            findings.append(note_finding_for_error(config, path, error))
+            continue
+        records.append(InspectExportRecord(key=memory_key(config.vault, path), path=path, document=document))
+    return InspectExportScan(records=tuple(records), findings=tuple(findings))
+
+
+def inspect_export_document(config: ProjectConfig, path: Path) -> MemoryDocument:
+    if is_direct_memory_note_path(config, path):
+        return note_record_for_path(config, path).document
+    return read_memory(path)
+
+
+def is_direct_memory_note_path(config: ProjectConfig, path: Path) -> bool:
+    if path.name in ("index.md", PLAN_DAG_FILENAME):
+        return False
+    return any(path.parent == directory for directory in memory_note_directories(config, SearchScope.BOTH))
 
 
 def inspect_root_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
@@ -3685,9 +3724,9 @@ def inspect_export_node(
     config: ProjectConfig,
     key: str,
     path: Path,
+    document: MemoryDocument,
     profile: InspectExportProfile,
 ) -> JsonObject:
-    document = read_memory(path)
     node: JsonObject = {
         "key": key,
         "path": str(path),
