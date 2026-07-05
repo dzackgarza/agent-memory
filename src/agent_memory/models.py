@@ -6,7 +6,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-type MetadataValue = None | bool | int | float | str | list[MetadataValue] | dict[str, MetadataValue]
+type MetadataValue = (
+    None | bool | int | float | str | list[MetadataValue] | dict[str, MetadataValue]
+)
 
 
 class MemoryScope(StrEnum):

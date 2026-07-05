@@ -12,18 +12,35 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from agent_memory.cards import CardSystemConfig, build_card_models, load_card_models, load_card_system_config
+from agent_memory.cards import (
+    CardSystemConfig,
+    build_card_models,
+    load_card_models,
+    load_card_system_config,
+)
 
 # Representative card-system config: mirrors the semantic structure of the real
 # Nimbalyst feature/plan schemas (a select-backed status set, required fields, an
 # int field with a max), without the UI-only noise. The factory must compile this
 # into pydantic validators that enforce every declared constraint.
 CONFIG: dict[str, Any] = {
-    "statuses": ["unstarted", "in-progress", "complete", "needs-agent-review", "blocked"],
+    "statuses": [
+        "unstarted",
+        "in-progress",
+        "complete",
+        "needs-agent-review",
+        "blocked",
+    ],
     "status_sets": {
         "standard": {
             "default": "unstarted",
-            "options": ["unstarted", "in-progress", "complete", "needs-agent-review", "blocked"],
+            "options": [
+                "unstarted",
+                "in-progress",
+                "complete",
+                "needs-agent-review",
+                "blocked",
+            ],
         },
     },
     "card_types": [
@@ -37,7 +54,11 @@ CONFIG: dict[str, Any] = {
                 {"name": "id", "type": "string", "required": True},
                 {"name": "title", "type": "string", "required": True},
                 {"name": "status", "type": "status", "required": True},
-                {"name": "priority", "type": "select", "options": ["low", "medium", "high", "critical"]},
+                {
+                    "name": "priority",
+                    "type": "select",
+                    "options": ["low", "medium", "high", "critical"],
+                },
                 {"name": "description", "type": "text"},
                 {"name": "parents", "type": "wikilink_list"},
                 {"name": "dependsOn", "type": "wikilink_list"},
@@ -53,7 +74,12 @@ CONFIG: dict[str, Any] = {
                 {"name": "id", "type": "string", "required": True},
                 {"name": "title", "type": "string", "required": True},
                 {"name": "status", "type": "status", "required": True},
-                {"name": "time_estimate_seconds", "type": "int", "min": 0, "max": 10_000_000},
+                {
+                    "name": "time_estimate_seconds",
+                    "type": "int",
+                    "min": 0,
+                    "max": 10_000_000,
+                },
             ],
         },
     ],
@@ -120,7 +146,11 @@ def test_built_model_rejects_missing_required_field() -> None:
 
 def test_built_model_applies_defaults_for_omitted_optional_fields() -> None:
     models = build_card_models(CardSystemConfig.model_validate(CONFIG))
-    dumped = models["feature"].model_validate({"id": "FEATURE-X", "title": "T", "status": "in-progress"}).model_dump()
+    dumped = (
+        models["feature"]
+        .model_validate({"id": "FEATURE-X", "title": "T", "status": "in-progress"})
+        .model_dump()
+    )
     assert dumped["priority"] is None  # optional select -> None default
     assert dumped["description"] is None  # optional scalar -> None default
     assert dumped["parents"] == []  # optional list -> empty default
@@ -137,7 +167,11 @@ def test_built_model_rejects_undeclared_field() -> None:
 def test_built_plan_model_enforces_int_max_for_time_estimate() -> None:
     models = build_card_models(CardSystemConfig.model_validate(CONFIG))
     base = {"id": "PLAN-X", "title": "A plan", "status": "unstarted"}
-    accepted = models["plan"].model_validate({**base, "time_estimate_seconds": 9_999_999}).model_dump()
+    accepted = (
+        models["plan"]
+        .model_validate({**base, "time_estimate_seconds": 9_999_999})
+        .model_dump()
+    )
     assert accepted["time_estimate_seconds"] == 9_999_999
     with pytest.raises(ValidationError):
         models["plan"].model_validate({**base, "time_estimate_seconds": 10_000_001})
@@ -177,10 +211,15 @@ def test_built_model_requires_required_int_field() -> None:
     # a required numeric field must compile to a bare (no-default) field that enforces
     # presence and the declared min/max range.
     cfg = deepcopy(CONFIG)
-    cfg["card_types"][1]["fields"].append({"name": "weight", "type": "int", "required": True, "min": 0, "max": 100})
+    cfg["card_types"][1]["fields"].append(
+        {"name": "weight", "type": "int", "required": True, "min": 0, "max": 100}
+    )
     models = build_card_models(CardSystemConfig.model_validate(cfg))
     base = {"id": "PLAN-X", "title": "A plan", "status": "unstarted"}
-    assert models["plan"].model_validate({**base, "weight": 50}).model_dump()["weight"] == 50
+    assert (
+        models["plan"].model_validate({**base, "weight": 50}).model_dump()["weight"]
+        == 50
+    )
     with pytest.raises(ValidationError):
         models["plan"].model_validate(base)
     with pytest.raises(ValidationError):
@@ -203,7 +242,10 @@ def test_shipped_feature_model_validates_real_feature_frontmatter() -> None:
         "id": "FEATURE-CATEGORY-SPECS-AND-SAGE-SURFACES",
         "parents": [],
         "dependsOn": [],
-        "plans": ["[[PLAN-CATEGORY-SPEC-PROGRAM]]", "[[PLAN-SPEC-CORE-VERTICAL-SLICE]]"],
+        "plans": [
+            "[[PLAN-CATEGORY-SPEC-PROGRAM]]",
+            "[[PLAN-SPEC-CORE-VERTICAL-SLICE]]",
+        ],
         "title": "Category specs and Sage-grounded operations",
         "status": "in-progress",
         "priority": "critical",
@@ -237,7 +279,10 @@ def test_shipped_plan_model_requires_success_criteria() -> None:
         "successCriteria": ["The vertical slice compiles."],
         "tasks": ["[[TASK-CATEGORY-SPEC-FIRST-SLICE]]"],
     }
-    assert models["plan"].model_validate(base).model_dump()["status"] == "approved-and-unstarted"
+    assert (
+        models["plan"].model_validate(base).model_dump()["status"]
+        == "approved-and-unstarted"
+    )
     missing = {key: value for key, value in base.items() if key != "successCriteria"}
     with pytest.raises(ValidationError):
         models["plan"].model_validate(missing)
@@ -258,7 +303,12 @@ def test_shipped_task_model_enforces_complexity_range() -> None:
         "description": "Resolve a scope gap.",
         "successCriteria": ["Description narrowed."],
     }
-    assert models["task"].model_validate({**base, "complexity": 42}).model_dump()["complexity"] == 42
+    assert (
+        models["task"]
+        .model_validate({**base, "complexity": 42})
+        .model_dump()["complexity"]
+        == 42
+    )
     with pytest.raises(ValidationError):
         models["task"].model_validate({**base, "complexity": 150})
 
@@ -296,11 +346,16 @@ def test_load_card_system_config_prefers_project_cards_yaml(tmp_path: Path) -> N
 
     vault_cards_path = vault / "_meta" / "cards.yaml"
     vault_cards_path.parent.mkdir(parents=True)
-    vault_cards_path.write_text(yaml.safe_dump(payload_for("global_signal", "GSIG", "global-signals")), encoding="utf-8")
+    vault_cards_path.write_text(
+        yaml.safe_dump(payload_for("global_signal", "GSIG", "global-signals")),
+        encoding="utf-8",
+    )
 
     cards_path = vault / "projects" / project_id / "_meta" / "cards.yaml"
     cards_path.parent.mkdir(parents=True)
-    cards_path.write_text(yaml.safe_dump(payload_for("signal", "SIG", "signals")), encoding="utf-8")
+    cards_path.write_text(
+        yaml.safe_dump(payload_for("signal", "SIG", "signals")), encoding="utf-8"
+    )
 
     config = load_card_system_config(vault, project_id)
     assert config.root == "plans"
@@ -308,14 +363,23 @@ def test_load_card_system_config_prefers_project_cards_yaml(tmp_path: Path) -> N
     assert type_names == {"signal"}
 
 
-def test_load_card_system_config_falls_back_to_packaged_defaults_if_project_cards_yaml_missing(tmp_path: Path) -> None:
+def test_load_card_system_config_falls_back_to_packaged_defaults_if_project_cards_yaml_missing(
+    tmp_path: Path,
+) -> None:
     vault = tmp_path / "vault"
     vault.mkdir()
     config = load_card_system_config(vault)
-    assert {card_type.name for card_type in config.card_types} >= {"feature", "plan", "phase", "task"}
+    assert {card_type.name for card_type in config.card_types} >= {
+        "feature",
+        "plan",
+        "phase",
+        "task",
+    }
 
 
-def test_load_card_system_config_reads_packaged_defaults_from_zip_resource(tmp_path: Path) -> None:
+def test_load_card_system_config_reads_packaged_defaults_from_zip_resource(
+    tmp_path: Path,
+) -> None:
     package_zip = tmp_path / "agent_memory_pkg.zip"
     source_root = Path(__file__).resolve().parents[1] / "src"
     packaged_files = (

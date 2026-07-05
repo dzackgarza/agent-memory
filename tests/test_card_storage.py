@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from agent_memory.cards import CardSystemConfig, build_card_models, load_card_system_config
+from agent_memory.cards import (
+    CardSystemConfig,
+    build_card_models,
+    load_card_system_config,
+)
 from agent_memory.cards.storage import (
     CardPlacementError,
     create_card,
@@ -30,7 +34,11 @@ def create_feature_plan_phase_task(plans_root: Path) -> dict[str, Path]:
         type_name="feature",
         card_id="FEATURE-DEMO",
         parent_id=None,
-        fields={"title": "Demo feature", "status": "in-progress", "description": "demo"},
+        fields={
+            "title": "Demo feature",
+            "status": "in-progress",
+            "description": "demo",
+        },
         body="# Demo feature\n",
     )
     plan = create_card(
@@ -57,7 +65,13 @@ def create_feature_plan_phase_task(plans_root: Path) -> dict[str, Path]:
         type_name="phase",
         card_id="PHASE-DEMO",
         parent_id="PLAN-DEMO",
-        fields={"title": "Demo phase", "status": "in-progress", "description": "demo", "parents": ["[[PLAN-DEMO]]"], "successCriteria": ["phase done"]},
+        fields={
+            "title": "Demo phase",
+            "status": "in-progress",
+            "description": "demo",
+            "parents": ["[[PLAN-DEMO]]"],
+            "successCriteria": ["phase done"],
+        },
         body="# Demo phase\n",
     )
     task = create_card(
@@ -67,7 +81,14 @@ def create_feature_plan_phase_task(plans_root: Path) -> dict[str, Path]:
         type_name="task",
         card_id="TASK-DEMO",
         parent_id="PHASE-DEMO",
-        fields={"title": "Demo task", "status": "in-progress", "description": "demo", "parents": ["[[PHASE-DEMO]]"], "successCriteria": ["task done"], "complexity": 30},
+        fields={
+            "title": "Demo task",
+            "status": "in-progress",
+            "description": "demo",
+            "parents": ["[[PHASE-DEMO]]"],
+            "successCriteria": ["task done"],
+            "complexity": 30,
+        },
         body="# Demo task\n",
     )
     return {"feature": feature, "plan": plan, "phase": phase, "task": task}
@@ -77,9 +98,31 @@ def test_created_cards_follow_the_configured_hierarchy(tmp_path: Path) -> None:
     root = tmp_path / "plans"
     paths = create_feature_plan_phase_task(root)
     assert paths["feature"] == root / "features" / "FEATURE-DEMO" / "FEATURE-DEMO.md"
-    assert paths["plan"] == root / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PLAN-DEMO.md"
-    assert paths["phase"] == root / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PHASE-DEMO" / "PHASE-DEMO.md"
-    assert paths["task"] == root / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PHASE-DEMO" / "tasks" / "TASK-DEMO.md"
+    assert (
+        paths["plan"]
+        == root / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PLAN-DEMO.md"
+    )
+    assert (
+        paths["phase"]
+        == root
+        / "features"
+        / "FEATURE-DEMO"
+        / "plans"
+        / "PLAN-DEMO"
+        / "PHASE-DEMO"
+        / "PHASE-DEMO.md"
+    )
+    assert (
+        paths["task"]
+        == root
+        / "features"
+        / "FEATURE-DEMO"
+        / "plans"
+        / "PLAN-DEMO"
+        / "PHASE-DEMO"
+        / "tasks"
+        / "TASK-DEMO.md"
+    )
 
 
 def test_created_card_roundtrips_through_validated_model(tmp_path: Path) -> None:
@@ -103,7 +146,12 @@ def test_create_child_with_missing_parent_fails(tmp_path: Path) -> None:
             type_name="task",
             card_id="TASK-ORPHAN",
             parent_id="PHASE-ABSENT",
-            fields={"title": "Orphan", "status": "in-progress", "description": "x", "successCriteria": ["y"]},
+            fields={
+                "title": "Orphan",
+                "status": "in-progress",
+                "description": "x",
+                "successCriteria": ["y"],
+            },
             body="# Orphan\n",
         )
 
@@ -118,7 +166,11 @@ def test_parented_card_without_parent_fails_before_root_write(tmp_path: Path) ->
         type_name="feature",
         card_id="FEATURE-PARENT",
         parent_id=None,
-        fields={"title": "Parent feature", "status": "in-progress", "description": "parent"},
+        fields={
+            "title": "Parent feature",
+            "status": "in-progress",
+            "description": "parent",
+        },
         body="# Parent feature\n",
     )
 
@@ -167,7 +219,10 @@ def test_update_card_persists_changed_field(tmp_path: Path) -> None:
     create_feature_plan_phase_task(root)
     config, models = make_models()
     update_card(root, config, models, "TASK-DEMO", {"status": "complete"})
-    assert read_card(root, config, models, "TASK-DEMO").model_dump()["status"] == "complete"
+    assert (
+        read_card(root, config, models, "TASK-DEMO").model_dump()["status"]
+        == "complete"
+    )
 
 
 def test_delete_card_removes_file(tmp_path: Path) -> None:

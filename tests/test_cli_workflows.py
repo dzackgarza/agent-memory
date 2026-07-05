@@ -37,7 +37,9 @@ from agent_memory.operations import (
     outgoing_link_keys,
     update_memory,
 )
-from agent_memory.operations import load_project_config as operations_load_project_config
+from agent_memory.operations import (
+    load_project_config as operations_load_project_config,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -93,7 +95,9 @@ def ensure_zk_binary() -> Path:
     return zk_path
 
 
-type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+type JsonValue = (
+    None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+)
 type JsonObject = dict[str, JsonValue]
 type JsonArray = list[JsonValue]
 
@@ -126,20 +130,30 @@ def run_agent_memory_process(cwd: Path, *args: str) -> subprocess.CompletedProce
         sys.argv = command
         with redirect_stdout(stdout), redirect_stderr(stderr):
             basic_doctor(cwd)
-            returncode = agent_memory_app(list(args), exit_on_error=False, result_action="return_int_as_exit_code_else_zero")
+            returncode = agent_memory_app(
+                list(args),
+                exit_on_error=False,
+                result_action="return_int_as_exit_code_else_zero",
+            )
     finally:
         os.chdir(original_cwd)
         sys.argv = original_argv
         os.environ.clear()
         os.environ.update(original_env)
-    assert isinstance(returncode, int), "cyclopts return_int_as_exit_code_else_zero must yield an int"
-    return subprocess.CompletedProcess(command, returncode, stdout.getvalue(), stderr.getvalue())
+    assert isinstance(returncode, int), (
+        "cyclopts return_int_as_exit_code_else_zero must yield an int"
+    )
+    return subprocess.CompletedProcess(
+        command, returncode, stdout.getvalue(), stderr.getvalue()
+    )
 
 
 def run_agent_memory(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     result = run_agent_memory_process(cwd, *args)
     if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr
+        )
     return result
 
 
@@ -150,7 +164,9 @@ def run_agent_memory_subprocess(
     pythonpath: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command_env = env if env is not None else agent_memory_env()
-    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src" if pythonpath is None else pythonpath)
+    command_env["PYTHONPATH"] = str(
+        PROJECT_ROOT / "src" if pythonpath is None else pythonpath
+    )
     return subprocess.run(
         [sys.executable, "-m", "agent_memory", *args],
         cwd=cwd,
@@ -164,14 +180,19 @@ def assert_structured_cli_error(result: subprocess.CompletedProcess[str]) -> str
     assert result.returncode != 0
     assert result.stdout == ""
     assert result.stderr.startswith("Error: ")
-    assert not re.search(r"\b(Traceback|AssertionError|ValidationError|FileNotFoundError)\b", result.stderr)
+    assert not re.search(
+        r"\b(Traceback|AssertionError|ValidationError|FileNotFoundError)\b",
+        result.stderr,
+    )
     return result.stderr
 
 
 def run_agent_memory_module(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     result = run_agent_memory_subprocess(cwd, *args)
     if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr
+        )
     return result
 
 
@@ -192,7 +213,9 @@ def inspect_tree_keys(node: JsonObject) -> set[str]:
 
 
 def init_git_repo(repo: Path) -> str:
-    subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init"], cwd=repo, check=True, text=True, capture_output=True
+    )
     subprocess.run(
         [
             "git",
@@ -251,20 +274,49 @@ def git_output(repo: Path, *args: str) -> str:
 
 def initialized_bare_remote(tmp_path: Path, name: str) -> Path:
     remote = tmp_path / name
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     return remote
 
 
 def configure_vault_remote(vault: Path, remote: Path) -> str:
     branch = git_output(vault, "branch", "--show-current")
-    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=vault, check=True, text=True, capture_output=True)
-    subprocess.run(["git", "push", "-u", "origin", branch], cwd=vault, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(remote)],
+        cwd=vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "-u", "origin", branch],
+        cwd=vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     return branch
 
 
 def configure_git_identity(repo: Path) -> None:
-    subprocess.run(["git", "config", "--local", "core.hooksPath", ""], cwd=repo, check=True, text=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "agent-memory-test"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "--local", "core.hooksPath", ""],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "agent-memory-test"],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     subprocess.run(
         ["git", "config", "user.email", "agent-memory-test@localhost"],
         cwd=repo,
@@ -307,10 +359,20 @@ def expected_sync_auto_status(
 ) -> JsonObject:
     source_env = env if env is not None else os.environ
     xdg_config_home = source_env.get("XDG_CONFIG_HOME")
-    config_home = Path(xdg_config_home) if xdg_config_home is not None else Path.home() / ".config"
+    config_home = (
+        Path(xdg_config_home)
+        if xdg_config_home is not None
+        else Path.home() / ".config"
+    )
     service_path = config_home / "systemd" / "user" / "agent-memory-sync.service"
     timer_path = config_home / "systemd" / "user" / "agent-memory-sync.timer"
-    timer_wants_path = config_home / "systemd" / "user" / "timers.target.wants" / "agent-memory-sync.timer"
+    timer_wants_path = (
+        config_home
+        / "systemd"
+        / "user"
+        / "timers.target.wants"
+        / "agent-memory-sync.timer"
+    )
     status: JsonObject = {
         "enabled": state is ExpectedSyncAutoState.ENABLED,
         "installed": interval_seconds is not None,
@@ -335,11 +397,21 @@ def expected_sync_state(
 ) -> JsonObject:
     source_env = env if env is not None else os.environ
     xdg_state_home = source_env.get("XDG_STATE_HOME")
-    state_home = Path(xdg_state_home) if xdg_state_home is not None else Path.home() / ".local" / "state"
+    state_home = (
+        Path(xdg_state_home)
+        if xdg_state_home is not None
+        else Path.home() / ".local" / "state"
+    )
     return {
-        "last_attempt": last_attempt if last_attempt is not None else {"status": "never_run"},
-        "last_failure": last_failure if last_failure is not None else {"status": "none"},
-        "last_success": last_success if last_success is not None else {"status": "none"},
+        "last_attempt": last_attempt
+        if last_attempt is not None
+        else {"status": "never_run"},
+        "last_failure": last_failure
+        if last_failure is not None
+        else {"status": "none"},
+        "last_success": last_success
+        if last_success is not None
+        else {"status": "none"},
         "state_path": str(state_home / "agent-memory" / "sync-state.json"),
     }
 
@@ -371,7 +443,9 @@ def result_keys(result: JsonObject) -> set[str]:
 
 
 def init_git_repo_without_remote(repo: Path) -> None:
-    subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init"], cwd=repo, check=True, text=True, capture_output=True
+    )
 
 
 def initialized_git_repo(tmp_path: Path) -> GitRepo:
@@ -380,12 +454,22 @@ def initialized_git_repo(tmp_path: Path) -> GitRepo:
     return GitRepo(path=repo, project_id=init_git_repo(repo))
 
 
-def initialized_git_repo_with_remote(tmp_path: Path, name: str, repo_slug: str) -> GitRepo:
+def initialized_git_repo_with_remote(
+    tmp_path: Path, name: str, repo_slug: str
+) -> GitRepo:
     repo = tmp_path / name
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
     subprocess.run(
-        ["git", "remote", "add", "origin", f"git@github.com:dzackgarza/{repo_slug}.git"],
+        ["git", "init"], cwd=repo, check=True, text=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "remote",
+            "add",
+            "origin",
+            f"git@github.com:dzackgarza/{repo_slug}.git",
+        ],
         cwd=repo,
         check=True,
         text=True,
@@ -537,11 +621,15 @@ def add_cli_plan_tree(
     return f"projects/{workspace.project_id}/plans/features/{feature_id}/plans/{plan_id}/{plan_id}"
 
 
-def project_memory_key(workspace: CliWorkspace, memory_type_directory: str, slug: str) -> str:
+def project_memory_key(
+    workspace: CliWorkspace, memory_type_directory: str, slug: str
+) -> str:
     return f"projects/{workspace.project_id}/{memory_type_directory}/{slug}"
 
 
-def search_content(workspace: CliWorkspace, *, scope: str, mode: str, query: str) -> JsonObject:
+def search_content(
+    workspace: CliWorkspace, *, scope: str, mode: str, query: str
+) -> JsonObject:
     return parse_json_stdout(
         run_agent_memory(
             workspace.repo,
@@ -598,7 +686,9 @@ def assert_okf_concept_metadata(
 def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
 
-    result = run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    result = run_agent_memory(
+        tmp_path, "maintain", "init-global", "--vault", str(vault)
+    )
     payload = parse_json_stdout(result)
     git_probe = subprocess.run(
         ["git", "-C", str(vault), "rev-parse", "--is-inside-work-tree"],
@@ -623,14 +713,22 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert (vault / "global" / "index.md").is_file()
     assert (vault / "_meta" / "projects.toml").is_file()
     assert frontmatter(vault / "index.md") == {"okf_version": OKF_VERSION}
-    assert "* [Global](global/index.md) - Global memory shared across projects." in (vault / "index.md").read_text()
+    assert (
+        "* [Global](global/index.md) - Global memory shared across projects."
+        in (vault / "index.md").read_text()
+    )
     global_index = (vault / "global" / "index.md").read_text()
     assert frontmatter(vault / "global" / "index.md") == {"okf_version": OKF_VERSION}
-    assert "* [Decisions](decisions/index.md) - Global decision memories." in global_index
+    assert (
+        "* [Decisions](decisions/index.md) - Global decision memories." in global_index
+    )
     assert "* [Traps](traps/index.md) - Global trap memories." in global_index
     assert "* [Advice](advice/index.md) - Global advice memories." in global_index
     assert "* [Context](context/index.md) - Global context memories." in global_index
-    assert "* [References](references/index.md) - Global reference memories." in global_index
+    assert (
+        "* [References](references/index.md) - Global reference memories."
+        in global_index
+    )
 
 
 def test_maintain_skill_prints_vault_maintenance_entrypoint(tmp_path: Path) -> None:
@@ -647,18 +745,27 @@ def test_maintain_skill_prints_vault_maintenance_entrypoint(tmp_path: Path) -> N
 def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
     vault = tmp_path / "module-vault"
 
-    result = run_agent_memory_module(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    result = run_agent_memory_module(
+        tmp_path, "maintain", "init-global", "--vault", str(vault)
+    )
     payload = parse_json_stdout(result)
     global_index = (vault / "global" / "index.md").read_text()
 
     assert Path(str(payload["vault"])) == vault
     assert (vault / ".agents" / "memories" / "config.toml").is_file()
     assert frontmatter(vault / "global" / "index.md") == {"okf_version": OKF_VERSION}
-    assert "* [Decisions](decisions/index.md) - Global decision memories." in global_index
-    assert "* [References](references/index.md) - Global reference memories." in global_index
+    assert (
+        "* [Decisions](decisions/index.md) - Global decision memories." in global_index
+    )
+    assert (
+        "* [References](references/index.md) - Global reference memories."
+        in global_index
+    )
 
 
-def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path: Path) -> None:
+def test_project_initialization_writes_config_indexes_and_agent_pointer(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
 
     assert not (workspace.repo / ".agent-memory.toml").exists()
@@ -666,33 +773,60 @@ def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path
     assert resolved.vault == workspace.vault
     assert resolved.project_id == workspace.project_id
     agents_pointer = (workspace.repo / "AGENTS.md").read_text()
-    assert f"This repository uses the central agent memory vault at `{workspace.vault}`." in agents_pointer
-    assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
+    assert (
+        f"This repository uses the central agent memory vault at `{workspace.vault}`."
+        in agents_pointer
+    )
+    assert (
+        f"Project memory key: `projects/{workspace.project_id}/index`."
+        in agents_pointer
+    )
     assert 'agent-memory search --scope both "<task or subsystem>"' in agents_pointer
     assert "agent-memory maintain skill vault-maintenance" in agents_pointer
     assert "ephemeral error state" in agents_pointer
-    pointer_add_types = re.findall(r"agent-memory add --scope project --type (\S+) ", agents_pointer)
-    assert pointer_add_types, "agent pointer must demonstrate agent-memory add invocations"
-    assert [MemoryType(token) for token in pointer_add_types] == [memory_type for memory_type in MemoryType if memory_type is not MemoryType.PLAN]
+    pointer_add_types = re.findall(
+        r"agent-memory add --scope project --type (\S+) ", agents_pointer
+    )
+    assert pointer_add_types, (
+        "agent pointer must demonstrate agent-memory add invocations"
+    )
+    assert [MemoryType(token) for token in pointer_add_types] == [
+        memory_type for memory_type in MemoryType if memory_type is not MemoryType.PLAN
+    ]
     assert "agent-memory add --scope project --type plan" not in agents_pointer
     assert "agent-memory plan add" in agents_pointer
 
-    project_index_path = workspace.vault / "projects" / workspace.project_id / "index.md"
+    project_index_path = (
+        workspace.vault / "projects" / workspace.project_id / "index.md"
+    )
     project_index = project_index_path.read_text()
     assert frontmatter(project_index_path) == {"okf_version": OKF_VERSION}
-    assert "* [Decisions](decisions/index.md) - Project decision memories." in project_index
+    assert (
+        "* [Decisions](decisions/index.md) - Project decision memories."
+        in project_index
+    )
     assert "* [Traps](traps/index.md) - Project trap memories." in project_index
     assert "* [Advice](advice/index.md) - Project advice memories." in project_index
     assert "* [Context](context/index.md) - Project context memories." in project_index
-    assert "* [References](references/index.md) - Project reference memories." in project_index
-    assert f"* [{workspace.project_id}](projects/{workspace.project_id}/index.md) - Project memory bundle." in (workspace.vault / "index.md").read_text()
+    assert (
+        "* [References](references/index.md) - Project reference memories."
+        in project_index
+    )
+    assert (
+        f"* [{workspace.project_id}](projects/{workspace.project_id}/index.md) - Project memory bundle."
+        in (workspace.vault / "index.md").read_text()
+    )
 
 
-def test_project_initialization_appends_https_remote_project_record(tmp_path: Path) -> None:
+def test_project_initialization_appends_https_remote_project_record(
+    tmp_path: Path,
+) -> None:
     ssh_repo = initialized_git_repo(tmp_path)
     https_repo = tmp_path / "https-repo"
     https_repo.mkdir()
-    subprocess.run(["git", "init"], cwd=https_repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init"], cwd=https_repo, check=True, text=True, capture_output=True
+    )
     subprocess.run(
         [
             "git",
@@ -727,9 +861,16 @@ def test_project_initialization_appends_https_remote_project_record(tmp_path: Pa
         capture_output=True,
     ).stdout.strip()
 
-    assert operations_load_project_config(ssh_repo.path).project_id == ssh_repo.project_id
-    assert operations_load_project_config(https_repo).project_id == "github.com__dzackgarza__https-memory"
-    project_records = tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"]
+    assert (
+        operations_load_project_config(ssh_repo.path).project_id == ssh_repo.project_id
+    )
+    assert (
+        operations_load_project_config(https_repo).project_id
+        == "github.com__dzackgarza__https-memory"
+    )
+    project_records = tomllib.loads(
+        (vault / "_meta" / "projects.toml").read_text(encoding="utf-8")
+    )["projects"]
     assert project_records == [
         {
             "project_id": ssh_repo.project_id,
@@ -744,7 +885,9 @@ def test_project_initialization_appends_https_remote_project_record(tmp_path: Pa
     ]
 
 
-def test_init_project_with_explicit_project_id_preserves_no_origin_project_plan_scope(tmp_path: Path) -> None:
+def test_init_project_with_explicit_project_id_preserves_no_origin_project_plan_scope(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "vendor"
     repo.mkdir()
     init_git_repo_without_remote(repo)
@@ -752,7 +895,11 @@ def test_init_project_with_explicit_project_id_preserves_no_origin_project_plan_
     project_id = "vendor.local__agent-memory__vendored-tool"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
 
-    initialized = parse_json_stdout(run_agent_memory(repo, "init", "project", "--vault", str(vault), "--project-id", project_id))
+    initialized = parse_json_stdout(
+        run_agent_memory(
+            repo, "init", "project", "--vault", str(vault), "--project-id", project_id
+        )
+    )
     run_agent_memory(
         repo,
         "feature",
@@ -766,7 +913,15 @@ def test_init_project_with_explicit_project_id_preserves_no_origin_project_plan_
         "description=vendor plan scope",
     )
 
-    plan_path = vault / "projects" / project_id / "plans" / "features" / "FEATURE-VENDOR" / "FEATURE-VENDOR.md"
+    plan_path = (
+        vault
+        / "projects"
+        / project_id
+        / "plans"
+        / "features"
+        / "FEATURE-VENDOR"
+        / "FEATURE-VENDOR.md"
+    )
     assert initialized["project_id"] == project_id
     assert not (repo / ".agent-memory.toml").exists()
     assert plan_path.is_file()
@@ -780,32 +935,46 @@ def test_project_config_model_excludes_repo_owned_settings() -> None:
     assert "search_max_tokens" not in ProjectConfig.model_fields
 
 
-def test_init_project_without_remote_or_project_id_uses_git_root_name(tmp_path: Path) -> None:
+def test_init_project_without_remote_or_project_id_uses_git_root_name(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "vendor"
     repo.mkdir()
     init_git_repo_without_remote(repo)
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
 
-    initialized = parse_json_stdout(run_agent_memory(repo, "init", "project", "--vault", str(vault)))
+    initialized = parse_json_stdout(
+        run_agent_memory(repo, "init", "project", "--vault", str(vault))
+    )
 
     assert initialized["project_id"] == "vendor"
     assert not (repo / ".agent-memory.toml").exists()
     assert operations_load_project_config(repo).project_id == "vendor"
-    assert tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"] == [{"project_id": "vendor", "root": str(repo), "remote": ""}]
+    assert tomllib.loads(
+        (vault / "_meta" / "projects.toml").read_text(encoding="utf-8")
+    )["projects"] == [{"project_id": "vendor", "root": str(repo), "remote": ""}]
 
 
-def test_init_global_normalizes_literal_tilde_vault_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_init_global_normalizes_literal_tilde_vault_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     cwd = tmp_path / "cwd"
     cwd.mkdir()
 
-    initialized = parse_json_stdout(run_agent_memory(cwd, "maintain", "init-global", "--vault", "~/.agent-memory-vault"))
+    initialized = parse_json_stdout(
+        run_agent_memory(
+            cwd, "maintain", "init-global", "--vault", "~/.agent-memory-vault"
+        )
+    )
 
     assert initialized["vault"] == str(home / ".agent-memory-vault")
-    assert (home / ".agent-memory-vault" / ".agents" / "memories" / "config.toml").is_file()
+    assert (
+        home / ".agent-memory-vault" / ".agents" / "memories" / "config.toml"
+    ).is_file()
     assert not (cwd / "~").exists()
 
 
@@ -832,7 +1001,14 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
     global_key = "global/advice/global-beta"
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
-    assert project_path == workspace.vault / "projects" / workspace.project_id / "decisions" / "project-alpha.md"
+    assert (
+        project_path
+        == workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "decisions"
+        / "project-alpha.md"
+    )
     assert global_path == workspace.vault / "global" / "advice" / "global-beta.md"
     assert git_status_lines(workspace.vault) == set()
     assert git_commit_subjects(workspace.vault)[:4] == [
@@ -859,16 +1035,28 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         tags=["global", "advice"],
     )
     assert frontmatter(global_path)["scope"] == "global"
-    assert "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d belongs only to this repository" in (project_path.parent / "index.md").read_text()
-    assert "* [Global Beta](global-beta.md) - global-signal-cde4b9f6 belongs to shared agent practice" in (global_path.parent / "index.md").read_text()
+    assert (
+        "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d belongs only to this repository"
+        in (project_path.parent / "index.md").read_text()
+    )
+    assert (
+        "* [Global Beta](global-beta.md) - global-signal-cde4b9f6 belongs to shared agent practice"
+        in (global_path.parent / "index.md").read_text()
+    )
 
-    project_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "signal"))
+    project_search = parse_json_stdout(
+        run_agent_memory(workspace.repo, "search", "--scope", "project", "signal")
+    )
     assert project_key in result_keys(project_search)
     assert global_key not in result_keys(project_search)
-    global_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "global", "signal"))
+    global_search = parse_json_stdout(
+        run_agent_memory(workspace.repo, "search", "--scope", "global", "signal")
+    )
     assert global_key in result_keys(global_search)
     assert project_key not in result_keys(global_search)
-    combined_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "both", "signal"))
+    combined_search = parse_json_stdout(
+        run_agent_memory(workspace.repo, "search", "--scope", "both", "signal")
+    )
     combined_keys = result_keys(combined_search)
     assert project_key in combined_keys
     assert global_key in combined_keys
@@ -887,7 +1075,13 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
             "notes": ["preserve out-of-schema plan state"],
         }
     ]
-    project_path.write_text("---\n" + yaml.safe_dump(project_metadata, sort_keys=False) + "---\n" + project_body, encoding="utf-8")
+    project_path.write_text(
+        "---\n"
+        + yaml.safe_dump(project_metadata, sort_keys=False)
+        + "---\n"
+        + project_body,
+        encoding="utf-8",
+    )
     updated = parse_json_stdout(
         run_agent_memory(
             workspace.repo,
@@ -898,7 +1092,10 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         )
     )
     assert updated["key"] == project_note["key"]
-    assert "durable next step" in run_agent_memory(workspace.repo, "retrieve", str(project_note["key"])).stdout
+    assert (
+        "durable next step"
+        in run_agent_memory(workspace.repo, "retrieve", str(project_note["key"])).stdout
+    )
     assert frontmatter(project_path)["todos"] == [
         {
             "id": "M-RATIFY",
@@ -908,12 +1105,18 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
             "notes": ["preserve out-of-schema plan state"],
         }
     ]
-    structured_frontmatter_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "durable"))
+    structured_frontmatter_search = parse_json_stdout(
+        run_agent_memory(workspace.repo, "search", "--scope", "project", "durable")
+    )
     assert project_key in result_keys(structured_frontmatter_search)
 
     project_index = project_path.parent / "index.md"
     index_lines = project_index.read_text(encoding="utf-8").splitlines()
-    project_index.write_text("\n".join(line for line in index_lines if "](project-alpha.md)" not in line) + "\n", encoding="utf-8")
+    project_index.write_text(
+        "\n".join(line for line in index_lines if "](project-alpha.md)" not in line)
+        + "\n",
+        encoding="utf-8",
+    )
     missing_index_update = parse_json_stdout(
         run_agent_memory(
             workspace.repo,
@@ -924,18 +1127,32 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
         )
     )
     assert missing_index_update["key"] == project_note["key"]
-    assert "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d updated after missing index link" in project_index.read_text(encoding="utf-8")
+    assert (
+        "* [Project Alpha](project-alpha.md) - project-signal-7dcbd96d updated after missing index link"
+        in project_index.read_text(encoding="utf-8")
+    )
 
-    basename_miss = run_agent_memory_subprocess(workspace.repo, "retrieve", "project-alpha")
+    basename_miss = run_agent_memory_subprocess(
+        workspace.repo, "retrieve", "project-alpha"
+    )
     assert basename_miss.returncode != 0
     assert "retrieve expects a full vault-relative key" in basename_miss.stderr
     assert "projects/<project-id>/decisions/parser-choice" in basename_miss.stderr
-    assert "projects/<project-id>/plans/features/FEATURE-ID/FEATURE-ID" in basename_miss.stderr
+    assert (
+        "projects/<project-id>/plans/features/FEATURE-ID/FEATURE-ID"
+        in basename_miss.stderr
+    )
     assert "agent-memory search --scope both" in basename_miss.stderr
 
-    deleted = parse_json_stdout(run_agent_memory(workspace.repo, "delete", str(global_note["key"])))
+    deleted = parse_json_stdout(
+        run_agent_memory(workspace.repo, "delete", str(global_note["key"]))
+    )
     assert deleted["deleted"] == global_key
-    after_delete = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "both", "global-signal-cde4b9f6"))
+    after_delete = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "search", "--scope", "both", "global-signal-cde4b9f6"
+        )
+    )
     assert global_key not in result_keys(after_delete)
 
 
@@ -958,12 +1175,22 @@ def test_generic_add_refuses_plain_plan_memory(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "agent-memory plan add" in result.stderr
     assert "Traceback" not in result.stderr
-    plain_plan = workspace.vault / "projects" / workspace.project_id / "plans" / "tree-less-plan.md"
+    plain_plan = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "tree-less-plan.md"
+    )
     assert not plain_plan.exists()
 
 
-def write_legacy_plan_with_todos(workspace: CliWorkspace, slug: str = "legacy-plan") -> tuple[str, Path]:
-    plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / f"{slug}.md"
+def write_legacy_plan_with_todos(
+    workspace: CliWorkspace, slug: str = "legacy-plan"
+) -> tuple[str, Path]:
+    plan_path = (
+        workspace.vault / "projects" / workspace.project_id / "plans" / f"{slug}.md"
+    )
     metadata: dict[str, JsonValue] = {
         "type": "plan",
         "title": "Legacy Plan",
@@ -1002,9 +1229,26 @@ def write_legacy_plan_with_todos(workspace: CliWorkspace, slug: str = "legacy-pl
             }
         ],
     }
-    plan_path.write_text("---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n# Legacy Plan\n\nBody text must survive.\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(plan_path.relative_to(workspace.vault))], cwd=workspace.vault, check=True, text=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "Seed legacy plan todo fixture"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    plan_path.write_text(
+        "---\n"
+        + yaml.safe_dump(metadata, sort_keys=False)
+        + "---\n# Legacy Plan\n\nBody text must survive.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "add", str(plan_path.relative_to(workspace.vault))],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Seed legacy plan todo fixture"],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     return f"projects/{workspace.project_id}/plans/{slug}", plan_path
 
 
@@ -1043,24 +1287,42 @@ def test_todo_set_mutates_nested_plan_todo_and_preserves_record(tmp_path: Path) 
     assert target["content"] == "Start implementation with a committed reproducer"
     assert target["note"] == "red test landed"
     untouched = json_object(json_array(parent["children"])[1])
-    assert untouched == {"id": "T2", "content": "Leave untouched", "status": "unstarted"}
+    assert untouched == {
+        "id": "T2",
+        "content": "Leave untouched",
+        "status": "unstarted",
+    }
     assert git_status_lines(workspace.vault) == set()
-    assert git_commit_subjects(workspace.vault)[0] == "Update todo T1 in plan: Legacy Plan"
+    assert (
+        git_commit_subjects(workspace.vault)[0] == "Update todo T1 in plan: Legacy Plan"
+    )
 
 
 def test_todo_set_reports_clean_errors_for_invalid_inputs(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     plan_key, _plan_path = write_legacy_plan_with_todos(workspace)
 
-    invalid_status = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T1", "--status", "not-a-status")
+    invalid_status = run_agent_memory_subprocess(
+        workspace.repo, "todo", "set", plan_key, "T1", "--status", "not-a-status"
+    )
     invalid_status_stderr = assert_structured_cli_error(invalid_status)
     assert "invalid todo status 'not-a-status'" in invalid_status_stderr
 
-    missing_todo = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T-MISSING", "--status", "in-progress")
+    missing_todo = run_agent_memory_subprocess(
+        workspace.repo, "todo", "set", plan_key, "T-MISSING", "--status", "in-progress"
+    )
     missing_todo_stderr = assert_structured_cli_error(missing_todo)
     assert "todo id not found: T-MISSING" in missing_todo_stderr
 
-    missing_plan = run_agent_memory_subprocess(workspace.repo, "todo", "set", f"projects/{workspace.project_id}/plans/missing-plan", "T1", "--status", "in-progress")
+    missing_plan = run_agent_memory_subprocess(
+        workspace.repo,
+        "todo",
+        "set",
+        f"projects/{workspace.project_id}/plans/missing-plan",
+        "T1",
+        "--status",
+        "in-progress",
+    )
     missing_plan_stderr = assert_structured_cli_error(missing_plan)
     assert "plan memory not found" in missing_plan_stderr
 
@@ -1077,36 +1339,69 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     original_key = project_memory_key(workspace, "decisions", "project-transition")
     assert project_note["key"] == original_key
 
-    renamed_key = project_memory_key(workspace, "decisions", "project-transition-renamed")
-    renamed = parse_json_stdout(run_agent_memory(workspace.repo, "update", original_key, "--title", "Project Transition Renamed"))
+    renamed_key = project_memory_key(
+        workspace, "decisions", "project-transition-renamed"
+    )
+    renamed = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "update",
+            original_key,
+            "--title",
+            "Project Transition Renamed",
+        )
+    )
     assert renamed["key"] == renamed_key
     renamed_text = run_agent_memory(workspace.repo, "retrieve", renamed_key).stdout
     assert "# Project Transition Renamed" in renamed_text
-    assert "transition-signal-0d1f body stays attached to the moved memory" in renamed_text
-    decisions_index = (workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md").read_text()
+    assert (
+        "transition-signal-0d1f body stays attached to the moved memory" in renamed_text
+    )
+    decisions_index = (
+        workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
+    ).read_text()
     assert "[Project Transition](project-transition.md)" not in decisions_index
-    assert "[Project Transition Renamed](project-transition-renamed.md)" in decisions_index
+    assert (
+        "[Project Transition Renamed](project-transition-renamed.md)" in decisions_index
+    )
 
     retagged_key = project_memory_key(workspace, "traps", "project-transition-renamed")
-    retagged = parse_json_stdout(run_agent_memory(workspace.repo, "update", renamed_key, "--type", "trap"))
+    retagged = parse_json_stdout(
+        run_agent_memory(workspace.repo, "update", renamed_key, "--type", "trap")
+    )
     assert retagged["key"] == retagged_key
     retagged_text = run_agent_memory(workspace.repo, "retrieve", retagged_key).stdout
     assert "# Project Transition Renamed" in retagged_text
-    assert "transition-signal-0d1f body stays attached to the moved memory" in retagged_text
+    assert (
+        "transition-signal-0d1f body stays attached to the moved memory"
+        in retagged_text
+    )
     assert not (workspace.vault / f"{renamed_key}.md").exists()
-    updated_decisions_index = (workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md").read_text()
-    traps_index = (workspace.vault / "projects" / workspace.project_id / "traps" / "index.md").read_text()
-    assert "[Project Transition Renamed](project-transition-renamed.md)" not in updated_decisions_index
+    updated_decisions_index = (
+        workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
+    ).read_text()
+    traps_index = (
+        workspace.vault / "projects" / workspace.project_id / "traps" / "index.md"
+    ).read_text()
+    assert (
+        "[Project Transition Renamed](project-transition-renamed.md)"
+        not in updated_decisions_index
+    )
     assert "[Project Transition Renamed](project-transition-renamed.md)" in traps_index
 
     no_update = run_agent_memory_subprocess(workspace.repo, "update", retagged_key)
     assert no_update.returncode != 0
-    assert "update requires at least one of --title, --type, or --content" in no_update.stderr
+    assert (
+        "update requires at least one of --title, --type, or --content"
+        in no_update.stderr
+    )
     assert "AssertionError" not in no_update.stderr
     assert "Traceback" not in no_update.stderr
 
 
-def test_project_memory_update_rewrites_inbound_wikilinks_on_key_change(tmp_path: Path) -> None:
+def test_project_memory_update_rewrites_inbound_wikilinks_on_key_change(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     target = add_cli_memory(
         workspace,
@@ -1127,7 +1422,15 @@ def test_project_memory_update_rewrites_inbound_wikilinks_on_key_change(tmp_path
     backlink_index_path = backlink_path.parent / "index.md"
     new_key = project_memory_key(workspace, "decisions", "rename-link-target-renamed")
 
-    renamed = parse_json_stdout(run_agent_memory(workspace.repo, "update", str(target["key"]), "--title", "Rename Link Target Renamed"))
+    renamed = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "update",
+            str(target["key"]),
+            "--title",
+            "Rename Link Target Renamed",
+        )
+    )
 
     assert target["key"] == old_key
     assert renamed["key"] == new_key
@@ -1140,7 +1443,9 @@ def test_project_memory_update_rewrites_inbound_wikilinks_on_key_change(tmp_path
         assert f"[[{new_key}]]" in rewritten
 
 
-def test_delete_requires_backlink_disposition_and_can_repoint_inbound_links(tmp_path: Path) -> None:
+def test_delete_requires_backlink_disposition_and_can_repoint_inbound_links(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     target = add_cli_memory(
         workspace,
@@ -1172,7 +1477,11 @@ def test_delete_requires_backlink_disposition_and_can_repoint_inbound_links(tmp_
     assert target_path.is_file()
     assert f"[[{old_key}]]" in backlink_path.read_text(encoding="utf-8")
 
-    deleted = parse_json_stdout(run_agent_memory(workspace.repo, "delete", str(target["key"]), "--repoint", external_url))
+    deleted = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "delete", str(target["key"]), "--repoint", external_url
+        )
+    )
 
     assert deleted == {
         "deleted": old_key,
@@ -1210,11 +1519,23 @@ def test_search_keys_uses_scoped_title_key_matches(tmp_path: Path) -> None:
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
 
-    project_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "project", "Graph Beacon"))
+    project_search = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "search", "keys", "--scope", "project", "Graph Beacon"
+        )
+    )
     assert result_keys(project_search) == {project_key}
-    global_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "global", "Graph Beacon"))
+    global_search = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "search", "keys", "--scope", "global", "Graph Beacon"
+        )
+    )
     assert result_keys(global_search) == {global_key}
-    combined_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "both", "Graph Beacon"))
+    combined_search = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "search", "keys", "--scope", "both", "Graph Beacon"
+        )
+    )
     assert result_keys(combined_search) == {project_key, global_key}
 
 
@@ -1237,20 +1558,36 @@ def test_search_content_ranked_uses_scope_roots(tmp_path: Path) -> None:
     project_path = Path(str(project_note["path"])).resolve()
     global_path = Path(str(global_note["path"])).resolve()
 
-    exact_project = search_content(workspace, scope="project", mode="exact", query="ranked-context-token-48a4")
+    exact_project = search_content(
+        workspace, scope="project", mode="exact", query="ranked-context-token-48a4"
+    )
     assert str(project_note["key"]) in result_keys(exact_project)
     assert str(global_note["key"]) not in result_keys(exact_project)
-    exact_global = search_content(workspace, scope="global", mode="exact", query="ranked-context-token-48a4")
+    exact_global = search_content(
+        workspace, scope="global", mode="exact", query="ranked-context-token-48a4"
+    )
     assert str(global_note["key"]) in result_keys(exact_global)
     assert str(project_note["key"]) not in result_keys(exact_global)
 
-    project_files = probe_result_files(search_content(workspace, scope="project", mode="ranked", query="ranked-context-token-48a4"))
+    project_files = probe_result_files(
+        search_content(
+            workspace, scope="project", mode="ranked", query="ranked-context-token-48a4"
+        )
+    )
     assert project_path in project_files
     assert global_path not in project_files
-    global_files = probe_result_files(search_content(workspace, scope="global", mode="ranked", query="ranked-context-token-48a4"))
+    global_files = probe_result_files(
+        search_content(
+            workspace, scope="global", mode="ranked", query="ranked-context-token-48a4"
+        )
+    )
     assert global_path in global_files
     assert project_path not in global_files
-    combined_files = probe_result_files(search_content(workspace, scope="both", mode="ranked", query="ranked-context-token-48a4"))
+    combined_files = probe_result_files(
+        search_content(
+            workspace, scope="both", mode="ranked", query="ranked-context-token-48a4"
+        )
+    )
     assert project_path in combined_files
     assert global_path in combined_files
 
@@ -1281,24 +1618,40 @@ def test_search_content_fuzzy_uses_scope_roots(tmp_path: Path) -> None:
 
     project_key = project_memory_key(workspace, "decisions", "fuzzy-project-context")
     global_key = "global/advice/fuzzy-global-context"
-    unrelated_project_key = project_memory_key(workspace, "decisions", "fuzzy-project-irrelevant")
+    unrelated_project_key = project_memory_key(
+        workspace, "decisions", "fuzzy-project-irrelevant"
+    )
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
     assert unrelated_project_note["key"] == unrelated_project_key
 
-    project_keys = result_keys(search_content(workspace, scope="project", mode="fuzzy", query="fuzzy-search-token-3b9a"))
+    project_keys = result_keys(
+        search_content(
+            workspace, scope="project", mode="fuzzy", query="fuzzy-search-token-3b9a"
+        )
+    )
     assert project_key in project_keys
     assert global_key not in project_keys
     assert unrelated_project_key not in project_keys
-    assert all(key.startswith(f"projects/{workspace.project_id}/") for key in project_keys)
+    assert all(
+        key.startswith(f"projects/{workspace.project_id}/") for key in project_keys
+    )
 
-    global_keys = result_keys(search_content(workspace, scope="global", mode="fuzzy", query="fuzzy-search-token-3b9a"))
+    global_keys = result_keys(
+        search_content(
+            workspace, scope="global", mode="fuzzy", query="fuzzy-search-token-3b9a"
+        )
+    )
     assert global_key in global_keys
     assert project_key not in global_keys
     assert unrelated_project_key not in global_keys
     assert all(key.startswith("global/") for key in global_keys)
 
-    combined_keys = result_keys(search_content(workspace, scope="both", mode="fuzzy", query="fuzzy-search-token-3b9a"))
+    combined_keys = result_keys(
+        search_content(
+            workspace, scope="both", mode="fuzzy", query="fuzzy-search-token-3b9a"
+        )
+    )
     assert project_key in combined_keys
     assert global_key in combined_keys
     assert unrelated_project_key not in combined_keys
@@ -1326,7 +1679,9 @@ def test_search_metadata_filters_real_frontmatter(tmp_path: Path) -> None:
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
 
-    all_metadata = parse_json_stdout(run_agent_memory(workspace.repo, "search", "metadata", "--scope", "both"))
+    all_metadata = parse_json_stdout(
+        run_agent_memory(workspace.repo, "search", "metadata", "--scope", "both")
+    )
     assert result_keys(all_metadata) == {project_key, global_key}
 
     project_results = parse_json_stdout(
@@ -1381,10 +1736,19 @@ def test_maintain_squash_returns_project_index_scope_with_iwe(tmp_path: Path) ->
         content="squash-global-signal-88ec672b must stay outside project consolidation",
     )
 
-    squashed = run_agent_memory(workspace.repo, "maintain", "squash", f"projects/{workspace.project_id}/index", "--depth", "3")
+    squashed = run_agent_memory(
+        workspace.repo,
+        "maintain",
+        "squash",
+        f"projects/{workspace.project_id}/index",
+        "--depth",
+        "3",
+    )
 
     assert f"# {workspace.project_id}" in squashed.stdout
-    assert "- [Decisions](decisions/index) - Project decision memories." in squashed.stdout
+    assert (
+        "- [Decisions](decisions/index) - Project decision memories." in squashed.stdout
+    )
     assert "- [Traps](traps/index) - Project trap memories." in squashed.stdout
     assert "squash-global-signal-88ec672b" not in squashed.stdout
 
@@ -1401,21 +1765,45 @@ def test_maintain_split_merge_and_doctor_real_memory_graph(tmp_path: Path) -> No
     source_key = project_memory_key(workspace, "decisions", "split-source")
     assert source_note["key"] == source_key
 
-    split = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
+    split = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "split",
+            source_key,
+            "--section",
+            "Extracted Plan",
+        )
+    )
     assert split["key"] == source_key
     assert split["section"] == "Extracted Plan"
     extracted_keys = {json_string(key) for key in json_array(split["extracted"])}
     assert len(extracted_keys) == 1
     extracted_key = next(iter(extracted_keys))
     assert extracted_key != source_key
-    split_search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "project", "Extracted Plan"))
+    split_search = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "search", "keys", "--scope", "project", "Extracted Plan"
+        )
+    )
     assert extracted_key in result_keys(split_search)
     assert (workspace.vault / f"{extracted_key}.md").is_file()
-    split_source_text = (workspace.vault / f"{source_key}.md").read_text(encoding="utf-8")
+    split_source_text = (workspace.vault / f"{source_key}.md").read_text(
+        encoding="utf-8"
+    )
     assert "Split details stay recoverable." not in split_source_text
     assert "Extracted Plan" in split_source_text
 
-    merged = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "merge", source_key, "--reference", extracted_key))
+    merged = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "merge",
+            source_key,
+            "--reference",
+            extracted_key,
+        )
+    )
     assert merged["key"] == source_key
     assert merged["reference"] == extracted_key
     assert not (workspace.vault / f"{extracted_key}.md").exists()
@@ -1449,7 +1837,16 @@ def test_maintain_split_rewrites_section_fragment_backlinks(tmp_path: Path) -> N
     backlink_path = Path(str(backlink["path"]))
     backlink_index_path = backlink_path.parent / "index.md"
 
-    split = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
+    split = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "split",
+            source_key,
+            "--section",
+            "Extracted Plan",
+        )
+    )
 
     assert source_note["key"] == source_key
     extracted_keys = {json_string(key) for key in json_array(split["extracted"])}
@@ -1475,7 +1872,16 @@ def test_maintain_merge_repoints_inbound_reference_wikilinks(tmp_path: Path) -> 
         content="Source shell.\n\n## Extracted Plan\nMerged reference details stay recoverable.",
     )
     source_key = project_memory_key(workspace, "decisions", "merge-split-source")
-    split = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "split", source_key, "--section", "Extracted Plan"))
+    split = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "split",
+            source_key,
+            "--section",
+            "Extracted Plan",
+        )
+    )
     extracted_keys = {json_string(key) for key in json_array(split["extracted"])}
     assert len(extracted_keys) == 1
     reference_key = next(iter(extracted_keys))
@@ -1490,7 +1896,16 @@ def test_maintain_merge_repoints_inbound_reference_wikilinks(tmp_path: Path) -> 
     backlink_path = Path(str(backlink["path"]))
     backlink_index_path = backlink_path.parent / "index.md"
 
-    merged = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "merge", source_key, "--reference", reference_key))
+    merged = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "merge",
+            source_key,
+            "--reference",
+            reference_key,
+        )
+    )
 
     replacement = f"[[{source_key}#Extracted Plan]]"
     assert source["key"] == source_key
@@ -1522,8 +1937,14 @@ def test_init_project_replaces_existing_agents_memory_pointer(tmp_path: Path) ->
     assert "/tmp/not-the-current-vault" not in agents_pointer
     assert agents_pointer.count("<!-- agent-memory:start -->") == 1
     assert agents_pointer.count("<!-- agent-memory:end -->") == 1
-    assert f"This repository uses the central agent memory vault at `{workspace.vault}`." in agents_pointer
-    assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
+    assert (
+        f"This repository uses the central agent memory vault at `{workspace.vault}`."
+        in agents_pointer
+    )
+    assert (
+        f"Project memory key: `projects/{workspace.project_id}/index`."
+        in agents_pointer
+    )
 
 
 def test_init_project_appends_agents_memory_pointer_to_unmarked_agents(
@@ -1535,14 +1956,24 @@ def test_init_project_appends_agents_memory_pointer_to_unmarked_agents(
     )
 
     agents_pointer = (workspace.repo / "AGENTS.md").read_text(encoding="utf-8")
-    assert "Preserve instructions that are not managed by agent-memory." in agents_pointer
+    assert (
+        "Preserve instructions that are not managed by agent-memory." in agents_pointer
+    )
     assert agents_pointer.count("<!-- agent-memory:start -->") == 1
     assert agents_pointer.count("<!-- agent-memory:end -->") == 1
-    assert f"This repository uses the central agent memory vault at `{workspace.vault}`." in agents_pointer
-    assert f"Project memory key: `projects/{workspace.project_id}/index`." in agents_pointer
+    assert (
+        f"This repository uses the central agent memory vault at `{workspace.vault}`."
+        in agents_pointer
+    )
+    assert (
+        f"Project memory key: `projects/{workspace.project_id}/index`."
+        in agents_pointer
+    )
 
 
-def test_init_project_symlinks_agent_state_directories_to_vault_project(tmp_path: Path) -> None:
+def test_init_project_symlinks_agent_state_directories_to_vault_project(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     vault_path = project_agent_state_path(workspace)
 
@@ -1553,23 +1984,35 @@ def test_init_project_symlinks_agent_state_directories_to_vault_project(tmp_path
         assert repo_path.resolve() == vault_path.resolve()
 
 
-def test_init_project_migrates_existing_agent_state_into_vault_project(tmp_path: Path) -> None:
+def test_init_project_migrates_existing_agent_state_into_vault_project(
+    tmp_path: Path,
+) -> None:
     git_repo = initialized_git_repo(tmp_path)
     local_agents = git_repo.path / ".agents"
     local_agents.mkdir()
     (local_agents / "justfile").write_text("_private:\n    true\n", encoding="utf-8")
     local_hermes_plans = git_repo.path / ".hermes" / "plans"
     local_hermes_plans.mkdir(parents=True)
-    (local_hermes_plans / "existing-plan.md").write_text("# Existing Plan\n", encoding="utf-8")
+    (local_hermes_plans / "existing-plan.md").write_text(
+        "# Existing Plan\n", encoding="utf-8"
+    )
 
     workspace = initialized_project_workspace(tmp_path, git_repo)
 
-    assert (project_agent_state_path(workspace) / "justfile").read_text(encoding="utf-8") == "_private:\n    true\n"
-    assert (project_agent_state_path(workspace) / "plans" / "existing-plan.md").read_text(encoding="utf-8") == "# Existing Plan\n"
+    assert (project_agent_state_path(workspace) / "justfile").read_text(
+        encoding="utf-8"
+    ) == "_private:\n    true\n"
+    assert (
+        project_agent_state_path(workspace) / "plans" / "existing-plan.md"
+    ).read_text(encoding="utf-8") == "# Existing Plan\n"
     assert (workspace.repo / ".agents").is_symlink()
     assert (workspace.repo / ".hermes").is_symlink()
-    assert (workspace.repo / ".agents").resolve() == project_agent_state_path(workspace).resolve()
-    assert (workspace.repo / ".hermes").resolve() == project_agent_state_path(workspace).resolve()
+    assert (workspace.repo / ".agents").resolve() == project_agent_state_path(
+        workspace
+    ).resolve()
+    assert (workspace.repo / ".hermes").resolve() == project_agent_state_path(
+        workspace
+    ).resolve()
 
 
 def test_maintain_move_memory_to_global_leaves_project_pointer(
@@ -1584,13 +2027,27 @@ def test_maintain_move_memory_to_global_leaves_project_pointer(
         content="promote-signal-f88f0a72 must become shared knowledge",
     )
 
-    moved = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "move", str(note["key"]), "--to", "global/traps"))
+    moved = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "maintain", "move", str(note["key"]), "--to", "global/traps"
+        )
+    )
 
     destination = Path(str(moved["path"]))
     pointer = Path(str(note["path"]))
     assert destination == workspace.vault / "global" / "traps" / "promotion-trap.md"
-    assert pointer == workspace.vault / "projects" / workspace.project_id / "traps" / "promotion-trap.md"
-    assert "promote-signal-f88f0a72 must become shared knowledge" in destination.read_text()
+    assert (
+        pointer
+        == workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "traps"
+        / "promotion-trap.md"
+    )
+    assert (
+        "promote-signal-f88f0a72 must become shared knowledge"
+        in destination.read_text()
+    )
     assert_okf_concept_metadata(
         frontmatter(destination),
         memory_type="trap",
@@ -1609,11 +2066,19 @@ def test_maintain_move_memory_to_global_leaves_project_pointer(
     )
     assert frontmatter(pointer)["scope"] == "project"
     assert "global/traps/promotion-trap" in pointer.read_text()
-    assert "* [Promotion Trap](promotion-trap.md) - promote-signal-f88f0a72 must become shared knowledge" in (destination.parent / "index.md").read_text()
-    assert "* [Promotion Trap](promotion-trap.md) - Promoted to global/traps/promotion-trap." in (pointer.parent / "index.md").read_text()
+    assert (
+        "* [Promotion Trap](promotion-trap.md) - promote-signal-f88f0a72 must become shared knowledge"
+        in (destination.parent / "index.md").read_text()
+    )
+    assert (
+        "* [Promotion Trap](promotion-trap.md) - Promoted to global/traps/promotion-trap."
+        in (pointer.parent / "index.md").read_text()
+    )
 
 
-def test_maintain_move_memory_to_global_rewrites_inbound_wikilinks(tmp_path: Path) -> None:
+def test_maintain_move_memory_to_global_rewrites_inbound_wikilinks(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     target = add_cli_memory(
         workspace,
@@ -1634,7 +2099,16 @@ def test_maintain_move_memory_to_global_rewrites_inbound_wikilinks(tmp_path: Pat
     backlink_index_path = backlink_path.parent / "index.md"
     new_key = "global/traps/promotion-link-target"
 
-    moved = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "move", str(target["key"]), "--to", "global/traps"))
+    moved = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "move",
+            str(target["key"]),
+            "--to",
+            "global/traps",
+        )
+    )
 
     assert target["key"] == old_key
     assert moved["key"] == new_key
@@ -1689,7 +2163,10 @@ def test_startup_doctor_gate_reports_missing_dependency_before_command_logic(
 
     assert result.returncode != 0
     assert "Missing required dependency: git" in result.stderr
-    assert "Install instructions: run `just setup` from the agent-memory checkout" in result.stderr
+    assert (
+        "Install instructions: run `just setup` from the agent-memory checkout"
+        in result.stderr
+    )
     assert "DependencyError" not in result.stderr
     assert "Traceback" not in result.stderr
 
@@ -1701,7 +2178,10 @@ def test_startup_doctor_gate_reports_failed_dependency_output(tmp_path: Path) ->
     broken_bin = tmp_path / "broken-bin"
     broken_bin.mkdir()
     broken_git = broken_bin / "git"
-    broken_git.write_text("#!/bin/sh\nprintf 'bad git stdout\\n'\nprintf 'bad git stderr\\n' >&2\nexit 7\n", encoding="utf-8")
+    broken_git.write_text(
+        "#!/bin/sh\nprintf 'bad git stdout\\n'\nprintf 'bad git stderr\\n' >&2\nexit 7\n",
+        encoding="utf-8",
+    )
     broken_git.chmod(0o755)
     env = agent_memory_env()
     env["PATH"] = f"{broken_bin}:{env['PATH']}"
@@ -1731,7 +2211,11 @@ def test_load_project_config_raises_project_not_initialized(tmp_path: Path) -> N
 def test_check_dependency_raises_for_missing_binary(tmp_path: Path) -> None:
     empty_path = tmp_path / "empty-bin"
     empty_path.mkdir()
-    dependency = DependencyCheck("absent-tool", ("absent-tool", "--version"), "install absent-tool from somewhere")
+    dependency = DependencyCheck(
+        "absent-tool",
+        ("absent-tool", "--version"),
+        "install absent-tool from somewhere",
+    )
     original_env = os.environ.copy()
     try:
         os.environ.clear()
@@ -1758,7 +2242,9 @@ def test_check_dependency_raises_for_failed_command(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     broken_tool.chmod(0o755)
-    dependency = DependencyCheck("broken-tool", ("broken-tool", "check"), "reinstall broken-tool")
+    dependency = DependencyCheck(
+        "broken-tool", ("broken-tool", "check"), "reinstall broken-tool"
+    )
     env = agent_memory_env()
     env["PATH"] = f"{broken_bin}:{env['PATH']}"
     original_env = os.environ.copy()
@@ -1782,7 +2268,9 @@ def test_update_memory_requires_at_least_one_field(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     with pytest.raises(MemoryOperationError) as excinfo:
         update_memory("nonexistent-key", None, None, None, workspace.repo)
-    assert "update requires at least one of --title, --type, or --content" in str(excinfo.value)
+    assert "update requires at least one of --title, --type, or --content" in str(
+        excinfo.value
+    )
 
 
 def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
@@ -1814,7 +2302,11 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
         {"name": "git", "command": ["git", "--version"], "status": "ok"},
         {"name": "rg", "command": ["rg", "--version"], "status": "ok"},
         {"name": "npx", "command": ["npx", "--version"], "status": "ok"},
-        {"name": "@probelabs/probe", "command": ["npx", "-y", "@probelabs/probe@latest", "--version"], "status": "ok"},
+        {
+            "name": "@probelabs/probe",
+            "command": ["npx", "-y", "@probelabs/probe@latest", "--version"],
+            "status": "ok",
+        },
         {"name": "zk", "command": ["zk", "--version"], "status": "ok"},
     ]
 
@@ -1858,7 +2350,18 @@ def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> Non
         plan_title="Managed Plan",
         description_signal="managed",
     )
-    unmigrated = workspace.vault / "projects" / workspace.project_id / "harnesses" / "codex" / "memories" / "extensions" / "ad_hoc" / "notes" / "stranded-plan.md"
+    unmigrated = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "harnesses"
+        / "codex"
+        / "memories"
+        / "extensions"
+        / "ad_hoc"
+        / "notes"
+        / "stranded-plan.md"
+    )
     write_unmigrated_plan(unmigrated, "Stranded Harness Plan", workspace.project_id)
 
     doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
@@ -1868,11 +2371,21 @@ def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> Non
     assert doctor_record["managed"] is False
     assert doctor_record["type"] == "plan"
     assert doctor_record["scope"] == "project"
-    assert doctor_record["suggested_destination"] == f"projects/{workspace.project_id}/plans"
+    assert (
+        doctor_record["suggested_destination"]
+        == f"projects/{workspace.project_id}/plans"
+    )
     assert doctor_record["path"] == str(unmigrated)
 
-    listed = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "plan", "--scope", "both", "--unmigrated"))
-    records = {json_string(record["title"]): record for record in json_records(listed, "results")}
+    listed = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "list", "--type", "plan", "--scope", "both", "--unmigrated"
+        )
+    )
+    records = {
+        json_string(record["title"]): record
+        for record in json_records(listed, "results")
+    }
     assert set(records) == {"Managed Plan", "Stranded Harness Plan"}
     assert records["Managed Plan"]["managed"] is True
     assert records["Managed Plan"]["key"] == managed_plan_key
@@ -1885,7 +2398,9 @@ def test_sync_run_commits_and_pushes_vault_worktree_changes(tmp_path: Path) -> N
     remote = initialized_bare_remote(tmp_path, "vault-remote.git")
     branch = configure_vault_remote(workspace.vault, remote)
     witness = workspace.vault / "global" / "references" / "auto-sync-push-proof.md"
-    witness.write_text("# Auto Sync Push Proof\n\nsync push witness\n", encoding="utf-8")
+    witness.write_text(
+        "# Auto Sync Push Proof\n\nsync push witness\n", encoding="utf-8"
+    )
 
     result = parse_json_stdout(run_agent_memory(workspace.repo, "sync", "run"))
 
@@ -1902,7 +2417,10 @@ def test_sync_run_commits_and_pushes_vault_worktree_changes(tmp_path: Path) -> N
     }
     assert git_status_lines(workspace.vault) == set()
     assert remote_head == local_head
-    assert git_output(workspace.vault, "show", "--no-patch", "--format=%s", "HEAD") == "Auto-sync vault changes"
+    assert (
+        git_output(workspace.vault, "show", "--no-patch", "--format=%s", "HEAD")
+        == "Auto-sync vault changes"
+    )
 
 
 def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> None:
@@ -1910,7 +2428,9 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
     remote = initialized_bare_remote(tmp_path, "status-vault-remote.git")
     branch = configure_vault_remote(workspace.vault, remote)
     witness = workspace.vault / "global" / "references" / "auto-sync-status-proof.md"
-    witness.write_text("# Auto Sync Status Proof\n\nsync status witness\n", encoding="utf-8")
+    witness.write_text(
+        "# Auto Sync Status Proof\n\nsync status witness\n", encoding="utf-8"
+    )
     env = agent_memory_env()
     env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
 
@@ -1924,7 +2444,9 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
             "ahead": 0,
             "behind": 0,
             "branch": branch,
-            "changes": [{"path": "global/references/auto-sync-status-proof.md", "status": "??"}],
+            "changes": [
+                {"path": "global/references/auto-sync-status-proof.md", "status": "??"}
+            ],
             "head": git_output(workspace.vault, "rev-parse", "HEAD"),
             "remote": str(remote),
             "upstream": f"origin/{branch}",
@@ -1937,7 +2459,9 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
     }
 
 
-def test_sync_status_reports_global_vault_from_unbound_directory(tmp_path: Path) -> None:
+def test_sync_status_reports_global_vault_from_unbound_directory(
+    tmp_path: Path,
+) -> None:
     vault = tmp_path / "vault"
     loose = tmp_path / "loose"
     loose.mkdir()
@@ -1971,7 +2495,9 @@ def test_sync_status_reports_global_vault_from_unbound_directory(tmp_path: Path)
     }
 
 
-def test_sync_run_commits_and_pushes_global_vault_from_unbound_directory(tmp_path: Path) -> None:
+def test_sync_run_commits_and_pushes_global_vault_from_unbound_directory(
+    tmp_path: Path,
+) -> None:
     vault = tmp_path / "vault"
     loose = tmp_path / "loose"
     loose.mkdir()
@@ -1979,7 +2505,9 @@ def test_sync_run_commits_and_pushes_global_vault_from_unbound_directory(tmp_pat
     remote = initialized_bare_remote(tmp_path, "global-run-vault-remote.git")
     branch = configure_vault_remote(vault, remote)
     witness = vault / "global" / "references" / "global-auto-sync-run-proof.md"
-    witness.write_text("# Global Auto Sync Run Proof\n\nglobal sync run witness\n", encoding="utf-8")
+    witness.write_text(
+        "# Global Auto Sync Run Proof\n\nglobal sync run witness\n", encoding="utf-8"
+    )
     env = agent_memory_env()
     env["AGENT_MEMORY_VAULT"] = str(vault)
     env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
@@ -2003,14 +2531,22 @@ def test_sync_run_commits_and_pushes_global_vault_from_unbound_directory(tmp_pat
     assert git_output(remote, "rev-parse", f"refs/heads/{branch}") == local_head
     last_success: JsonObject = {"result": expected_payload, "status": "success"}
 
-    status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
+    status = parse_json_stdout(
+        run_agent_memory_subprocess(loose, "sync", "status", env=env)
+    )
     doctor = parse_json_stdout(run_agent_memory_subprocess(loose, "doctor", env=env))
 
-    assert status["last_sync"] == expected_sync_state(env, last_attempt=last_success, last_success=last_success)
-    assert doctor["last_sync"] == expected_sync_state(env, last_attempt=last_success, last_success=last_success)
+    assert status["last_sync"] == expected_sync_state(
+        env, last_attempt=last_success, last_success=last_success
+    )
+    assert doctor["last_sync"] == expected_sync_state(
+        env, last_attempt=last_success, last_success=last_success
+    )
 
 
-def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp_path: Path) -> None:
+def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(
+    tmp_path: Path,
+) -> None:
     vault = tmp_path / "vault"
     loose = tmp_path / "loose"
     xdg_config_home = tmp_path / "xdg-config"
@@ -2023,7 +2559,13 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
     env["XDG_CONFIG_HOME"] = str(xdg_config_home)
     service_path = xdg_config_home / "systemd" / "user" / "agent-memory-sync.service"
     timer_path = xdg_config_home / "systemd" / "user" / "agent-memory-sync.timer"
-    timer_wants_path = xdg_config_home / "systemd" / "user" / "timers.target.wants" / "agent-memory-sync.timer"
+    timer_wants_path = (
+        xdg_config_home
+        / "systemd"
+        / "user"
+        / "timers.target.wants"
+        / "agent-memory-sync.timer"
+    )
 
     installed = run_agent_memory_subprocess(loose, "sync", "install", "300", env=env)
 
@@ -2056,7 +2598,9 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
         "WantedBy=timers.target",
     ]
 
-    status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
+    status = parse_json_stdout(
+        run_agent_memory_subprocess(loose, "sync", "status", env=env)
+    )
 
     assert status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300)
 
@@ -2064,13 +2608,19 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert enabled.returncode == 0
     assert parse_json_stdout(enabled) == {
-        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED),
+        "auto_sync": expected_sync_auto_status(
+            env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED
+        ),
         "vault": str(vault),
     }
     assert timer_wants_path.is_symlink()
     assert timer_wants_path.resolve() == timer_path.resolve()
-    enabled_status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
-    assert enabled_status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED)
+    enabled_status = parse_json_stdout(
+        run_agent_memory_subprocess(loose, "sync", "status", env=env)
+    )
+    assert enabled_status["auto_sync"] == expected_sync_auto_status(
+        env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED
+    )
 
     disabled = run_agent_memory_subprocess(loose, "sync", "disable", env=env)
 
@@ -2085,7 +2635,9 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert enabled_again.returncode == 0
     assert parse_json_stdout(enabled_again) == {
-        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED),
+        "auto_sync": expected_sync_auto_status(
+            env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED
+        ),
         "vault": str(vault),
     }
 
@@ -2124,26 +2676,75 @@ def test_doctor_reports_sync_auto_status_after_systemd_install(tmp_path: Path) -
     assert doctor["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300)
 
 
-def test_sync_run_pushes_conflict_branch_and_restores_main_when_rebase_conflicts(tmp_path: Path) -> None:
+def test_sync_run_pushes_conflict_branch_and_restores_main_when_rebase_conflicts(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     remote = initialized_bare_remote(tmp_path, "conflict-vault-remote.git")
     branch = configure_vault_remote(workspace.vault, remote)
     conflict_path = Path("global/references/auto-sync-conflict-proof.md")
     local_conflict_file = workspace.vault / conflict_path
-    local_conflict_file.write_text("# Auto Sync Conflict Proof\n\nbase line\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(conflict_path)], cwd=workspace.vault, check=True, text=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "Seed auto-sync conflict proof"], cwd=workspace.vault, check=True, text=True, capture_output=True)
-    subprocess.run(["git", "push", "origin", branch], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    local_conflict_file.write_text(
+        "# Auto Sync Conflict Proof\n\nbase line\n", encoding="utf-8"
+    )
+    subprocess.run(
+        ["git", "add", str(conflict_path)],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Seed auto-sync conflict proof"],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "origin", branch],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
     remote_clone = tmp_path / "remote-clone"
-    subprocess.run(["git", "clone", str(remote), str(remote_clone)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", str(remote), str(remote_clone)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     configure_git_identity(remote_clone)
-    (remote_clone / conflict_path).write_text("# Auto Sync Conflict Proof\n\nremote branch text\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(conflict_path)], cwd=remote_clone, check=True, text=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "Remote conflicting vault edit"], cwd=remote_clone, check=True, text=True, capture_output=True)
-    subprocess.run(["git", "push", "origin", branch], cwd=remote_clone, check=True, text=True, capture_output=True)
+    (remote_clone / conflict_path).write_text(
+        "# Auto Sync Conflict Proof\n\nremote branch text\n", encoding="utf-8"
+    )
+    subprocess.run(
+        ["git", "add", str(conflict_path)],
+        cwd=remote_clone,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Remote conflicting vault edit"],
+        cwd=remote_clone,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "origin", branch],
+        cwd=remote_clone,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
-    local_conflict_file.write_text("# Auto Sync Conflict Proof\n\nlocal branch text\n", encoding="utf-8")
+    local_conflict_file.write_text(
+        "# Auto Sync Conflict Proof\n\nlocal branch text\n", encoding="utf-8"
+    )
 
     result = parse_json_stdout(run_agent_memory(workspace.repo, "sync", "run"))
 
@@ -2162,13 +2763,26 @@ def test_sync_run_pushes_conflict_branch_and_restores_main_when_rebase_conflicts
         "worktree_clean": True,
     }
     assert git_status_lines(workspace.vault) == set()
-    assert git_output(workspace.vault, "rev-parse", "HEAD") == git_output(remote, "rev-parse", f"refs/heads/{branch}")
-    assert git_output(remote, "rev-parse", f"refs/heads/{conflict_branch}") == conflict_head
-    assert git_output(remote, "show", f"{branch}:{conflict_path}") == "# Auto Sync Conflict Proof\n\nremote branch text"
-    assert git_output(remote, "show", f"{conflict_branch}:{conflict_path}") == "# Auto Sync Conflict Proof\n\nlocal branch text"
+    assert git_output(workspace.vault, "rev-parse", "HEAD") == git_output(
+        remote, "rev-parse", f"refs/heads/{branch}"
+    )
+    assert (
+        git_output(remote, "rev-parse", f"refs/heads/{conflict_branch}")
+        == conflict_head
+    )
+    assert (
+        git_output(remote, "show", f"{branch}:{conflict_path}")
+        == "# Auto Sync Conflict Proof\n\nremote branch text"
+    )
+    assert (
+        git_output(remote, "show", f"{conflict_branch}:{conflict_path}")
+        == "# Auto Sync Conflict Proof\n\nlocal branch text"
+    )
 
 
-def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path) -> None:
+def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     command_env = agent_memory_env()
     original_cwd = Path.cwd()
@@ -2192,7 +2806,9 @@ def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path
     assert payload["project_root"] == str(workspace.repo)
 
 
-def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path) -> None:
+def test_cli_main_reports_malformed_cards_yaml_without_traceback(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     cards_yaml = workspace.vault / "_meta" / "cards.yaml"
     cards_yaml.write_text("statuses: [unterminated\n", encoding="utf-8")
@@ -2205,7 +2821,9 @@ def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path)
     assert "ParserError" not in stderr
 
 
-def test_python_dash_m_agent_memory_module_entrypoint_runs_doctor(tmp_path: Path) -> None:
+def test_python_dash_m_agent_memory_module_entrypoint_runs_doctor(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     command_env = agent_memory_env()
     original_cwd = Path.cwd()
@@ -2250,11 +2868,16 @@ def test_inspect_overview_schema_and_paths_map_real_vault(tmp_path: Path) -> Non
     assert project_note["key"] == project_key
     assert global_note["key"] == global_key
 
-    overview = inspect_json(workspace, "overview", "--scope", "both", "--format", "json")
+    overview = inspect_json(
+        workspace, "overview", "--scope", "both", "--format", "json"
+    )
     assert overview["vault"] == str(workspace.vault)
     assert overview["project_id"] == workspace.project_id
     assert overview["scope"] == "both"
-    assert overview["roots"] == ["global/index", f"projects/{workspace.project_id}/index"]
+    assert overview["roots"] == [
+        "global/index",
+        f"projects/{workspace.project_id}/index",
+    ]
     assert overview["totals"] == {"notes": 2, "indexes": 14}
     assert overview["notes_by_scope"] == {"global": 1, "project": 1}
     assert overview["notes_by_type"] == {"advice": 1, "decision": 1}
@@ -2273,27 +2896,45 @@ def test_inspect_overview_schema_and_paths_map_real_vault(tmp_path: Path) -> Non
         "export",
     ]
     assert schema["scopes"] == ["project", "global", "both"]
-    assert schema["memory_types"] == ["decision", "trap", "advice", "context", "reference"]
+    assert schema["memory_types"] == [
+        "decision",
+        "trap",
+        "advice",
+        "context",
+        "reference",
+    ]
     card_system = json_object(schema["card_system"])
     assert card_system["root"] == "plans"
     assert isinstance(card_system["status_count"], int)
     assert card_system["status_count"] >= 3
-    schema_type_names = {json_string(item["name"]) for item in json_records(card_system, "types")}
+    schema_type_names = {
+        json_string(item["name"]) for item in json_records(card_system, "types")
+    }
     assert {"feature", "plan", "phase", "task"}.issubset(schema_type_names)
 
-    paths = inspect_json(workspace, "paths", "--scope", "project", "--kind", "notes", "--format", "json")
+    paths = inspect_json(
+        workspace, "paths", "--scope", "project", "--kind", "notes", "--format", "json"
+    )
     assert paths["scope"] == "project"
     assert paths["kind"] == "notes"
     assert paths["paths"] == [
         {
             "key": project_key,
-            "path": str(workspace.vault / "projects" / workspace.project_id / "decisions" / "inspect-project.md"),
+            "path": str(
+                workspace.vault
+                / "projects"
+                / workspace.project_id
+                / "decisions"
+                / "inspect-project.md"
+            ),
             "title": "Inspect Project",
             "type": "decision",
             "scope": "project",
         }
     ]
-    root_paths = inspect_json(workspace, "paths", "--scope", "global", "--kind", "roots", "--format", "json")
+    root_paths = inspect_json(
+        workspace, "paths", "--scope", "global", "--kind", "roots", "--format", "json"
+    )
     assert root_paths["paths"] == [
         {
             "key": "global/index",
@@ -2301,16 +2942,38 @@ def test_inspect_overview_schema_and_paths_map_real_vault(tmp_path: Path) -> Non
             "scope": "global",
         }
     ]
-    index_paths = inspect_json(workspace, "paths", "--scope", "project", "--kind", "indexes", "--format", "json")
-    index_keys = {json_string(json_object(record)["key"]) for record in json_array(index_paths["paths"])}
+    index_paths = inspect_json(
+        workspace,
+        "paths",
+        "--scope",
+        "project",
+        "--kind",
+        "indexes",
+        "--format",
+        "json",
+    )
+    index_keys = {
+        json_string(json_object(record)["key"])
+        for record in json_array(index_paths["paths"])
+    }
     assert {
         f"projects/{workspace.project_id}/index",
         f"projects/{workspace.project_id}/decisions/index",
         f"projects/{workspace.project_id}/advice/index",
     }.issubset(index_keys)
-    all_paths = inspect_json(workspace, "paths", "--scope", "both", "--kind", "all", "--format", "json")
-    all_keys = {json_string(json_object(record)["key"]) for record in json_array(all_paths["paths"])}
-    assert {"global/index", f"projects/{workspace.project_id}/index", project_key, global_key}.issubset(all_keys)
+    all_paths = inspect_json(
+        workspace, "paths", "--scope", "both", "--kind", "all", "--format", "json"
+    )
+    all_keys = {
+        json_string(json_object(record)["key"])
+        for record in json_array(all_paths["paths"])
+    }
+    assert {
+        "global/index",
+        f"projects/{workspace.project_id}/index",
+        project_key,
+        global_key,
+    }.issubset(all_keys)
 
 
 def test_inspect_tree_maps_project_memory_hierarchy(tmp_path: Path) -> None:
@@ -2325,7 +2988,9 @@ def test_inspect_tree_maps_project_memory_hierarchy(tmp_path: Path) -> None:
     project_key = project_memory_key(workspace, "decisions", "inspect-project")
     assert project_note["key"] == project_key
 
-    tree = inspect_json(workspace, "tree", "--scope", "project", "--depth", "2", "--format", "json")
+    tree = inspect_json(
+        workspace, "tree", "--scope", "project", "--depth", "2", "--format", "json"
+    )
     tree_roots = json_array(tree["roots"])
     tree_root = json_object(tree_roots[0])
     assert tree["scope"] == "project"
@@ -2341,10 +3006,15 @@ def test_inspect_tree_maps_project_memory_hierarchy(tmp_path: Path) -> None:
         f"projects/{workspace.project_id}/traps/index",
     }
     decision_indexes = [
-        json_object(raw_child) for raw_child in json_array(tree_root["children"]) if json_object(raw_child)["key"] == f"projects/{workspace.project_id}/decisions/index"
+        json_object(raw_child)
+        for raw_child in json_array(tree_root["children"])
+        if json_object(raw_child)["key"]
+        == f"projects/{workspace.project_id}/decisions/index"
     ]
     decision_children = json_array(decision_indexes[0]["children"])
-    assert [json_string(json_object(child)["key"]) for child in decision_children] == [project_key]
+    assert [json_string(json_object(child)["key"]) for child in decision_children] == [
+        project_key
+    ]
 
 
 def linked_inspect_workspace(tmp_path: Path) -> tuple[CliWorkspace, str, str]:
@@ -2362,7 +3032,9 @@ def linked_inspect_workspace(tmp_path: Path) -> tuple[CliWorkspace, str, str]:
         scope="project",
         memory_type="decision",
         title="Inspect Linked",
-        content=("## Investigation\nUse outline and graph inspection.\n\nSee [Inspect Advice](../../../global/advice/inspect-advice.md).\nIgnore empty [placeholder]()."),
+        content=(
+            "## Investigation\nUse outline and graph inspection.\n\nSee [Inspect Advice](../../../global/advice/inspect-advice.md).\nIgnore empty [placeholder]()."
+        ),
     )
     project_key = project_memory_key(workspace, "decisions", "inspect-linked")
     assert global_note["key"] == global_key
@@ -2372,7 +3044,9 @@ def linked_inspect_workspace(tmp_path: Path) -> tuple[CliWorkspace, str, str]:
 
 def test_card_add_validate_supports_project_cards_yaml_override(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path = (
+        workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    )
     cards_path.parent.mkdir(parents=True)
     cards_path.write_text(
         """root: plans
@@ -2407,7 +3081,10 @@ card_types:
     )
 
     schema = inspect_json(workspace, "schema", "--format", "json")
-    schema_type_names = {json_string(item["name"]) for item in json_records(json_object(schema["card_system"]), "types")}
+    schema_type_names = {
+        json_string(item["name"])
+        for item in json_records(json_object(schema["card_system"]), "types")
+    }
     assert schema_type_names == {"ticket"}
 
     run_agent_memory(
@@ -2421,16 +3098,32 @@ card_types:
         "--set",
         "status=todo",
     )
-    ticket_path = workspace.vault / "projects" / workspace.project_id / "plans" / "tickets" / "TICKET-1" / "TICKET-1.md"
-    assert frontmatter(ticket_path) == {"id": "TICKET-1", "title": "Override ticket", "status": "todo"}
+    ticket_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "tickets"
+        / "TICKET-1"
+        / "TICKET-1.md"
+    )
+    assert frontmatter(ticket_path) == {
+        "id": "TICKET-1",
+        "title": "Override ticket",
+        "status": "todo",
+    }
 
     clean = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
     assert json_array(clean["problems"]) == []
 
 
-def test_inspect_schema_operation_uses_explicit_cwd_for_project_schema(tmp_path: Path) -> None:
+def test_inspect_schema_operation_uses_explicit_cwd_for_project_schema(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
-    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path = (
+        workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    )
     cards_path.parent.mkdir(parents=True)
     cards_path.write_text(
         """root: plans
@@ -2465,13 +3158,22 @@ card_types:
     )
 
     schema = inspect_schema(output_format=InspectOutputFormat.JSON, cwd=workspace.repo)
-    schema_type_names = {json_string(item["name"]) for item in json_records(json_object(schema["card_system"]), "types")}
+    schema_type_names = {
+        json_string(item["name"])
+        for item in json_records(json_object(schema["card_system"]), "types")
+    }
     assert schema_type_names == {"ticket"}
 
 
 def test_search_content_exact_handles_paths_with_colons(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    custom_note = workspace.vault / "projects" / workspace.project_id / "decisions" / "complex:name.md"
+    custom_note = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "decisions"
+        / "complex:name.md"
+    )
     custom_note.write_text(
         """---
 type: decision
@@ -2486,8 +3188,12 @@ colon-search-token-7a2ea3
         encoding="utf-8",
     )
 
-    exact = search_content(workspace, scope="project", mode="exact", query="colon-search-token-7a2ea3")
-    assert f"projects/{workspace.project_id}/decisions/complex:name" in result_keys(exact)
+    exact = search_content(
+        workspace, scope="project", mode="exact", query="colon-search-token-7a2ea3"
+    )
+    assert f"projects/{workspace.project_id}/decisions/complex:name" in result_keys(
+        exact
+    )
 
 
 def test_inspect_links_ignores_links_in_fenced_code_blocks(tmp_path: Path) -> None:
@@ -2531,7 +3237,13 @@ def test_search_keys_tolerates_note_missing_timestamp(tmp_path: Path) -> None:
     # Issue #45: a note missing the optional `timestamp` field must not crash the
     # record scan (search/inspect). It should still be discoverable.
     workspace = initialized_workspace(tmp_path)
-    note = workspace.vault / "projects" / workspace.project_id / "decisions" / "no-timestamp.md"
+    note = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "decisions"
+        / "no-timestamp.md"
+    )
     note.write_text(
         """---
 type: decision
@@ -2545,25 +3257,40 @@ Body for the missing-timestamp reproducer.
         encoding="utf-8",
     )
 
-    search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "keys", "--scope", "project", "No Timestamp"))
-    assert project_memory_key(workspace, "decisions", "no-timestamp") in result_keys(search)
+    search = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "search", "keys", "--scope", "project", "No Timestamp"
+        )
+    )
+    assert project_memory_key(workspace, "decisions", "no-timestamp") in result_keys(
+        search
+    )
 
 
 def write_raw_project_note(workspace: CliWorkspace, slug: str, text: str) -> Path:
-    note = workspace.vault / "projects" / workspace.project_id / "decisions" / f"{slug}.md"
+    note = (
+        workspace.vault / "projects" / workspace.project_id / "decisions" / f"{slug}.md"
+    )
     note.parent.mkdir(parents=True, exist_ok=True)
     note.write_text(text, encoding="utf-8")
     return note
 
 
 def findings_by_path(payload: JsonObject) -> dict[str, JsonObject]:
-    return {json_string(record["path"]): record for record in json_records(payload, "findings")}
+    return {
+        json_string(record["path"]): record
+        for record in json_records(payload, "findings")
+    }
 
 
-def assert_note_finding(payload: JsonObject, note: Path, workspace: CliWorkspace) -> JsonObject:
+def assert_note_finding(
+    payload: JsonObject, note: Path, workspace: CliWorkspace
+) -> JsonObject:
     findings = findings_by_path(payload)
     finding = findings[str(note)]
-    assert finding["key"] == note.relative_to(workspace.vault).with_suffix("").as_posix()
+    assert (
+        finding["key"] == note.relative_to(workspace.vault).with_suffix("").as_posix()
+    )
     assert note.name in json_string(finding["message"])
     return finding
 
@@ -2575,7 +3302,9 @@ def write_raw_project_plan(workspace: CliWorkspace, slug: str, text: str) -> Pat
     return note
 
 
-def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path) -> None:
+def test_search_returns_good_records_and_malformed_note_findings(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     good = add_cli_memory(
         workspace,
@@ -2589,15 +3318,25 @@ def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path)
         "bad-tags",
         "---\ntype: decision\nscope: project\ntitle: Bad Tags\ndescription: x\ntags: project\n---\nBody.\n",
     )
-    bad_utf8 = workspace.vault / "projects" / workspace.project_id / "decisions" / "bad-utf8.md"
-    bad_utf8.write_bytes(b"---\ntype: decision\nscope: project\ntitle: Bad UTF8\ndescription: x\ntags: [project]\n---\nBody \xff\n")
+    bad_utf8 = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "decisions"
+        / "bad-utf8.md"
+    )
+    bad_utf8.write_bytes(
+        b"---\ntype: decision\nscope: project\ntitle: Bad UTF8\ndescription: x\ntags: [project]\n---\nBody \xff\n"
+    )
     mixed_tags = write_raw_project_note(
         workspace,
         "mixed-tags",
         "---\ntype: decision\nscope: project\ntitle: Mixed Tags\ndescription: x\ntags: [project, 12]\n---\nBody.\n",
     )
 
-    result = run_agent_memory_subprocess(workspace.repo, "search", "--scope", "project", "resilient-scan-token-71d9")
+    result = run_agent_memory_subprocess(
+        workspace.repo, "search", "--scope", "project", "resilient-scan-token-71d9"
+    )
 
     assert result.returncode == 0
     assert "Traceback" not in result.stderr
@@ -2611,7 +3350,9 @@ def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path)
     assert "tags" in json_string(mixed_tags_finding["message"])
 
 
-def test_inspect_export_returns_nested_todo_plan_and_malformed_note_finding(tmp_path: Path) -> None:
+def test_inspect_export_returns_nested_todo_plan_and_malformed_note_finding(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     good = add_cli_memory(
         workspace,
@@ -2665,9 +3406,13 @@ Nested todo-tree plan body.
     assert result.returncode == 0
     assert "Traceback" not in result.stderr
     payload = parse_json_stdout(result)
-    node_keys = {json_string(record["key"]) for record in json_records(payload, "nodes")}
+    node_keys = {
+        json_string(record["key"]) for record in json_records(payload, "nodes")
+    }
     assert json_string(good["key"]) in node_keys
-    assert nested_plan.relative_to(workspace.vault).with_suffix("").as_posix() in node_keys
+    assert (
+        nested_plan.relative_to(workspace.vault).with_suffix("").as_posix() in node_keys
+    )
     finding = assert_note_finding(payload, bad, workspace)
     assert "tags" in json_string(finding["message"])
 
@@ -2686,10 +3431,14 @@ def test_inspect_overview_reports_malformed_note_findings(tmp_path: Path) -> Non
         "missing-tags",
         "---\ntype: decision\nscope: project\ntitle: Missing Tags\ndescription: x\n---\nBody.\n",
     )
-    bad_index = workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
+    bad_index = (
+        workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
+    )
     bad_index.write_text("---\nnot: [valid\n---\n# Broken index\n", encoding="utf-8")
 
-    overview = inspect_json(workspace, "overview", "--scope", "project", "--format", "json")
+    overview = inspect_json(
+        workspace, "overview", "--scope", "project", "--format", "json"
+    )
 
     assert overview["totals"] == {"notes": 1, "indexes": 6}
     finding = assert_note_finding(overview, bad, workspace)
@@ -2698,7 +3447,9 @@ def test_inspect_overview_reports_malformed_note_findings(tmp_path: Path) -> Non
     assert "YAML" in json_string(index_finding["message"])
 
 
-def test_read_memory_invalid_yaml_frontmatter_is_structured_finding(tmp_path: Path) -> None:
+def test_read_memory_invalid_yaml_frontmatter_is_structured_finding(
+    tmp_path: Path,
+) -> None:
     # F4: frontmatter.loads raises yaml.YAMLError on invalid YAML. The scan reports the
     # file as a finding so the rest of the vault remains readable.
     workspace = initialized_workspace(tmp_path)
@@ -2708,7 +3459,9 @@ def test_read_memory_invalid_yaml_frontmatter_is_structured_finding(tmp_path: Pa
         "---\ntype: decision\nscope: project\ntags: [unterminated\n---\nBody.\n",
     )
 
-    result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
+    result = run_agent_memory_subprocess(
+        workspace.repo, "search", "metadata", "--scope", "project"
+    )
 
     assert result.returncode == 0
     assert "Traceback" not in result.stderr
@@ -2729,7 +3482,9 @@ def test_note_missing_required_field_is_structured_finding(tmp_path: Path) -> No
         "---\ntype: decision\ntitle: Missing Scope\ndescription: x\ntags: [project]\n---\nBody.\n",
     )
 
-    result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
+    result = run_agent_memory_subprocess(
+        workspace.repo, "search", "metadata", "--scope", "project"
+    )
 
     assert result.returncode == 0
     assert "AssertionError" not in result.stderr
@@ -2750,7 +3505,9 @@ def test_note_optional_field_wrong_type_is_structured_finding(tmp_path: Path) ->
         "---\ntype: decision\nscope: project\ntitle: Bad Timestamp\ndescription: x\ntags: [project]\ntimestamp: true\n---\nBody.\n",
     )
 
-    result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
+    result = run_agent_memory_subprocess(
+        workspace.repo, "search", "metadata", "--scope", "project"
+    )
 
     assert result.returncode == 0
     assert "AssertionError" not in result.stderr
@@ -2771,7 +3528,9 @@ def test_note_missing_tags_is_structured_finding(tmp_path: Path) -> None:
         "---\ntype: decision\nscope: project\ntitle: No Tags\ndescription: x\n---\nBody.\n",
     )
 
-    result = run_agent_memory_subprocess(workspace.repo, "search", "metadata", "--scope", "project")
+    result = run_agent_memory_subprocess(
+        workspace.repo, "search", "metadata", "--scope", "project"
+    )
 
     assert result.returncode == 0
     assert "AssertionError" not in result.stderr
@@ -2809,10 +3568,14 @@ def test_note_empty_timestamp_reads_as_absent(tmp_path: Path) -> None:
     assert "Traceback" not in result.stderr
     # Treated as having no timestamp: an absent timestamp is excluded from a since filter.
     recent = parse_json_stdout(result)
-    assert project_memory_key(workspace, "decisions", "empty-timestamp") not in result_keys(recent)
+    assert project_memory_key(
+        workspace, "decisions", "empty-timestamp"
+    ) not in result_keys(recent)
 
 
-def test_outgoing_link_keys_skips_non_vault_links_and_extracts_vault_links(tmp_path: Path) -> None:
+def test_outgoing_link_keys_skips_non_vault_links_and_extracts_vault_links(
+    tmp_path: Path,
+) -> None:
     # F11: outgoing_link_keys owns intra-vault note-to-note edges. The markdown-it walk now
     # yields ALL links; a non-vault link (external URL) must be SKIPPED by contract, not
     # crash the extraction. Intra-vault .md links, including reference-style, are extracted.
@@ -2839,7 +3602,9 @@ def test_outgoing_link_keys_skips_non_vault_links_and_extracts_vault_links(tmp_p
     assert set(keys) == {f"{base}/target-inline", f"{base}/target-ref"}
 
 
-def test_doctor_reports_non_symlink_agent_state_without_crashing(tmp_path: Path) -> None:
+def test_doctor_reports_non_symlink_agent_state_without_crashing(
+    tmp_path: Path,
+) -> None:
     # Issue #44: a real-directory `.agents` (not a symlink) must be a structured
     # doctor finding, not an AssertionError that aborts the whole report.
     workspace = initialized_workspace(tmp_path)
@@ -2849,9 +3614,13 @@ def test_doctor_reports_non_symlink_agent_state_without_crashing(tmp_path: Path)
 
     doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
     records = [json_object(record) for record in json_array(doctor["agent_state"])]
-    agents_record = next(record for record in records if json_string(record["name"]) == ".agents")
+    agents_record = next(
+        record for record in records if json_string(record["name"]) == ".agents"
+    )
     assert agents_record["ok"] is False
-    assert any(".agents" in json_string(issue) for issue in json_array(agents_record["issues"]))
+    assert any(
+        ".agents" in json_string(issue) for issue in json_array(agents_record["issues"])
+    )
 
 
 def test_inspect_links_real_vault(tmp_path: Path) -> None:
@@ -2901,7 +3670,13 @@ def test_inspect_links_real_vault(tmp_path: Path) -> None:
     assert parents["links"] == [
         {
             "key": f"projects/{workspace.project_id}/decisions/index",
-            "path": str(workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"),
+            "path": str(
+                workspace.vault
+                / "projects"
+                / workspace.project_id
+                / "decisions"
+                / "index.md"
+            ),
             "title": "Decisions",
             "depth": 1,
         }
@@ -2934,7 +3709,13 @@ def test_inspect_links_dedupes_reciprocal_index_links(tmp_path: Path) -> None:
     decision_index_key = f"projects/{workspace.project_id}/decisions/index"
     decision_index_record = {
         "key": decision_index_key,
-        "path": str(workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"),
+        "path": str(
+            workspace.vault
+            / "projects"
+            / workspace.project_id
+            / "decisions"
+            / "index.md"
+        ),
         "title": "Decisions",
         "depth": 1,
     }
@@ -2967,7 +3748,9 @@ def test_inspect_links_dedupes_reciprocal_index_links(tmp_path: Path) -> None:
     assert both["links"] == [decision_index_record]
 
 
-def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tmp_path: Path) -> None:
+def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     existing = add_cli_memory(
         workspace,
@@ -2984,13 +3767,40 @@ def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tm
         content="Keep [[global/advice/existing-link-target]] but report [[global/advice/retired-link-target]].",
     )
     source_key = project_memory_key(workspace, "decisions", "broken-link-source")
-    source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "broken-link-source.md"
+    source_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "decisions"
+        / "broken-link-source.md"
+    )
     index_path = source_path.parent / "index.md"
     broken_target = "global/advice/retired-link-target"
-    source_lines = [line_number for line_number, line in enumerate(source_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line]
-    index_line = next(line_number for line_number, line in enumerate(index_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line)
+    source_lines = [
+        line_number
+        for line_number, line in enumerate(
+            source_path.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if f"[[{broken_target}]]" in line
+    ]
+    index_line = next(
+        line_number
+        for line_number, line in enumerate(
+            index_path.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if f"[[{broken_target}]]" in line
+    )
 
-    result = run_agent_memory_subprocess(workspace.repo, "inspect", "links", "--broken", "--scope", "both", "--format", "json")
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "inspect",
+        "links",
+        "--broken",
+        "--scope",
+        "both",
+        "--format",
+        "json",
+    )
 
     assert existing["key"] == "global/advice/existing-link-target"
     assert source["key"] == source_key
@@ -3003,21 +3813,27 @@ def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tm
                 "source_key": source_key,
                 "source_path": str(source_path),
                 "target": broken_target,
-                "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
+                "target_path": str(
+                    workspace.vault / "global" / "advice" / "retired-link-target.md"
+                ),
             },
             {
                 "line": source_lines[1],
                 "source_key": source_key,
                 "source_path": str(source_path),
                 "target": broken_target,
-                "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
+                "target_path": str(
+                    workspace.vault / "global" / "advice" / "retired-link-target.md"
+                ),
             },
             {
                 "line": index_line,
                 "source_key": f"projects/{workspace.project_id}/decisions/index",
                 "source_path": str(index_path),
                 "target": broken_target,
-                "target_path": str(workspace.vault / "global" / "advice" / "retired-link-target.md"),
+                "target_path": str(
+                    workspace.vault / "global" / "advice" / "retired-link-target.md"
+                ),
             },
         ],
     }
@@ -3035,10 +3851,18 @@ def test_links_rewrite_repoints_wikilink_target_to_external_url(tmp_path: Path) 
         content=f"Roadmap moved from [[{old_target}]] to GitHub.",
     )
     source_key = project_memory_key(workspace, "decisions", "externalized-link-source")
-    source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "externalized-link-source.md"
+    source_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "decisions"
+        / "externalized-link-source.md"
+    )
     index_path = source_path.parent / "index.md"
 
-    result = run_agent_memory_subprocess(workspace.repo, "links", "rewrite", "--from", old_target, "--to", external_url)
+    result = run_agent_memory_subprocess(
+        workspace.repo, "links", "rewrite", "--from", old_target, "--to", external_url
+    )
 
     assert source["key"] == source_key
     assert result.returncode == 0
@@ -3077,7 +3901,13 @@ def test_links_rewrite_map_repoints_many_wikilink_targets(tmp_path: Path) -> Non
         content=f"Moved [[{externalized_target}]] and renamed [[{old_internal_target}]].",
     )
     source_key = project_memory_key(workspace, "decisions", "mapped-link-source")
-    source_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "mapped-link-source.md"
+    source_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "decisions"
+        / "mapped-link-source.md"
+    )
     index_path = source_path.parent / "index.md"
     map_path = tmp_path / "link-rewrites.toml"
     map_path.write_text(
@@ -3092,7 +3922,9 @@ def test_links_rewrite_map_repoints_many_wikilink_targets(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    result = run_agent_memory_subprocess(workspace.repo, "links", "rewrite", "--map", str(map_path))
+    result = run_agent_memory_subprocess(
+        workspace.repo, "links", "rewrite", "--map", str(map_path)
+    )
 
     assert source["key"] == source_key
     assert result.returncode == 0
@@ -3119,7 +3951,10 @@ def test_inspect_outline_and_recent_real_vault(tmp_path: Path) -> None:
     workspace, project_key, _global_key = linked_inspect_workspace(tmp_path)
     outline = inspect_json(workspace, "outline", project_key, "--format", "json")
     outline_headings = json_records(outline, "headings")
-    assert [(json_string(heading["title"]), heading["level"]) for heading in outline_headings] == [
+    assert [
+        (json_string(heading["title"]), heading["level"])
+        for heading in outline_headings
+    ] == [
         ("Inspect Linked", 1),
         ("Investigation", 2),
     ]
@@ -3139,11 +3974,17 @@ def test_inspect_outline_and_recent_real_vault(tmp_path: Path) -> None:
 
 def test_inspect_stats_real_vault(tmp_path: Path) -> None:
     workspace, _project_key, _global_key = linked_inspect_workspace(tmp_path)
-    stats = inspect_json(workspace, "stats", "--scope", "both", "--by", "type", "--format", "json")
+    stats = inspect_json(
+        workspace, "stats", "--scope", "both", "--by", "type", "--format", "json"
+    )
     assert stats["counts"] == {"advice": 1, "decision": 1}
-    stats_by_scope = inspect_json(workspace, "stats", "--scope", "both", "--by", "scope", "--format", "json")
+    stats_by_scope = inspect_json(
+        workspace, "stats", "--scope", "both", "--by", "scope", "--format", "json"
+    )
     assert stats_by_scope["counts"] == {"global": 1, "project": 1}
-    stats_by_day = inspect_json(workspace, "stats", "--scope", "both", "--by", "day", "--format", "json")
+    stats_by_day = inspect_json(
+        workspace, "stats", "--scope", "both", "--by", "day", "--format", "json"
+    )
     day_counts = json_object(stats_by_day["counts"])
     counts: list[int] = []
     for count in day_counts.values():
@@ -3157,17 +3998,49 @@ def test_inspect_stats_real_vault(tmp_path: Path) -> None:
 
 def test_inspect_export_profiles_real_vault(tmp_path: Path) -> None:
     workspace, project_key, global_key = linked_inspect_workspace(tmp_path)
-    exported = inspect_json(workspace, "export", "--scope", "project", "--profile", "map", "--format", "graph-json")
+    exported = inspect_json(
+        workspace,
+        "export",
+        "--scope",
+        "project",
+        "--profile",
+        "map",
+        "--format",
+        "graph-json",
+    )
     assert exported["profile"] == "map"
     exported_nodes = records_by_key(exported, "nodes")
     assert exported_nodes[project_key]["title"] == "Inspect Linked"
     assert "content" not in exported_nodes[project_key]
     exported_edges = json_records(exported, "edges")
-    assert [(json_string(edge["source"]), json_string(edge["target"])) for edge in exported_edges].count((f"projects/{workspace.project_id}/decisions/index", project_key)) == 1
-    context_export = inspect_json(workspace, "export", "--scope", "project", "--profile", "context", "--format", "graph-json")
+    assert [
+        (json_string(edge["source"]), json_string(edge["target"]))
+        for edge in exported_edges
+    ].count((f"projects/{workspace.project_id}/decisions/index", project_key)) == 1
+    context_export = inspect_json(
+        workspace,
+        "export",
+        "--scope",
+        "project",
+        "--profile",
+        "context",
+        "--format",
+        "graph-json",
+    )
     context_nodes = records_by_key(context_export, "nodes")
-    assert "Use outline and graph inspection." in json_string(context_nodes[project_key]["content"])
-    archive_export = inspect_json(workspace, "export", "--scope", "global", "--profile", "archive", "--format", "graph-json")
+    assert "Use outline and graph inspection." in json_string(
+        context_nodes[project_key]["content"]
+    )
+    archive_export = inspect_json(
+        workspace,
+        "export",
+        "--scope",
+        "global",
+        "--profile",
+        "archive",
+        "--format",
+        "graph-json",
+    )
     archive_nodes = records_by_key(archive_export, "nodes")
     archive_metadata = json_object(archive_nodes[global_key]["metadata"])
     assert archive_metadata["promotable"] is False
@@ -3215,9 +4088,21 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
         plan_title="Plan",
         description_signal="plan-card-signal-9c1f",
     )
-    plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DEMO" / "plans" / "PLAN-DEMO" / "PLAN-DEMO.md"
+    plan_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "features"
+        / "FEATURE-DEMO"
+        / "plans"
+        / "PLAN-DEMO"
+        / "PLAN-DEMO.md"
+    )
     assert plan_path.is_file()
-    shown_plan = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "show", "PLAN-DEMO"))
+    shown_plan = parse_json_stdout(
+        run_agent_memory(workspace.repo, "plan", "show", "PLAN-DEMO")
+    )
     assert shown_plan["type"] == "plan"
     assert shown_plan["path"] == str(plan_path)
     shown_metadata = json_object(shown_plan["metadata"])
@@ -3231,11 +4116,20 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     dag_text = Path(json_string(dag["path"])).read_text(encoding="utf-8")
     assert dag_text.count("```mermaid") == 2
 
-    feature_key = f"projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
-    search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"))
+    feature_key = (
+        f"projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
+    )
+    search = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"
+        )
+    )
     assert feature_key in result_keys(search)
     feature_text = run_agent_memory(workspace.repo, "retrieve", feature_key).stdout
-    assert f"#projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO" in feature_text
+    assert (
+        f"#projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
+        in feature_text
+    )
     assert "# FEATURE-DEMO" in feature_text
 
     # migrate an in-repo card tree (carrying trackerStatus) into the vault
@@ -3244,28 +4138,64 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     (source / "FEATURE-MIG.md").write_text(
         "---\n"
         + yaml.safe_dump(
-            {"id": "FEATURE-MIG", "trackerStatus": {"type": "feature"}, "title": "Migrated", "status": "in-progress", "description": "migrated"},
+            {
+                "id": "FEATURE-MIG",
+                "trackerStatus": {"type": "feature"},
+                "title": "Migrated",
+                "status": "in-progress",
+                "description": "migrated",
+            },
             sort_keys=False,
         )
         + "---\n# Migrated\n",
         encoding="utf-8",
     )
-    run_agent_memory(workspace.repo, "card", "migrate", "--from", str(tmp_path / "incoming" / "plans"))
-    migrated_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-MIG" / "FEATURE-MIG.md"
+    run_agent_memory(
+        workspace.repo,
+        "card",
+        "migrate",
+        "--from",
+        str(tmp_path / "incoming" / "plans"),
+    )
+    migrated_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "features"
+        / "FEATURE-MIG"
+        / "FEATURE-MIG.md"
+    )
     assert migrated_path.is_file()
     assert "trackerStatus" not in migrated_path.read_text(encoding="utf-8")
-    assert json_array(parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))["problems"]) == []
+    assert (
+        json_array(
+            parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))[
+                "problems"
+            ]
+        )
+        == []
+    )
 
     run_agent_memory(workspace.repo, "feature", "delete", "FEATURE-MIG")
     assert not migrated_path.exists()
 
-    run_agent_memory(workspace.repo, "plan", "update", "PLAN-DEMO", "--set", "dependsOn=[[TASK-GHOST]]")
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "update",
+        "PLAN-DEMO",
+        "--set",
+        "dependsOn=[[TASK-GHOST]]",
+    )
     flagged = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
     problems = [json_object(item) for item in json_array(flagged["problems"])]
     assert any(json_string(problem["kind"]) == "reference" for problem in problems)
 
 
-def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_content(tmp_path: Path) -> None:
+def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_content(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(
         workspace.repo,
@@ -3303,13 +4233,29 @@ def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_cont
         "--set",
         "tags=FEATURE-DELETE",
     )
-    plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-DELETE" / "plans" / "PLAN-DELETE" / "PLAN-DELETE.md"
+    plan_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "features"
+        / "FEATURE-DELETE"
+        / "plans"
+        / "PLAN-DELETE"
+        / "PLAN-DELETE.md"
+    )
     assert plan_path.is_file()
 
     unrelated_rel = f"projects/{workspace.project_id}/staged-unrelated.md"
     unrelated_path = workspace.vault / unrelated_rel
     unrelated_path.write_text("# unrelated staged content\n", encoding="utf-8")
-    subprocess.run(["git", "add", unrelated_rel], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "add", unrelated_rel],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
     run_agent_memory(workspace.repo, "plan", "delete", "PLAN-DELETE")
 
@@ -3327,7 +4273,9 @@ def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_cont
     assert scoped_status.stdout == ""
 
 
-def test_plan_add_parented_type_without_parent_fails_cleanly_before_root_write(tmp_path: Path) -> None:
+def test_plan_add_parented_type_without_parent_fails_cleanly_before_root_write(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     result = run_agent_memory_subprocess(
         workspace.repo,
@@ -3354,7 +4302,15 @@ def test_plan_add_parented_type_without_parent_fails_cleanly_before_root_write(t
     assert "requires --parent" in result.stderr
     assert "AssertionError" not in result.stderr
     assert "Traceback" not in result.stderr
-    root_plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / "plans" / "PLAN-NO-PARENT" / "PLAN-NO-PARENT.md"
+    root_plan_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "plans"
+        / "PLAN-NO-PARENT"
+        / "PLAN-NO-PARENT.md"
+    )
     assert not root_plan_path.exists()
     assert not any(workspace.vault.rglob("PLAN-NO-PARENT.md"))
 
@@ -3367,7 +4323,9 @@ def unbound_dir(tmp_path: Path) -> Path:
     return loose
 
 
-def test_global_add_and_search_run_without_project_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_global_add_and_search_run_without_project_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Issue #25: storing or searching a *global* memory must not require the cwd to be a
     # bound project. The global vault is resolved from AGENT_MEMORY_VAULT (falling back to
     # the shipped default) independent of any cwd project binding file.
@@ -3393,11 +4351,17 @@ def test_global_add_and_search_run_without_project_binding(tmp_path: Path, monke
     assert added["key"] == "global/advice/unbound-global-note"
     assert (vault / "global" / "advice" / "unbound-global-note.md").is_file()
 
-    found = parse_json_stdout(run_agent_memory(loose, "search", "--scope", "global", "unbound-global-token-7a1c"))
+    found = parse_json_stdout(
+        run_agent_memory(
+            loose, "search", "--scope", "global", "unbound-global-token-7a1c"
+        )
+    )
     assert "global/advice/unbound-global-note" in result_keys(found)
 
 
-def test_global_doctor_runs_without_project_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_global_doctor_runs_without_project_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Issue #25: `doctor` must not crash from an unbound directory; it reports global vault
     # and tool health and marks the absence of a project binding instead of raising.
     vault = tmp_path / "vault"
@@ -3411,7 +4375,9 @@ def test_global_doctor_runs_without_project_binding(tmp_path: Path, monkeypatch:
     assert report["project_id"] is None
 
 
-def test_global_op_error_names_init_global_only_when_vault_missing(tmp_path: Path) -> None:
+def test_global_op_error_names_init_global_only_when_vault_missing(
+    tmp_path: Path,
+) -> None:
     # Issue #25: when the global vault genuinely does not exist, the error names that
     # condition and the `maintain init-global` remedy only -- never `init project` in the
     # unrelated cwd. Run as a real subprocess so an uncaught error surfaces as a nonzero
@@ -3444,8 +4410,12 @@ def test_queue_add_and_list_round_trip_across_projects(tmp_path: Path) -> None:
     # state. Two distinct project bindings that share one vault must see the same item.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
-    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
-    project_b = initialized_git_repo_with_remote(tmp_path, "project-b", "queue-project-b")
+    project_a = initialized_git_repo_with_remote(
+        tmp_path, "project-a", "queue-project-a"
+    )
+    project_b = initialized_git_repo_with_remote(
+        tmp_path, "project-b", "queue-project-b"
+    )
     run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
     run_agent_memory(project_b.path, "init", "project", "--vault", str(vault))
 
@@ -3494,7 +4464,9 @@ def test_queue_add_rejects_schema_invalid_items_without_writing(tmp_path: Path) 
     # global queue file is written.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
-    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
+    project_a = initialized_git_repo_with_remote(
+        tmp_path, "project-a", "queue-project-a"
+    )
     run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
 
     queue_help = run_agent_memory_subprocess(project_a.path, "queue", "add", "--help")
@@ -3549,7 +4521,9 @@ def test_queue_add_requires_vault_owned_card_schema(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     (vault / "_meta" / "cards.yaml").unlink()
-    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
+    project_a = initialized_git_repo_with_remote(
+        tmp_path, "project-a", "queue-project-a"
+    )
     run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
 
     result = run_agent_memory_subprocess(
@@ -3569,7 +4543,9 @@ def test_queue_add_requires_vault_owned_card_schema(tmp_path: Path) -> None:
     assert list((vault / "queue").rglob("*.md")) == []
 
 
-def test_queue_item_cannot_be_added_through_project_card_command(tmp_path: Path) -> None:
+def test_queue_item_cannot_be_added_through_project_card_command(
+    tmp_path: Path,
+) -> None:
     # Issue #39: queue-item is a schema-defined card type, but creation belongs to the
     # global queue command, not the project-local generic card command.
     workspace = initialized_workspace(tmp_path)
@@ -3593,7 +4569,9 @@ def test_queue_item_cannot_be_added_through_project_card_command(tmp_path: Path)
     assert list(workspace.vault.rglob("QUEUE-LOCAL.md")) == []
 
 
-def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Card Schema System (PR #35): `inspect schema` must advertise the card types the
     # *configured* vault will actually enforce and route by. From an unbound cwd with a
     # global vault configured via AGENT_MEMORY_VAULT, that vault's own `_meta/cards.yaml`
@@ -3631,13 +4609,20 @@ def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbou
     monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))
     loose = unbound_dir(tmp_path)
 
-    schema = parse_json_stdout(run_agent_memory(loose, "inspect", "schema", "--format", "json"))
+    schema = parse_json_stdout(
+        run_agent_memory(loose, "inspect", "schema", "--format", "json")
+    )
     card_system = json_object(schema["card_system"])
-    advertised = {json_string(json_object(card_type)["name"]) for card_type in json_array(card_system["types"])}
+    advertised = {
+        json_string(json_object(card_type)["name"])
+        for card_type in json_array(card_system["types"])
+    }
     assert "signal" in advertised
 
 
-def test_inspect_schema_advertises_packaged_defaults_when_no_vault_initialized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_inspect_schema_advertises_packaged_defaults_when_no_vault_initialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Card Schema System (PR #35): the honest no-vault branch. From an unbound cwd whose
     # configured global vault (AGENT_MEMORY_VAULT) is NOT initialized, `inspect schema`
     # advertises exactly the tool's packaged default card types. It must select that answer
@@ -3649,10 +4634,17 @@ def test_inspect_schema_advertises_packaged_defaults_when_no_vault_initialized(t
     monkeypatch.setenv("AGENT_MEMORY_VAULT", str(uninitialized_vault))
     loose = unbound_dir(tmp_path)
 
-    schema = parse_json_stdout(run_agent_memory(loose, "inspect", "schema", "--format", "json"))
+    schema = parse_json_stdout(
+        run_agent_memory(loose, "inspect", "schema", "--format", "json")
+    )
     card_system = json_object(schema["card_system"])
-    advertised = {json_string(json_object(card_type)["name"]) for card_type in json_array(card_system["types"])}
-    assert advertised == {card_type.name for card_type in load_card_system_config().card_types}
+    advertised = {
+        json_string(json_object(card_type)["name"])
+        for card_type in json_array(card_system["types"])
+    }
+    assert advertised == {
+        card_type.name for card_type in load_card_system_config().card_types
+    }
 
 
 def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:
@@ -3673,7 +4665,9 @@ def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:
         content="default-scope-token-5e2b global body",
     )
 
-    defaulted = parse_json_stdout(run_agent_memory(workspace.repo, "search", "default-scope-token-5e2b"))
+    defaulted = parse_json_stdout(
+        run_agent_memory(workspace.repo, "search", "default-scope-token-5e2b")
+    )
     keys = result_keys(defaulted)
     assert str(project_note["key"]) in keys
     assert str(global_note["key"]) in keys
@@ -3682,8 +4676,12 @@ def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:
 def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     # Configure the vault to require GPG signing and use a failing gpg program
-    subprocess.run(["git", "config", "commit.gpgsign", "true"], cwd=workspace.vault, check=True)
-    subprocess.run(["git", "config", "gpg.program", "false"], cwd=workspace.vault, check=True)
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "true"], cwd=workspace.vault, check=True
+    )
+    subprocess.run(
+        ["git", "config", "gpg.program", "false"], cwd=workspace.vault, check=True
+    )
 
     with pytest.raises(VaultCommitError) as exc_info:
         run_agent_memory(
@@ -3699,7 +4697,9 @@ def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
             "Should be rolled back",
         )
     assert "Vault commit failed" in str(exc_info.value)
-    assert "gpg" in str(exc_info.value).lower() or "signing" in str(exc_info.value).lower()
+    assert (
+        "gpg" in str(exc_info.value).lower() or "signing" in str(exc_info.value).lower()
+    )
     assert "agent-memory maintain skill vault-maintenance" in str(exc_info.value)
     assert "before retrying normal memory work" in str(exc_info.value)
 
@@ -3712,7 +4712,13 @@ def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
     assert "Failing Commit Memory" not in index_path.read_text(encoding="utf-8")
 
     # Vault git status is clean
-    status = subprocess.run(["git", "status", "--short"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    status = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     assert not status.stdout.strip()
 
 
@@ -3733,24 +4739,45 @@ def test_add_commits_only_operation_pathspecs(tmp_path: Path) -> None:
     )
 
     # The unrelated file should still be staged (not committed)
-    status = subprocess.run(["git", "status", "--short"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    status = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     assert "A  unrelated.txt" in status.stdout
 
 
 def test_delete_malformed_note_without_frontmatter(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     # Write a frontmatter-less note
-    note_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "malformed.md"
+    note_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "decisions"
+        / "malformed.md"
+    )
     note_path.parent.mkdir(parents=True, exist_ok=True)
     note_path.write_text("No frontmatter here\njust plain text\n", encoding="utf-8")
 
     # Manually link it in the index.md
-    index_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
-    index_path.write_text(index_path.read_text("utf-8") + "\n* [Malformed](malformed.md) - description\n", encoding="utf-8")
+    index_path = (
+        workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
+    )
+    index_path.write_text(
+        index_path.read_text("utf-8") + "\n* [Malformed](malformed.md) - description\n",
+        encoding="utf-8",
+    )
 
     # Commit the manual addition to keep vault clean
     subprocess.run(["git", "add", "."], cwd=workspace.vault, check=True)
-    subprocess.run(["git", "commit", "-m", "Manual malformed note addition"], cwd=workspace.vault, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Manual malformed note addition"],
+        cwd=workspace.vault,
+        check=True,
+    )
 
     # Delete the malformed note using the CLI
     run_agent_memory(
@@ -3780,7 +4807,9 @@ def test_init_project_idempotent_when_vault_dir_exists(tmp_path: Path) -> None:
 
     # Assert binding resolves through the registry-backed project state, not a repo-local config file.
     assert not (git_repo.path / ".agent-memory.toml").exists()
-    assert operations_load_project_config(git_repo.path).project_id == git_repo.project_id
+    assert (
+        operations_load_project_config(git_repo.path).project_id == git_repo.project_id
+    )
 
     # Rerun the initialization (should be idempotent and exit 0)
     run_agent_memory(git_repo.path, "init", "project", "--vault", str(vault))
@@ -3788,7 +4817,9 @@ def test_init_project_idempotent_when_vault_dir_exists(tmp_path: Path) -> None:
 
 def test_generated_plan_add_help_uses_project_plan_card_schema(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path = (
+        workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    )
     cards_path.parent.mkdir(parents=True)
     cards_path.write_text(
         """root: plans
@@ -3895,7 +4926,9 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
 
     # Scenario 4: body file support
     body_file = tmp_path / "body.md"
-    body_file.write_text("### Markdown body from file\nWith some content\n", encoding="utf-8")
+    body_file.write_text(
+        "### Markdown body from file\nWith some content\n", encoding="utf-8"
+    )
 
     run_agent_memory(
         workspace.repo,
@@ -3911,7 +4944,15 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         "--body-file",
         str(body_file),
     )
-    card_file = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-BODY" / "FEATURE-BODY.md"
+    card_file = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "features"
+        / "FEATURE-BODY"
+        / "FEATURE-BODY.md"
+    )
     assert card_file.exists()
     assert "Markdown body from file" in card_file.read_text(encoding="utf-8")
 
@@ -3931,7 +4972,13 @@ def test_add_rejects_writable_plan_memory_notes(tmp_path: Path) -> None:
         "--content",
         "This would bypass the card schema.",
     )
-    legacy_path = workspace.vault / "projects" / workspace.project_id / "plans" / "legacy-plan-note.md"
+    legacy_path = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "legacy-plan-note.md"
+    )
 
     assert result.returncode != 0
     assert "plan" in result.stderr
@@ -3939,7 +4986,9 @@ def test_add_rejects_writable_plan_memory_notes(tmp_path: Path) -> None:
     assert not legacy_path.exists()
 
 
-def test_plan_add_invalid_numeric_field_fails_through_cli_boundary_without_writing_card(tmp_path: Path) -> None:
+def test_plan_add_invalid_numeric_field_fails_through_cli_boundary_without_writing_card(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(
         workspace.repo,
@@ -3966,7 +5015,16 @@ def test_plan_add_invalid_numeric_field_fails_through_cli_boundary_without_writi
         "--set",
         "complexity=not-a-number",
     )
-    card_file = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-NUMERIC" / "specs" / "SPEC-NUMERIC.md"
+    card_file = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "features"
+        / "FEATURE-NUMERIC"
+        / "specs"
+        / "SPEC-NUMERIC.md"
+    )
 
     assert result.returncode != 0
     assert result.stderr.startswith("Error: ")
@@ -3977,7 +5035,9 @@ def test_plan_add_invalid_numeric_field_fails_through_cli_boundary_without_writi
     assert not card_file.exists()
 
 
-def test_plan_add_missing_body_file_fails_through_cli_boundary_without_writing_card(tmp_path: Path) -> None:
+def test_plan_add_missing_body_file_fails_through_cli_boundary_without_writing_card(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     missing_body = tmp_path / "missing-body.md"
 
@@ -3995,7 +5055,15 @@ def test_plan_add_missing_body_file_fails_through_cli_boundary_without_writing_c
         "--body-file",
         str(missing_body),
     )
-    card_file = workspace.vault / "projects" / workspace.project_id / "plans" / "features" / "FEATURE-MISSING-BODY" / "FEATURE-MISSING-BODY.md"
+    card_file = (
+        workspace.vault
+        / "projects"
+        / workspace.project_id
+        / "plans"
+        / "features"
+        / "FEATURE-MISSING-BODY"
+        / "FEATURE-MISSING-BODY.md"
+    )
 
     assert result.returncode != 0
     assert result.stderr.startswith("Error: ")
@@ -4010,7 +5078,9 @@ def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> N
     unsupported_type = "milestone"
     unsupported_id = "MILESTONE-1"
 
-    result = run_agent_memory_subprocess(workspace.repo, "card", "add", unsupported_type, unsupported_id)
+    result = run_agent_memory_subprocess(
+        workspace.repo, "card", "add", unsupported_type, unsupported_id
+    )
 
     stderr = assert_structured_cli_error(result)
     assert unsupported_type in stderr
@@ -4018,18 +5088,26 @@ def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> N
     assert list(workspace.vault.rglob(f"{unsupported_id}.md")) == []
 
 
-def test_generated_card_update_unknown_id_prefix_is_structured_cli_error(tmp_path: Path) -> None:
+def test_generated_card_update_unknown_id_prefix_is_structured_cli_error(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     unsupported_id = "MILESTONE-1"
 
-    result = run_agent_memory_subprocess(workspace.repo, "plan", "update", unsupported_id, "--set", "title=x")
+    result = run_agent_memory_subprocess(
+        workspace.repo, "plan", "update", unsupported_id, "--set", "title=x"
+    )
 
     stderr = assert_structured_cli_error(result)
     assert unsupported_id in stderr
-    assert {"FEATURE", "PLAN", "TASK"}.issubset(set(re.findall(r"[A-Z][A-Z_-]+", stderr)))
+    assert {"FEATURE", "PLAN", "TASK"}.issubset(
+        set(re.findall(r"[A-Z][A-Z_-]+", stderr))
+    )
 
 
-def test_root_list_global_memory_type_does_not_require_project_card_schema(tmp_path: Path) -> None:
+def test_root_list_global_memory_type_does_not_require_project_card_schema(
+    tmp_path: Path,
+) -> None:
     workspace = initialized_workspace(tmp_path)
     global_decision = add_cli_memory(
         workspace,
@@ -4038,11 +5116,17 @@ def test_root_list_global_memory_type_does_not_require_project_card_schema(tmp_p
         title="Schema Independent Decision",
         content="Global memory listing must not depend on project card schema.",
     )
-    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path = (
+        workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    )
     cards_path.parent.mkdir(parents=True, exist_ok=True)
     cards_path.write_text("not: [valid\n", encoding="utf-8")
 
-    listed = parse_json_stdout(run_agent_memory_module(workspace.repo, "list", "--type", "decision", "--scope", "global"))
+    listed = parse_json_stdout(
+        run_agent_memory_module(
+            workspace.repo, "list", "--type", "decision", "--scope", "global"
+        )
+    )
 
     assert listed["type"] == "decision"
     assert listed["scope"] == "global"
@@ -4074,16 +5158,24 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
 
     # Scenario 3: invalid search mode
     unsupported_mode = "substring"
-    r3 = run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", unsupported_mode)
+    r3 = run_agent_memory_subprocess(
+        workspace.repo, "search", "content", "query", "--mode", unsupported_mode
+    )
     stderr3 = assert_structured_cli_error(r3)
     assert unsupported_mode in stderr3
-    assert {"exact", "fuzzy", "ranked"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr3)))
+    assert {"exact", "fuzzy", "ranked"}.issubset(
+        set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr3))
+    )
 
     # Scenario 4: list is a registered command and requires an explicit type
     r4 = run_agent_memory_subprocess(workspace.repo, "list")
     stderr4 = assert_structured_cli_error(r4)
     assert "--type" in stderr4
-    listed = parse_json_stdout(run_agent_memory_module(workspace.repo, "list", "--type", "plan", "--scope", "both"))
+    listed = parse_json_stdout(
+        run_agent_memory_module(
+            workspace.repo, "list", "--type", "plan", "--scope", "both"
+        )
+    )
     assert listed["type"] == "plan"
     assert listed["scope"] == "both"
     assert json_array(listed["results"]) == []

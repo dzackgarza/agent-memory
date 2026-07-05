@@ -31,7 +31,9 @@ CONFIG = CardSystemConfig.model_validate(
 
 
 def test_parse_card_fields_coerces_each_scalar_type() -> None:
-    fields = parse_card_fields(CONFIG, "widget", ["count=5", "ratio=1.5", "flag=true", "label=hi"])
+    fields = parse_card_fields(
+        CONFIG, "widget", ["count=5", "ratio=1.5", "flag=true", "label=hi"]
+    )
     assert fields == {"count": 5, "ratio": 1.5, "flag": True, "label": "hi"}
 
 
@@ -40,7 +42,9 @@ def test_parse_card_fields_bool_is_false_for_non_truthy_token() -> None:
 
 
 def test_parse_card_fields_accumulates_repeated_list_values() -> None:
-    assert parse_card_fields(CONFIG, "widget", ["tags=alpha", "tags=beta"]) == {"tags": ["alpha", "beta"]}
+    assert parse_card_fields(CONFIG, "widget", ["tags=alpha", "tags=beta"]) == {
+        "tags": ["alpha", "beta"]
+    }
 
 
 def test_parse_card_fields_rejects_unknown_field() -> None:

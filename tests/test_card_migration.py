@@ -6,7 +6,11 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
-from agent_memory.cards import CardSystemConfig, build_card_models, load_card_system_config
+from agent_memory.cards import (
+    CardSystemConfig,
+    build_card_models,
+    load_card_system_config,
+)
 from agent_memory.cards.migration import migrate_plans
 from agent_memory.cards.storage import read_card
 from agent_memory.cards.validation import load_card_records, validate_cards
@@ -19,7 +23,10 @@ def models_and_config() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
 
 def write_card(path: Path, frontmatter: dict[str, Any], body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"---\n{yaml.safe_dump(frontmatter, sort_keys=False)}---\n{body}", encoding="utf-8")
+    path.write_text(
+        f"---\n{yaml.safe_dump(frontmatter, sort_keys=False)}---\n{body}",
+        encoding="utf-8",
+    )
 
 
 def build_nimbalyst_source(source_root: Path) -> None:
@@ -29,7 +36,14 @@ def build_nimbalyst_source(source_root: Path) -> None:
     feature_dir = source_root / "features" / "FEATURE-M"
     write_card(
         feature_dir / "FEATURE-M.md",
-        {"id": "FEATURE-M", "trackerStatus": {"type": "feature"}, "plans": ["[[PLAN-M]]"], "title": "Migrated feature", "status": "in-progress", "description": "d"},
+        {
+            "id": "FEATURE-M",
+            "trackerStatus": {"type": "feature"},
+            "plans": ["[[PLAN-M]]"],
+            "title": "Migrated feature",
+            "status": "in-progress",
+            "description": "d",
+        },
         "# Migrated feature\n",
     )
     plan_dir = feature_dir / "plans" / "PLAN-M"
@@ -87,7 +101,16 @@ def test_migrate_strips_tracker_status_and_mirrors_hierarchy(tmp_path: Path) -> 
     vault = tmp_path / "vault" / "projects" / "proj" / "plans"
     migrated = migrate_plans(source, vault, config, models)
     assert len(migrated) == 4
-    assert (vault / "features" / "FEATURE-M" / "plans" / "PLAN-M" / "PHASE-M" / "tasks" / "TASK-M.md").is_file()
+    assert (
+        vault
+        / "features"
+        / "FEATURE-M"
+        / "plans"
+        / "PLAN-M"
+        / "PHASE-M"
+        / "tasks"
+        / "TASK-M.md"
+    ).is_file()
     for path in migrated:
         assert "trackerStatus" not in path.read_text(encoding="utf-8")
 
@@ -112,7 +135,12 @@ def test_migration_skips_plan_dag_and_falls_back_to_id_prefix(tmp_path: Path) ->
     source = tmp_path / "repo" / ".agents" / "plans"
     write_card(
         source / "features" / "FEATURE-N" / "FEATURE-N.md",
-        {"id": "FEATURE-N", "title": "No tracker feature", "status": "in-progress", "description": "d"},
+        {
+            "id": "FEATURE-N",
+            "title": "No tracker feature",
+            "status": "in-progress",
+            "description": "d",
+        },
         "# No tracker feature\n",
     )
     (source / "plans").mkdir(parents=True, exist_ok=True)

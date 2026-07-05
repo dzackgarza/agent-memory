@@ -61,33 +61,51 @@ class CardTypeSpec(BaseModel):
     ordered_children: dict[str, str] = Field(default_factory=dict)
 
 
-def _validate_workflow_roles(statuses: list[str], workflow_roles: dict[str, list[str]]) -> None:
+def _validate_workflow_roles(
+    statuses: list[str], workflow_roles: dict[str, list[str]]
+) -> None:
     required_roles = {"started", "complete", "unstarted"}
     if workflow_roles and set(workflow_roles) != required_roles:
-        raise ValueError(f"workflow roles must declare exactly {sorted(required_roles)} when enabled")
+        raise ValueError(
+            f"workflow roles must declare exactly {sorted(required_roles)} when enabled"
+        )
     status_values = set(statuses)
     for role, members in workflow_roles.items():
         for status in members:
             if status not in status_values:
-                raise ValueError(f"workflow role {role} lists status not in catalog: {status}")
+                raise ValueError(
+                    f"workflow role {role} lists status not in catalog: {status}"
+                )
 
 
-def _validate_status_sets(statuses: list[str], status_sets: dict[str, StatusSetSpec]) -> None:
+def _validate_status_sets(
+    statuses: list[str], status_sets: dict[str, StatusSetSpec]
+) -> None:
     status_values = set(statuses)
     for set_name, status_set in status_sets.items():
         if status_set.default not in status_values:
-            raise ValueError(f"status set {set_name} default not in catalog: {status_set.default}")
+            raise ValueError(
+                f"status set {set_name} default not in catalog: {status_set.default}"
+            )
         for option in status_set.options:
             if option not in status_values:
-                raise ValueError(f"status set {set_name} option not in catalog: {option}")
+                raise ValueError(
+                    f"status set {set_name} option not in catalog: {option}"
+                )
 
 
-def _validate_card_parents(card_type: CardTypeSpec, by_name: dict[str, CardTypeSpec]) -> None:
+def _validate_card_parents(
+    card_type: CardTypeSpec, by_name: dict[str, CardTypeSpec]
+) -> None:
     for parent in card_type.parents:
         if parent not in by_name:
-            raise ValueError(f"card type {card_type.name} references unknown parent: {parent}")
+            raise ValueError(
+                f"card type {card_type.name} references unknown parent: {parent}"
+            )
         if not by_name[parent].own_dir:
-            raise ValueError(f"card type {card_type.name} parent {parent} must own a directory to contain children")
+            raise ValueError(
+                f"card type {card_type.name} parent {parent} must own a directory to contain children"
+            )
 
 
 def _validate_field(field: FieldSpec, context: str) -> None:
@@ -95,10 +113,14 @@ def _validate_field(field: FieldSpec, context: str) -> None:
         raise ValueError(f"select field {context}.{field.name} must declare options")
     if field.type == "object_list":
         if not field.item_schema:
-            raise ValueError(f"object_list field {context}.{field.name} must declare a nested schema")
+            raise ValueError(
+                f"object_list field {context}.{field.name} must declare a nested schema"
+            )
         _validate_fields(field.item_schema, f"{context}.{field.name}")
     elif field.item_schema:
-        raise ValueError(f"field {context}.{field.name} declares a nested schema but is not an object_list")
+        raise ValueError(
+            f"field {context}.{field.name} declares a nested schema but is not an object_list"
+        )
 
 
 def _validate_fields(fields: list[FieldSpec], context: str) -> None:
@@ -113,25 +135,39 @@ def _validate_card_fields(card_type: CardTypeSpec) -> None:
     _validate_fields(card_type.fields, card_type.name)
 
 
-def _validate_card_ordering(card_type: CardTypeSpec, by_name: dict[str, CardTypeSpec]) -> None:
+def _validate_card_ordering(
+    card_type: CardTypeSpec, by_name: dict[str, CardTypeSpec]
+) -> None:
     fields_by_name = {field.name: field for field in card_type.fields}
     for child_type_name, field_name in card_type.ordered_children.items():
         if child_type_name not in by_name:
-            raise ValueError(f"card type {card_type.name} orders unknown child type: {child_type_name}")
+            raise ValueError(
+                f"card type {card_type.name} orders unknown child type: {child_type_name}"
+            )
         if card_type.name not in by_name[child_type_name].parents:
-            raise ValueError(f"card type {card_type.name} cannot order non-child type: {child_type_name}")
+            raise ValueError(
+                f"card type {card_type.name} cannot order non-child type: {child_type_name}"
+            )
         field = fields_by_name.get(field_name)
         if field is None:
-            raise ValueError(f"card type {card_type.name} orders {child_type_name} through unknown field: {field_name}")
+            raise ValueError(
+                f"card type {card_type.name} orders {child_type_name} through unknown field: {field_name}"
+            )
         if field.type != "wikilink_list":
-            raise ValueError(f"card type {card_type.name} ordering field {field_name} must be a wikilink_list")
+            raise ValueError(
+                f"card type {card_type.name} ordering field {field_name} must be a wikilink_list"
+            )
 
 
-def _validate_card_types(card_types: list[CardTypeSpec], status_sets: dict[str, StatusSetSpec]) -> None:
+def _validate_card_types(
+    card_types: list[CardTypeSpec], status_sets: dict[str, StatusSetSpec]
+) -> None:
     by_name = {card_type.name: card_type for card_type in card_types}
     for card_type in card_types:
         if card_type.status_set not in status_sets:
-            raise ValueError(f"card type {card_type.name} references unknown status set: {card_type.status_set}")
+            raise ValueError(
+                f"card type {card_type.name} references unknown status set: {card_type.status_set}"
+            )
         _validate_card_parents(card_type, by_name)
         _validate_card_fields(card_type)
         _validate_card_ordering(card_type, by_name)

@@ -11,7 +11,12 @@ from agent_memory.cards import CardSystemConfig, load_card_system_config
 # Minimal config carrying workflow_roles: each role lists statuses drawn from the catalog.
 CONFIG: dict[str, Any] = {
     "statuses": ["unstarted", "in-progress", "complete"],
-    "status_sets": {"standard": {"default": "unstarted", "options": ["unstarted", "in-progress", "complete"]}},
+    "status_sets": {
+        "standard": {
+            "default": "unstarted",
+            "options": ["unstarted", "in-progress", "complete"],
+        }
+    },
     "card_types": [
         {
             "name": "feature",
@@ -60,7 +65,14 @@ def test_shipped_config_ports_status_catalog_workflow_roles() -> None:
     complete = config.statuses_with_role("complete")
     unstarted = config.statuses_with_role("unstarted")
     # Ported from ~/ai/planning/status-catalog.yaml.
-    assert {"in-progress", "needs-agent-review", "complete", "blocked", "decided", "implemented"} <= started
+    assert {
+        "in-progress",
+        "needs-agent-review",
+        "complete",
+        "blocked",
+        "decided",
+        "implemented",
+    } <= started
     assert {"complete", "decided", "implemented", "done"} == complete
     assert {"unstarted", "approved-and-unstarted"} == unstarted
     # complete statuses are a subset of started (a completed card has been started).

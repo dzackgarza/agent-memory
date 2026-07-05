@@ -18,7 +18,9 @@ def migrate_plans(
     # Ingest an in-repo Nimbalyst card tree into the vault: drop the trackerStatus field
     # (the type now comes from storage location), validate each card against its model, and
     # write it to the mirrored path so the existing hierarchy is preserved verbatim.
-    assert source_plans_root.is_dir(), f"source plans root does not exist: {source_plans_root}"
+    assert source_plans_root.is_dir(), (
+        f"source plans root does not exist: {source_plans_root}"
+    )
     migrated: list[Path] = []
     for source in sorted(source_plans_root.rglob("*.md")):
         if source.name == PLAN_DAG_FILENAME:

@@ -105,14 +105,30 @@ app = App(
     ),
 )
 init_app = app.command(App(name="init", help="Initialize project memory bindings."))
-search_app = app.command(App(name="search", help="Query memories by keys, content, or metadata."))
-inspect_app = app.command(App(name="inspect", help="Read-only vault navigation and analysis commands."))
-maintain_app = app.command(App(name="maintain", help="Vault setup and maintenance workflows."))
-card_app = app.command(App(name="card", help="Operate on schema-defined vault-backed cards."))
-sync_app = app.command(App(name="sync", help="Synchronize the configured memory vault with its git remote."))
+search_app = app.command(
+    App(name="search", help="Query memories by keys, content, or metadata.")
+)
+inspect_app = app.command(
+    App(name="inspect", help="Read-only vault navigation and analysis commands.")
+)
+maintain_app = app.command(
+    App(name="maintain", help="Vault setup and maintenance workflows.")
+)
+card_app = app.command(
+    App(name="card", help="Operate on schema-defined vault-backed cards.")
+)
+sync_app = app.command(
+    App(
+        name="sync", help="Synchronize the configured memory vault with its git remote."
+    )
+)
 links_app = app.command(App(name="links", help="Inspect and rewrite vault links."))
-todo_app = app.command(App(name="todo", help="Mutate structured todos on vault plan records."))
-queue_app = app.command(App(name="queue", help="Append and list global agent work queue items."))
+todo_app = app.command(
+    App(name="todo", help="Mutate structured todos on vault plan records.")
+)
+queue_app = app.command(
+    App(name="queue", help="Append and list global agent work queue items.")
+)
 
 
 class CliUsageError(RuntimeError):
@@ -133,7 +149,9 @@ type CardConfigRegistrationState = CardConfigAvailable | CardConfigUnavailable
 
 
 def maintain_init_global(
-    vault: Annotated[Path, Parameter(help="Path to the global memory vault to initialize.")],
+    vault: Annotated[
+        Path, Parameter(help="Path to the global memory vault to initialize.")
+    ],
 ) -> None:
     """Create the global IWE-backed memory vault once."""
     emit(init_global_vault(vault))
@@ -142,7 +160,9 @@ def maintain_init_global(
 def maintain_skill_command(
     name: Annotated[
         str,
-        Parameter(help=f"Bundled maintenance skill name. Available: {', '.join(BUNDLED_SKILL_NAMES)}."),
+        Parameter(
+            help=f"Bundled maintenance skill name. Available: {', '.join(BUNDLED_SKILL_NAMES)}."
+        ),
     ],
 ) -> None:
     """Print a bundled maintenance skill entrypoint."""
@@ -151,8 +171,13 @@ def maintain_skill_command(
 
 def init_project_command(
     *,
-    vault: Annotated[Path, Parameter(help="Existing global memory vault for this repository.")],
-    project_id: Annotated[str | None, Parameter(help="Stable project id for repositories without an origin remote.")] = None,
+    vault: Annotated[
+        Path, Parameter(help="Existing global memory vault for this repository.")
+    ],
+    project_id: Annotated[
+        str | None,
+        Parameter(help="Stable project id for repositories without an origin remote."),
+    ] = None,
 ) -> None:
     """Bind the current Git repository to the global memory vault."""
     emit(init_project(vault=vault, cwd=Path.cwd(), project_id=project_id))
@@ -161,9 +186,19 @@ def init_project_command(
 def add_command(
     *,
     scope: Annotated[MemoryScope, Parameter(help="Memory scope: project or global.")],
-    memory_type: Annotated[MemoryType, Parameter(name="type", help="Memory type directory to write into. Plain plan memories are rejected; use agent-memory plan add.")],
-    title: Annotated[str, Parameter(help="Memory title. The key is generated from this title.")],
-    content: Annotated[str, Parameter(help="Markdown body content to store under the title.")],
+    memory_type: Annotated[
+        MemoryType,
+        Parameter(
+            name="type",
+            help="Memory type directory to write into. Plain plan memories are rejected; use agent-memory plan add.",
+        ),
+    ],
+    title: Annotated[
+        str, Parameter(help="Memory title. The key is generated from this title.")
+    ],
+    content: Annotated[
+        str, Parameter(help="Markdown body content to store under the title.")
+    ],
 ) -> None:
     """Create a project or global memory."""
     emit(
@@ -181,8 +216,12 @@ def update_command(
     key: Annotated[str, Parameter(help="Memory key to update.")],
     *,
     title: Annotated[str | None, Parameter(help="Replacement title.")] = None,
-    memory_type: Annotated[MemoryType | None, Parameter(name="type", help="Replacement memory type.")] = None,
-    content: Annotated[str | None, Parameter(help="Replacement Markdown body content.")] = None,
+    memory_type: Annotated[
+        MemoryType | None, Parameter(name="type", help="Replacement memory type.")
+    ] = None,
+    content: Annotated[
+        str | None, Parameter(help="Replacement Markdown body content.")
+    ] = None,
 ) -> None:
     """Update a memory title, type, or body."""
     emit(
@@ -201,7 +240,9 @@ def delete_command(
     *,
     repoint: Annotated[
         str | None,
-        Parameter(help="Rewrite inbound wikilinks to this key or external URL before deleting."),
+        Parameter(
+            help="Rewrite inbound wikilinks to this key or external URL before deleting."
+        ),
     ] = None,
     orphan_ok: Annotated[
         bool,
@@ -215,7 +256,9 @@ def delete_command(
     if repoint is not None and orphan_ok:
         raise MemoryOperationError("delete accepts --repoint or --orphan-ok, not both")
     if repoint is not None:
-        emit(delete_memory_repointing_backlinks(key=key, repoint=repoint, cwd=Path.cwd()))
+        emit(
+            delete_memory_repointing_backlinks(key=key, repoint=repoint, cwd=Path.cwd())
+        )
         return
     if orphan_ok:
         emit(delete_memory_orphaning_backlinks(key=key, cwd=Path.cwd()))
@@ -225,26 +268,49 @@ def delete_command(
 
 def todo_set_command(
     key: Annotated[str, Parameter(help="Full vault-relative plan memory key.")],
-    todo_id: Annotated[str, Parameter(help="Todo id to mutate inside the plan record's todos tree.")],
+    todo_id: Annotated[
+        str, Parameter(help="Todo id to mutate inside the plan record's todos tree.")
+    ],
     *,
     status: Annotated[str | None, Parameter(help="Replacement todo status.")] = None,
     content: Annotated[str | None, Parameter(help="Replacement todo content.")] = None,
     note: Annotated[str | None, Parameter(help="Replacement todo note.")] = None,
 ) -> None:
     """Update one todo node in a plan memory record."""
-    emit(update_plan_todo(key=key, todo_id=todo_id, status=status, content=content, note=note, cwd=Path.cwd()))
+    emit(
+        update_plan_todo(
+            key=key,
+            todo_id=todo_id,
+            status=status,
+            content=content,
+            note=note,
+            cwd=Path.cwd(),
+        )
+    )
 
 
 def queue_add_command(
     *,
-    project: Annotated[str | None, Parameter(help="Project id the queue item belongs to.")] = None,
-    agent: Annotated[str | None, Parameter(help="Agent or user handing off the work.")] = None,
-    status: Annotated[str | None, Parameter(help="Queue status from the vault card schema.")] = None,
+    project: Annotated[
+        str | None, Parameter(help="Project id the queue item belongs to.")
+    ] = None,
+    agent: Annotated[
+        str | None, Parameter(help="Agent or user handing off the work.")
+    ] = None,
+    status: Annotated[
+        str | None, Parameter(help="Queue status from the vault card schema.")
+    ] = None,
     summary: Annotated[str | None, Parameter(help="Queue item summary.")] = None,
-    timestamp: Annotated[str | None, Parameter(help="Optional timestamp string.")] = None,
+    timestamp: Annotated[
+        str | None, Parameter(help="Optional timestamp string.")
+    ] = None,
     link: Annotated[
         list[str] | None,
-        Parameter(help="Related wikilink; repeat for multiple links.", negative_iterable=[], allow_leading_hyphen=True),
+        Parameter(
+            help="Related wikilink; repeat for multiple links.",
+            negative_iterable=[],
+            allow_leading_hyphen=True,
+        ),
     ] = None,
     set_: Annotated[
         list[str] | None,
@@ -279,7 +345,10 @@ def queue_list_command() -> None:
 def search_default(
     query: Annotated[str, Parameter(help="Query text.")],
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
+    scope: Annotated[
+        SearchScope,
+        Parameter(help="Scope to search: project, global, or both. Defaults to both."),
+    ] = SearchScope.BOTH,
 ) -> None:
     """Return a curated report combining key, exact content, fuzzy, and ranked search."""
     emit(search_memories(scope=scope, query=query, cwd=Path.cwd()))
@@ -288,7 +357,10 @@ def search_default(
 def search_content_command(
     query: Annotated[str, Parameter(help="Content query text.")],
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
+    scope: Annotated[
+        SearchScope,
+        Parameter(help="Scope to search: project, global, or both. Defaults to both."),
+    ] = SearchScope.BOTH,
     mode: Annotated[
         ContentSearchMode,
         Parameter(help="Content search mode: exact, fuzzy, or ranked."),
@@ -307,12 +379,19 @@ def search_content_command(
 
 def search_metadata_command(
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
-    memory_type: Annotated[MemoryType | None, Parameter(name="type", help="Filter by memory type.")] = None,
+    scope: Annotated[
+        SearchScope,
+        Parameter(help="Scope to search: project, global, or both. Defaults to both."),
+    ] = SearchScope.BOTH,
+    memory_type: Annotated[
+        MemoryType | None, Parameter(name="type", help="Filter by memory type.")
+    ] = None,
     tag: Annotated[str | None, Parameter(help="Filter by tag.")] = None,
     created_after: Annotated[
         str | None,
-        Parameter(help="Filter by ISO timestamp, for example 2026-06-13T00:00:00+00:00."),
+        Parameter(
+            help="Filter by ISO timestamp, for example 2026-06-13T00:00:00+00:00."
+        ),
     ] = None,
 ) -> None:
     """Search memory frontmatter fields."""
@@ -330,7 +409,10 @@ def search_metadata_command(
 def search_keys_command(
     query: Annotated[str, Parameter(help="Query text for memory keys and titles.")],
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
+    scope: Annotated[
+        SearchScope,
+        Parameter(help="Scope to search: project, global, or both. Defaults to both."),
+    ] = SearchScope.BOTH,
 ) -> None:
     """Search memory keys and titles."""
     emit(search_keys(scope=scope, query=query, cwd=Path.cwd()))
@@ -338,8 +420,12 @@ def search_keys_command(
 
 def inspect_overview_command(
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    scope: Annotated[
+        SearchScope, Parameter(help="Scope to inspect: project, global, or both.")
+    ],
+    output_format: Annotated[
+        InspectOutputFormat, Parameter(name="format", help="Output format: json.")
+    ],
 ) -> None:
     """Summarize scoped vault roots, notes, indexes, and memory categories."""
     emit(inspect_overview(scope=scope, output_format=output_format, cwd=Path.cwd()))
@@ -347,7 +433,9 @@ def inspect_overview_command(
 
 def inspect_schema_command(
     *,
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[
+        InspectOutputFormat, Parameter(name="format", help="Output format: json.")
+    ],
 ) -> None:
     """Print the user-facing command and metadata schema."""
     emit(inspect_schema(output_format=output_format, cwd=Path.cwd()))
@@ -355,43 +443,75 @@ def inspect_schema_command(
 
 def inspect_paths_command(
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
-    kind: Annotated[InspectPathKind, Parameter(help="Path class: roots, indexes, notes, or all.")],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    scope: Annotated[
+        SearchScope, Parameter(help="Scope to inspect: project, global, or both.")
+    ],
+    kind: Annotated[
+        InspectPathKind, Parameter(help="Path class: roots, indexes, notes, or all.")
+    ],
+    output_format: Annotated[
+        InspectOutputFormat, Parameter(name="format", help="Output format: json.")
+    ],
 ) -> None:
     """List vault paths for roots, indexes, notes, or all scoped Markdown files."""
-    emit(inspect_paths(scope=scope, kind=kind, output_format=output_format, cwd=Path.cwd()))
+    emit(
+        inspect_paths(
+            scope=scope, kind=kind, output_format=output_format, cwd=Path.cwd()
+        )
+    )
 
 
 def inspect_tree_command(
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
+    scope: Annotated[
+        SearchScope, Parameter(help="Scope to inspect: project, global, or both.")
+    ],
     depth: Annotated[
         int,
-        Parameter(help="Number of Markdown-link levels to traverse from each scoped root."),
+        Parameter(
+            help="Number of Markdown-link levels to traverse from each scoped root."
+        ),
     ],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[
+        InspectOutputFormat, Parameter(name="format", help="Output format: json.")
+    ],
 ) -> None:
     """Traverse the memory graph from the scoped root indexes."""
-    emit(inspect_tree(scope=scope, depth=depth, output_format=output_format, cwd=Path.cwd()))
+    emit(
+        inspect_tree(
+            scope=scope, depth=depth, output_format=output_format, cwd=Path.cwd()
+        )
+    )
 
 
 def inspect_links_command(
-    key: Annotated[str | None, Parameter(help="Memory key to inspect. Omit only with --broken.")] = None,
+    key: Annotated[
+        str | None, Parameter(help="Memory key to inspect. Omit only with --broken.")
+    ] = None,
     *,
-    broken: Annotated[bool, Parameter(help="Report broken wikilinks across the selected scope.")] = False,
-    scope: Annotated[SearchScope, Parameter(help="Scope for --broken: project, global, or both.")] = SearchScope.BOTH,
+    broken: Annotated[
+        bool, Parameter(help="Report broken wikilinks across the selected scope.")
+    ] = False,
+    scope: Annotated[
+        SearchScope, Parameter(help="Scope for --broken: project, global, or both.")
+    ] = SearchScope.BOTH,
     direction: Annotated[
         InspectLinkDirection,
         Parameter(help="Link direction: children, parents, or both."),
     ] = InspectLinkDirection.BOTH,
     depth: Annotated[int, Parameter(help="Number of graph levels to traverse.")] = 1,
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
+    output_format: Annotated[
+        InspectOutputFormat, Parameter(name="format", help="Output format: json.")
+    ] = InspectOutputFormat.JSON,
 ) -> int | None:
     """Show graph neighbors for a memory key."""
     if broken:
-        assert key is None, "inspect links --broken is vault-scoped and does not accept a memory key"
-        payload = inspect_broken_links(scope=scope, output_format=output_format, cwd=Path.cwd())
+        assert key is None, (
+            "inspect links --broken is vault-scoped and does not accept a memory key"
+        )
+        payload = inspect_broken_links(
+            scope=scope, output_format=output_format, cwd=Path.cwd()
+        )
         emit(payload)
         broken_links = payload["broken_links"]
         assert isinstance(broken_links, list), "broken link report must contain a list"
@@ -410,7 +530,9 @@ def inspect_links_command(
 
 
 def links_rewrite_command(
-    from_target: Annotated[str | None, Parameter(name="from", help="Existing wikilink target key.")] = None,
+    from_target: Annotated[
+        str | None, Parameter(name="from", help="Existing wikilink target key.")
+    ] = None,
     to_target: Annotated[
         str | None,
         Parameter(name="to", help="New wikilink target key or external URL."),
@@ -434,7 +556,9 @@ def links_rewrite_command(
 def inspect_outline_command(
     key: Annotated[str, Parameter(help="Memory key to outline.")],
     *,
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[
+        InspectOutputFormat, Parameter(name="format", help="Output format: json.")
+    ],
 ) -> None:
     """Extract Markdown headings for a memory key."""
     emit(inspect_outline(key=key, output_format=output_format, cwd=Path.cwd()))
@@ -442,42 +566,73 @@ def inspect_outline_command(
 
 def inspect_stats_command(
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
-    group: Annotated[InspectStatsGroup, Parameter(name="by", help="Grouping: type, scope, or day.")],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    scope: Annotated[
+        SearchScope, Parameter(help="Scope to inspect: project, global, or both.")
+    ],
+    group: Annotated[
+        InspectStatsGroup, Parameter(name="by", help="Grouping: type, scope, or day.")
+    ],
+    output_format: Annotated[
+        InspectOutputFormat, Parameter(name="format", help="Output format: json.")
+    ],
 ) -> None:
     """Count memories by type, scope, or day."""
-    emit(inspect_stats(scope=scope, group=group, output_format=output_format, cwd=Path.cwd()))
+    emit(
+        inspect_stats(
+            scope=scope, group=group, output_format=output_format, cwd=Path.cwd()
+        )
+    )
 
 
 def inspect_recent_command(
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
+    scope: Annotated[
+        SearchScope, Parameter(help="Scope to inspect: project, global, or both.")
+    ],
     since: Annotated[
         str,
-        Parameter(help="ISO timestamp lower bound, for example 2026-06-13T00:00:00+00:00."),
+        Parameter(
+            help="ISO timestamp lower bound, for example 2026-06-13T00:00:00+00:00."
+        ),
     ],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[
+        InspectOutputFormat, Parameter(name="format", help="Output format: json.")
+    ],
 ) -> None:
     """List memories created after a timestamp."""
-    emit(inspect_recent(scope=scope, since=since, output_format=output_format, cwd=Path.cwd()))
+    emit(
+        inspect_recent(
+            scope=scope, since=since, output_format=output_format, cwd=Path.cwd()
+        )
+    )
 
 
 def inspect_export_command(
     *,
-    scope: Annotated[SearchScope, Parameter(help="Scope to export: project, global, or both.")],
+    scope: Annotated[
+        SearchScope, Parameter(help="Scope to export: project, global, or both.")
+    ],
     profile: Annotated[
         InspectExportProfile,
         Parameter(help="Export profile: map, context, or archive."),
     ],
-    output_format: Annotated[InspectExportFormat, Parameter(name="format", help="Output format: graph-json.")],
+    output_format: Annotated[
+        InspectExportFormat, Parameter(name="format", help="Output format: graph-json.")
+    ],
 ) -> None:
     """Export the scoped memory graph for external analysis."""
-    emit(inspect_export(scope=scope, profile=profile, output_format=output_format, cwd=Path.cwd()))
+    emit(
+        inspect_export(
+            scope=scope, profile=profile, output_format=output_format, cwd=Path.cwd()
+        )
+    )
 
 
 def retrieve_command(
-    key: Annotated[str, Parameter(help="Full vault-relative key to retrieve (memory or plan card).")],
+    key: Annotated[
+        str,
+        Parameter(help="Full vault-relative key to retrieve (memory or plan card)."),
+    ],
 ) -> None:
     """Retrieve one vault note by full key."""
     print(retrieve_memory(key=key, cwd=Path.cwd()), end="")
@@ -495,7 +650,9 @@ def maintain_squash_command(
 def maintain_move_command(
     key: Annotated[str, Parameter(help="Memory key to move.")],
     *,
-    destination: Annotated[str, Parameter(name="to", help="Destination scope path, such as global/traps.")],
+    destination: Annotated[
+        str, Parameter(name="to", help="Destination scope path, such as global/traps.")
+    ],
 ) -> None:
     """Move a memory into a maintenance destination."""
     emit(move_memory(key=key, destination=destination, cwd=Path.cwd()))
@@ -526,9 +683,22 @@ def doctor_command() -> None:
 
 def list_command(
     *,
-    type_: Annotated[str, Parameter(name="type", help="Card or memory type to list, e.g. plan, decision, feature, task.")],
-    scope: Annotated[SearchScope, Parameter(help="Scope to list: project, global, or both.")] = SearchScope.BOTH,
-    unmigrated: Annotated[bool, Parameter(help="Include records stranded outside managed global/project folders.")] = False,
+    type_: Annotated[
+        str,
+        Parameter(
+            name="type",
+            help="Card or memory type to list, e.g. plan, decision, feature, task.",
+        ),
+    ],
+    scope: Annotated[
+        SearchScope, Parameter(help="Scope to list: project, global, or both.")
+    ] = SearchScope.BOTH,
+    unmigrated: Annotated[
+        bool,
+        Parameter(
+            help="Include records stranded outside managed global/project folders."
+        ),
+    ] = False,
 ) -> None:
     """List managed cards/memories and optionally stranded harness-local records."""
     if unmigrated:
@@ -544,15 +714,24 @@ def resolve_card_body(card_id: str, body: str | None, body_file: Path | None) ->
         try:
             return body_file.read_text(encoding="utf-8")
         except OSError as e:
-            raise CliUsageError(f"Cannot read --body-file {body_file}: {e.strerror}") from e
+            raise CliUsageError(
+                f"Cannot read --body-file {body_file}: {e.strerror}"
+            ) from e
     return body if body is not None else f"# {card_id}\n"
 
 
 def card_add_command(
-    type_name: Annotated[str, Parameter(name="type", help="Card type from the active card schema.")],
-    card_id: Annotated[str, Parameter(name="id", help="Card id; prefix must match the declared card type.")],
+    type_name: Annotated[
+        str, Parameter(name="type", help="Card type from the active card schema.")
+    ],
+    card_id: Annotated[
+        str,
+        Parameter(name="id", help="Card id; prefix must match the declared card type."),
+    ],
     *,
-    parent: Annotated[str | None, Parameter(help="Parent card id for non-root cards.")] = None,
+    parent: Annotated[
+        str | None, Parameter(help="Parent card id for non-root cards.")
+    ] = None,
     set_: Annotated[
         list[str] | None,
         Parameter(
@@ -562,9 +741,18 @@ def card_add_command(
             allow_leading_hyphen=True,
         ),
     ] = None,
-    empty_set: Annotated[list[str] | None, Parameter(name="empty-set", help="Fields to initialize as empty lists.")] = None,
+    empty_set: Annotated[
+        list[str] | None,
+        Parameter(name="empty-set", help="Fields to initialize as empty lists."),
+    ] = None,
     body: Annotated[str | None, Parameter(help="Markdown body for the card.")] = None,
-    body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing markdown body for the card.")] = None,
+    body_file: Annotated[
+        Path | None,
+        Parameter(
+            name="body-file",
+            help="Path to a file containing markdown body for the card.",
+        ),
+    ] = None,
 ) -> None:
     """Add a schema-defined card to the project vault."""
     emit(
@@ -597,12 +785,16 @@ def card_update_command(
     emit(update_card_record(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
 
 
-def card_delete_command(card_id: Annotated[str, Parameter(name="id", help="Card id to delete.")]) -> None:
+def card_delete_command(
+    card_id: Annotated[str, Parameter(name="id", help="Card id to delete.")],
+) -> None:
     """Delete a schema-defined card."""
     emit(delete_card_record(card_id=card_id, cwd=Path.cwd()))
 
 
-def card_show_command(card_id: Annotated[str, Parameter(name="id", help="Card id to show.")]) -> None:
+def card_show_command(
+    card_id: Annotated[str, Parameter(name="id", help="Card id to show.")],
+) -> None:
     """Show one schema-defined card."""
     emit(show_card(card_id=card_id, cwd=Path.cwd()))
 
@@ -618,7 +810,12 @@ def card_dag_command() -> None:
 
 
 def card_migrate_command(
-    source: Annotated[Path, Parameter(name="from", help="In-repo plans directory to ingest, e.g. .agents/plans.")],
+    source: Annotated[
+        Path,
+        Parameter(
+            name="from", help="In-repo plans directory to ingest, e.g. .agents/plans."
+        ),
+    ],
 ) -> None:
     """Migrate an in-repo card tree into the project vault."""
     emit(migrate_cards(source=source.expanduser(), cwd=Path.cwd()))
@@ -626,9 +823,17 @@ def card_migrate_command(
 
 def generated_card_add_command(card_type: CardTypeSpec) -> Callable[..., None]:
     def add_for_type(
-        card_id: Annotated[str, Parameter(name="id", help="Card id; prefix must match this generated card command.")],
+        card_id: Annotated[
+            str,
+            Parameter(
+                name="id",
+                help="Card id; prefix must match this generated card command.",
+            ),
+        ],
         *,
-        parent: Annotated[str | None, Parameter(help="Parent card id for non-root cards.")] = None,
+        parent: Annotated[
+            str | None, Parameter(help="Parent card id for non-root cards.")
+        ] = None,
         set_: Annotated[
             list[str] | None,
             Parameter(
@@ -638,9 +843,20 @@ def generated_card_add_command(card_type: CardTypeSpec) -> Callable[..., None]:
                 allow_leading_hyphen=True,
             ),
         ] = None,
-        empty_set: Annotated[list[str] | None, Parameter(name="empty-set", help="Fields to initialize as empty lists.")] = None,
-        body: Annotated[str | None, Parameter(help="Markdown body for the card.")] = None,
-        body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing markdown body for the card.")] = None,
+        empty_set: Annotated[
+            list[str] | None,
+            Parameter(name="empty-set", help="Fields to initialize as empty lists."),
+        ] = None,
+        body: Annotated[
+            str | None, Parameter(help="Markdown body for the card.")
+        ] = None,
+        body_file: Annotated[
+            Path | None,
+            Parameter(
+                name="body-file",
+                help="Path to a file containing markdown body for the card.",
+            ),
+        ] = None,
     ) -> None:
         emit(
             add_card(
@@ -672,14 +888,18 @@ def generated_card_update_command(card_type: CardTypeSpec) -> Callable[..., None
             ),
         ] = None,
     ) -> None:
-        emit(update_card_record(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
+        emit(
+            update_card_record(card_id=card_id, assignments=set_ or [], cwd=Path.cwd())
+        )
 
     update_for_type.__name__ = f"{card_type.name}_update_command"
     return update_for_type
 
 
 def generated_card_delete_command(card_type: CardTypeSpec) -> Callable[..., None]:
-    def delete_for_type(card_id: Annotated[str, Parameter(name="id", help="Card id to delete.")]) -> None:
+    def delete_for_type(
+        card_id: Annotated[str, Parameter(name="id", help="Card id to delete.")],
+    ) -> None:
         emit(delete_card_record(card_id=card_id, cwd=Path.cwd()))
 
     delete_for_type.__name__ = f"{card_type.name}_delete_command"
@@ -687,7 +907,9 @@ def generated_card_delete_command(card_type: CardTypeSpec) -> Callable[..., None
 
 
 def generated_card_show_command(card_type: CardTypeSpec) -> Callable[..., None]:
-    def show_for_type(card_id: Annotated[str, Parameter(name="id", help="Card id to show.")]) -> None:
+    def show_for_type(
+        card_id: Annotated[str, Parameter(name="id", help="Card id to show.")],
+    ) -> None:
         emit(show_card(card_id=card_id, cwd=Path.cwd()))
 
     show_for_type.__name__ = f"{card_type.name}_show_command"
@@ -705,7 +927,9 @@ def sync_status_command() -> None:
 
 
 def sync_install_command(
-    interval_seconds: Annotated[int, Parameter(name="seconds", help="Timer interval in positive seconds.")],
+    interval_seconds: Annotated[
+        int, Parameter(name="seconds", help="Timer interval in positive seconds.")
+    ],
 ) -> None:
     """Install user systemd service and timer files for vault synchronization."""
     emit(install_sync_systemd_timer(cwd=Path.cwd(), interval_seconds=interval_seconds))
@@ -780,7 +1004,9 @@ def register_commands(registration_state: CardConfigRegistrationState) -> None:
         "recent": inspect_recent_command,
         "export": inspect_export_command,
     }
-    assert tuple(inspect_commands) == INSPECT_COMMAND_NAMES, "inspect command registry must match the canonical schema order"
+    assert tuple(inspect_commands) == INSPECT_COMMAND_NAMES, (
+        "inspect command registry must match the canonical schema order"
+    )
     for name in INSPECT_COMMAND_NAMES:
         inspect_app.command(inspect_commands[name], name=name)
     app.command(retrieve_command, name="retrieve")
@@ -811,8 +1037,15 @@ def register_generated_card_type_commands(config: CardSystemConfig) -> None:
     for card_type in config.card_types:
         if card_type.name == QUEUE_CARD_TYPE:
             continue
-        assert card_type.name not in ROOT_COMMAND_NAMES, f"card type collides with root CLI command: {card_type.name}"
-        type_app = app.command(App(name=card_type.name, help=f"{card_type.name} cards from the active card schema."))
+        assert card_type.name not in ROOT_COMMAND_NAMES, (
+            f"card type collides with root CLI command: {card_type.name}"
+        )
+        type_app = app.command(
+            App(
+                name=card_type.name,
+                help=f"{card_type.name} cards from the active card schema.",
+            )
+        )
         add_command_for_type = generated_card_add_command(card_type)
         add_command_for_type.__doc__ = card_type_add_help_text(config, card_type)
         type_app.command(add_command_for_type, name="add")
@@ -825,7 +1058,9 @@ def register_generated_card_type_commands(config: CardSystemConfig) -> None:
             type_app.command(card_migrate_command, name="migrate")
 
 
-def field_help(config: CardSystemConfig, card_type_name: str, field_name: str, field_type: str) -> str:
+def field_help(
+    config: CardSystemConfig, card_type_name: str, field_name: str, field_type: str
+) -> str:
     if field_type == "status":
         card_type = next(ct for ct in config.card_types if ct.name == card_type_name)
         options = config.status_sets[card_type.status_set].options
@@ -844,7 +1079,11 @@ def card_add_help_text(config: CardSystemConfig) -> str:
     doc.append("")
     doc.append("Required fields per card type:")
     for card_type in config.card_types:
-        required_fields = [field_help(config, card_type.name, field.name, field.type) for field in card_type.fields if field.required]
+        required_fields = [
+            field_help(config, card_type.name, field.name, field.type)
+            for field in card_type.fields
+            if field.required
+        ]
         doc.append(f"  - {card_type.name}: {', '.join(required_fields)}")
     return "\n".join(doc)
 
@@ -858,7 +1097,11 @@ def card_type_add_help_text(config: CardSystemConfig, card_type: CardTypeSpec) -
         "",
         "Required --set fields:",
     ]
-    required_fields = [field_help(config, card_type.name, field.name, field.type) for field in card_type.fields if field.required and field.name != "id"]
+    required_fields = [
+        field_help(config, card_type.name, field.name, field.type)
+        for field in card_type.fields
+        if field.required and field.name != "id"
+    ]
     doc.append(f"  {', '.join(required_fields)}")
     return "\n".join(doc)
 
@@ -866,7 +1109,9 @@ def card_type_add_help_text(config: CardSystemConfig, card_type: CardTypeSpec) -
 try:
     active_config = active_card_config()
 except CardConfigError as error:
-    CARD_CONFIG_REGISTRATION_STATE: CardConfigRegistrationState = CardConfigUnavailable(error)
+    CARD_CONFIG_REGISTRATION_STATE: CardConfigRegistrationState = CardConfigUnavailable(
+        error
+    )
 else:
     CARD_CONFIG_REGISTRATION_STATE = CardConfigAvailable(active_config)
     card_add_command.__doc__ = card_add_help_text(active_config)
@@ -879,14 +1124,25 @@ def emit(payload: Mapping[str, JsonValue]) -> None:
 
 
 def add_command_scope_hint(arguments: list[str]) -> str | None:
-    if arguments and arguments[0] == "add" and "--type" in arguments and "--scope" not in arguments:
+    if (
+        arguments
+        and arguments[0] == "add"
+        and "--type" in arguments
+        and "--scope" not in arguments
+    ):
         return "Unknown option: --type. Did you mean --scope?"
     return None
 
 
-def missing_argument_message(error: cyclopts.exceptions.MissingArgumentError, arguments: list[str]) -> str:
+def missing_argument_message(
+    error: cyclopts.exceptions.MissingArgumentError, arguments: list[str]
+) -> str:
     message = str(error)
-    if len(arguments) >= 2 and arguments[:2] == ["search", "content"] and "--mode" not in arguments:
+    if (
+        len(arguments) >= 2
+        and arguments[:2] == ["search", "content"]
+        and "--mode" not in arguments
+    ):
         return f"{message} Missing required option: --mode (exact, fuzzy, or ranked)."
     return message
 
@@ -902,7 +1158,9 @@ def main() -> None:
     if scope_hint is not None:
         print(f"Error: {scope_hint}", file=sys.stderr)
         raise SystemExit(1)
-    if isinstance(CARD_CONFIG_REGISTRATION_STATE, CardConfigUnavailable) and command_requires_card_schema(sys.argv[1:]):
+    if isinstance(
+        CARD_CONFIG_REGISTRATION_STATE, CardConfigUnavailable
+    ) and command_requires_card_schema(sys.argv[1:]):
         print(f"Error: {CARD_CONFIG_REGISTRATION_STATE.error}", file=sys.stderr)
         raise SystemExit(1)
 

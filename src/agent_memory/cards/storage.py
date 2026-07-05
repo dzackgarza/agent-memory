@@ -17,24 +17,38 @@ class CardLookupError(ValueError):
 
 
 def card_type_for_id(config: CardSystemConfig, card_id: str) -> CardTypeSpec:
-    matches = [card_type for card_type in config.card_types if card_id.startswith(f"{card_type.id_prefix}-")]
+    matches = [
+        card_type
+        for card_type in config.card_types
+        if card_id.startswith(f"{card_type.id_prefix}-")
+    ]
     if not matches:
-        known_prefixes = ", ".join(card_type.id_prefix for card_type in config.card_types)
-        raise CardLookupError(f"no card type matches id prefix: {card_id} (known prefixes: {known_prefixes})")
+        known_prefixes = ", ".join(
+            card_type.id_prefix for card_type in config.card_types
+        )
+        raise CardLookupError(
+            f"no card type matches id prefix: {card_id} (known prefixes: {known_prefixes})"
+        )
     return max(matches, key=lambda card_type: len(card_type.id_prefix))
 
 
 def find_card_path(plans_root: Path, card_id: str) -> Path:
     assert plans_root.is_dir(), f"plans root does not exist: {plans_root}"
     matches = sorted(plans_root.rglob(f"{card_id}.md"))
-    assert len(matches) == 1, f"expected exactly one card file for {card_id}, found {len(matches)}"
+    assert len(matches) == 1, (
+        f"expected exactly one card file for {card_id}, found {len(matches)}"
+    )
     return matches[0]
 
 
-def card_file_path(plans_root: Path, card_type: CardTypeSpec, card_id: str, parent_id: str | None) -> Path:
+def card_file_path(
+    plans_root: Path, card_type: CardTypeSpec, card_id: str, parent_id: str | None
+) -> Path:
     if parent_id is None:
         if card_type.parents:
-            raise CardPlacementError(f"card type {card_type.name} requires --parent for filesystem placement")
+            raise CardPlacementError(
+                f"card type {card_type.name} requires --parent for filesystem placement"
+            )
         parent_dir = plans_root
         if card_type.container and card_type.container != plans_root.name:
             base = parent_dir / card_type.container
@@ -55,7 +69,9 @@ def render_card(metadata: dict[str, object], body: str) -> str:
 def split_card(text: str) -> tuple[dict[str, object], str]:
     lines = text.splitlines(keepends=True)
     assert lines and lines[0].strip() == "---", "card must start with frontmatter"
-    closing = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+    closing = next(
+        index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"
+    )
     metadata = yaml.safe_load("".join(lines[1:closing]))
     assert isinstance(metadata, dict), "card frontmatter must be a mapping"
     return metadata, "".join(lines[closing + 1 :])
@@ -72,14 +88,21 @@ def create_card(
     fields: dict[str, object],
     body: str,
 ) -> Path:
-    card_type = next((candidate for candidate in config.card_types if candidate.name == type_name), None)
+    card_type = next(
+        (candidate for candidate in config.card_types if candidate.name == type_name),
+        None,
+    )
     assert card_type is not None, f"unknown card type: {type_name}"
-    assert card_id.startswith(f"{card_type.id_prefix}-"), f"id {card_id} must start with {card_type.id_prefix}-"
+    assert card_id.startswith(f"{card_type.id_prefix}-"), (
+        f"id {card_id} must start with {card_type.id_prefix}-"
+    )
     validated = models[type_name].model_validate({**fields, "id": card_id})
     path = card_file_path(plans_root, card_type, card_id, parent_id)
     assert not path.exists(), f"card already exists: {path}"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_card(validated.model_dump(exclude_unset=True), body), encoding="utf-8")
+    path.write_text(
+        render_card(validated.model_dump(exclude_unset=True), body), encoding="utf-8"
+    )
     return path
 
 
@@ -89,7 +112,9 @@ def read_card(
     models: dict[str, type[BaseModel]],
     card_id: str,
 ) -> BaseModel:
-    metadata, _body = split_card(find_card_path(plans_root, card_id).read_text(encoding="utf-8"))
+    metadata, _body = split_card(
+        find_card_path(plans_root, card_id).read_text(encoding="utf-8")
+    )
     return models[card_type_for_id(config, card_id).name].model_validate(metadata)
 
 
@@ -102,8 +127,12 @@ def update_card(
 ) -> Path:
     path = find_card_path(plans_root, card_id)
     metadata, body = split_card(path.read_text(encoding="utf-8"))
-    validated = models[card_type_for_id(config, card_id).name].model_validate({**metadata, **updates})
-    path.write_text(render_card(validated.model_dump(exclude_unset=True), body), encoding="utf-8")
+    validated = models[card_type_for_id(config, card_id).name].model_validate(
+        {**metadata, **updates}
+    )
+    path.write_text(
+        render_card(validated.model_dump(exclude_unset=True), body), encoding="utf-8"
+    )
     return path
 
 

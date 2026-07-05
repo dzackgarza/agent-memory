@@ -40,7 +40,10 @@ def _numeric_field(field: FieldSpec) -> tuple[Any, Any]:
     # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is
     # False; required fields compile to a bare Field() and fail loud if missing.
     # ast-grep-ignore: no-field-default
-    return (scalar_number | None, Field(default=field.default, ge=field.min, le=field.max))
+    return (
+        scalar_number | None,
+        Field(default=field.default, ge=field.min, le=field.max),
+    )
 
 
 def _list_field(field: FieldSpec) -> tuple[Any, Any]:
@@ -61,7 +64,10 @@ def _scalar_field(field: FieldSpec) -> tuple[Any, Any]:
 
 
 def _object_list_field(field: FieldSpec, status_set: StatusSetSpec) -> tuple[Any, Any]:
-    item_definitions: dict[str, Any] = {nested.name: field_definition(nested, status_set) for nested in field.item_schema}
+    item_definitions: dict[str, Any] = {
+        nested.name: field_definition(nested, status_set)
+        for nested in field.item_schema
+    }
     item_model = create_model(
         f"{field.name[:1].upper()}{field.name[1:]}Item",
         __config__=ConfigDict(extra="forbid"),
@@ -94,7 +100,10 @@ def build_card_models(config: CardSystemConfig) -> dict[str, type[BaseModel]]:
     models: dict[str, type[BaseModel]] = {}
     for card_type in config.card_types:
         status_set = config.status_sets[card_type.status_set]
-        definitions: dict[str, Any] = {field.name: field_definition(field, status_set) for field in card_type.fields}
+        definitions: dict[str, Any] = {
+            field.name: field_definition(field, status_set)
+            for field in card_type.fields
+        }
         models[card_type.name] = create_model(
             f"{card_type.name.capitalize()}Card",
             __config__=ConfigDict(extra="forbid"),

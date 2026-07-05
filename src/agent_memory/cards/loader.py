@@ -34,25 +34,35 @@ def _load_cards_payload(path: Traversable) -> dict:
     return payload
 
 
-def load_card_system_config(vault: Path | None = None, project_id: str | None = None) -> CardSystemConfig:
+def load_card_system_config(
+    vault: Path | None = None, project_id: str | None = None
+) -> CardSystemConfig:
     if vault is not None:
         candidates = [vault / "_meta" / _CARDS_SCHEMA_PATH]
         if project_id is not None:
-            candidates.insert(0, vault / "projects" / project_id / "_meta" / _CARDS_SCHEMA_PATH)
+            candidates.insert(
+                0, vault / "projects" / project_id / "_meta" / _CARDS_SCHEMA_PATH
+            )
         for candidate in candidates:
             if candidate.is_file():
                 payload = _load_cards_payload(candidate)
                 try:
                     return CardSystemConfig.model_validate(payload)
                 except ValidationError as error:
-                    raise CardConfigError(candidate, f"schema validation failed: {error}") from error
+                    raise CardConfigError(
+                        candidate, f"schema validation failed: {error}"
+                    ) from error
 
-    default_schema = resources.files("agent_memory.defaults").joinpath(_CARDS_SCHEMA_PATH)
+    default_schema = resources.files("agent_memory.defaults").joinpath(
+        _CARDS_SCHEMA_PATH
+    )
     payload = _load_cards_payload(default_schema)
     try:
         return CardSystemConfig.model_validate(payload)
     except ValidationError as error:
-        raise CardConfigError(default_schema, f"schema validation failed: {error}") from error
+        raise CardConfigError(
+            default_schema, f"schema validation failed: {error}"
+        ) from error
 
 
 def load_card_models() -> dict[str, type[BaseModel]]:

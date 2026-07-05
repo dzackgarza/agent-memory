@@ -4,7 +4,11 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from agent_memory.cards import CardSystemConfig, build_card_models, load_card_system_config
+from agent_memory.cards import (
+    CardSystemConfig,
+    build_card_models,
+    load_card_system_config,
+)
 from agent_memory.cards.dag import render_dag
 from agent_memory.cards.storage import create_card, update_card
 from agent_memory.cards.validation import load_card_records
@@ -15,9 +19,21 @@ def models_and_config() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
     return config, build_card_models(config)
 
 
-def seed_feature_chain(root: Path, suffix: str, config: CardSystemConfig, models: dict[str, type[BaseModel]]) -> None:
+def seed_feature_chain(
+    root: Path,
+    suffix: str,
+    config: CardSystemConfig,
+    models: dict[str, type[BaseModel]],
+) -> None:
     create_card(
-        root, config, models, type_name="feature", card_id=f"FEATURE-{suffix}", parent_id=None, fields={"title": "F", "status": "in-progress", "description": "d"}, body="# F\n"
+        root,
+        config,
+        models,
+        type_name="feature",
+        card_id=f"FEATURE-{suffix}",
+        parent_id=None,
+        fields={"title": "F", "status": "in-progress", "description": "d"},
+        body="# F\n",
     )
     create_card(
         root,
@@ -43,7 +59,13 @@ def seed_feature_chain(root: Path, suffix: str, config: CardSystemConfig, models
         type_name="phase",
         card_id=f"PHASE-{suffix}",
         parent_id=f"PLAN-{suffix}",
-        fields={"title": "PH", "status": "in-progress", "description": "d", "parents": [f"[[PLAN-{suffix}]]"], "successCriteria": ["c"]},
+        fields={
+            "title": "PH",
+            "status": "in-progress",
+            "description": "d",
+            "parents": [f"[[PLAN-{suffix}]]"],
+            "successCriteria": ["c"],
+        },
         body="# PH\n",
     )
     create_card(
@@ -53,7 +75,13 @@ def seed_feature_chain(root: Path, suffix: str, config: CardSystemConfig, models
         type_name="task",
         card_id=f"TASK-{suffix}",
         parent_id=f"PHASE-{suffix}",
-        fields={"title": "T", "status": "in-progress", "description": "d", "parents": [f"[[PHASE-{suffix}]]"], "successCriteria": ["c"]},
+        fields={
+            "title": "T",
+            "status": "in-progress",
+            "description": "d",
+            "parents": [f"[[PHASE-{suffix}]]"],
+            "successCriteria": ["c"],
+        },
         body="# T\n",
     )
 
@@ -82,7 +110,13 @@ def test_dag_omits_edges_to_nonexistent_targets(tmp_path: Path) -> None:
     root = tmp_path / "p" / "plans"
     seed_feature_chain(root, "ONE", config, models)
     update_card(root, config, models, "TASK-ONE", {"dependsOn": ["[[TASK-GHOST]]"]})
-    update_card(root, config, models, "PHASE-ONE", {"parents": ["[[PLAN-ONE]]", "[[PLAN-GHOST]]"]})
+    update_card(
+        root,
+        config,
+        models,
+        "PHASE-ONE",
+        {"parents": ["[[PLAN-ONE]]", "[[PLAN-GHOST]]"]},
+    )
     dag = render_dag(load_card_records([root], config, models))
     assert "TASK-GHOST" not in dag
     assert "PLAN-GHOST" not in dag

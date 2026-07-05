@@ -68,14 +68,20 @@ def assert_okf_fields(metadata: Mapping[str, MetadataValue]) -> None:
 
 
 def test_reconcile_okf_frontmatter_preserves_embedded_okf_fields() -> None:
-    reconciled = reconcile_okf_frontmatter(Path("legacy-plan.md"), PRIMARY_COLLAPSED_HEADER, [OKF_VALUES])
+    reconciled = reconcile_okf_frontmatter(
+        Path("legacy-plan.md"), PRIMARY_COLLAPSED_HEADER, [OKF_VALUES]
+    )
 
     assert_okf_fields(reconciled)
 
 
-def test_extract_embedded_frontmatter_blocks_removes_only_duplicate_block(tmp_path: Path) -> None:
+def test_extract_embedded_frontmatter_blocks_removes_only_duplicate_block(
+    tmp_path: Path,
+) -> None:
     document = read_memory_from_text(tmp_path, double_frontmatter_note())
-    cleaned_body, extras = extract_embedded_frontmatter_blocks(Path("legacy-plan.md"), document.body)
+    cleaned_body, extras = extract_embedded_frontmatter_blocks(
+        Path("legacy-plan.md"), document.body
+    )
 
     assert extras == [OKF_VALUES]
     assert "This body should survive normalization." in cleaned_body
@@ -83,7 +89,9 @@ def test_extract_embedded_frontmatter_blocks_removes_only_duplicate_block(tmp_pa
     assert "project_id:" not in cleaned_body
 
 
-def test_reconcile_memory_file_writes_single_canonical_okf_header(tmp_path: Path) -> None:
+def test_reconcile_memory_file_writes_single_canonical_okf_header(
+    tmp_path: Path,
+) -> None:
     note_path = tmp_path / "legacy-plan.md"
     note_path.write_text(double_frontmatter_note(), encoding="utf-8")
 
@@ -95,9 +103,13 @@ def test_reconcile_memory_file_writes_single_canonical_okf_header(tmp_path: Path
     assert "This body should survive normalization." in document.body
 
 
-def test_reconcile_memory_file_fails_loudly_without_rewriting_conflicts(tmp_path: Path) -> None:
+def test_reconcile_memory_file_fails_loudly_without_rewriting_conflicts(
+    tmp_path: Path,
+) -> None:
     note_path = tmp_path / "conflicting-plan.md"
-    original = double_frontmatter_note({**OKF_VALUES, "scope": "global"}, primary={"scope": "project"})
+    original = double_frontmatter_note(
+        {**OKF_VALUES, "scope": "global"}, primary={"scope": "project"}
+    )
     note_path.write_text(original, encoding="utf-8")
 
     with pytest.raises(MalformedMemoryError, match="conflicting values for scope"):
@@ -106,12 +118,17 @@ def test_reconcile_memory_file_fails_loudly_without_rewriting_conflicts(tmp_path
     assert note_path.read_text(encoding="utf-8") == original
 
 
-def test_reconcile_memory_file_fails_loudly_on_unknown_extra_key(tmp_path: Path) -> None:
+def test_reconcile_memory_file_fails_loudly_on_unknown_extra_key(
+    tmp_path: Path,
+) -> None:
     note_path = tmp_path / "unknown-extra.md"
     original = double_frontmatter_note({**OKF_VALUES, "legacy_status": "active"})
     note_path.write_text(original, encoding="utf-8")
 
-    with pytest.raises(MalformedMemoryError, match="unreconcilable extra frontmatter key: legacy_status"):
+    with pytest.raises(
+        MalformedMemoryError,
+        match="unreconcilable extra frontmatter key: legacy_status",
+    ):
         reconcile_memory_file(note_path)
 
     assert note_path.read_text(encoding="utf-8") == original
