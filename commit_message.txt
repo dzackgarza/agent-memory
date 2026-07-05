@@ -1,0 +1,6 @@
+Preserve non-canonical frontmatter fields during memory transition/update
+
+Fixes #55
+Fixes #56
+
+This PR ensures that operations like `agent-memory update` or standard memory transitions maintain metadata accuracy by extending rather than wiping unknown/nested frontmatter schema boundaries, successfully closing the loss behavior noted in #55 and #56, which are tracked in the urgent ledger #57.
