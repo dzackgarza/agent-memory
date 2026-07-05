@@ -2186,12 +2186,10 @@ def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path
 
 def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    test_src = tmp_path / "src"
-    shutil.copytree(PROJECT_ROOT / "src", test_src)
-    cards_yaml = test_src / "agent_memory" / "defaults" / "cards.yaml"
+    cards_yaml = workspace.vault / "_meta" / "cards.yaml"
     cards_yaml.write_text("statuses: [unterminated\n", encoding="utf-8")
 
-    result = run_agent_memory_subprocess(workspace.repo, "plan", "validate", pythonpath=test_src)
+    result = run_agent_memory_subprocess(workspace.repo, "plan", "validate")
 
     stderr = assert_structured_cli_error(result)
     assert str(cards_yaml) in stderr
