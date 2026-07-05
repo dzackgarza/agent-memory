@@ -652,9 +652,14 @@ def memory_transition(
     new_type = memory_type if memory_type is not None else old_type
     body = updated_memory_body(document.body, new_title, content)
     description = okf_description(content if content is not None else body)
+    old_tags = document.metadata.get("tags", [])
+    extra_tags = old_tags[2:] if isinstance(old_tags, list) and len(old_tags) >= 2 else ()
     metadata = {
         **document.metadata,
-        **note_metadata(config, scope, new_type, new_title, description),
+        "type": new_type.value,
+        "title": new_title,
+        "description": description,
+        "tags": okf_tags(scope, new_type, tuple(str(x) for x in extra_tags)),
     }
     destination_path = memory_directory(config, scope, new_type) / f"{memory_slug(new_title)}.md"
     return MemoryTransition(

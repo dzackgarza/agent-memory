@@ -918,7 +918,7 @@ def main() -> None:
     except ValidationError as e:
         msgs = []
         for err in e.errors():
-            loc = ".".join(str(l) for l in err["loc"])
+            loc = ".".join(str(item) for item in err["loc"])
             msgs.append(f"Field '{loc}': {err['msg']} (input: {err['input']})")
         print("Error: Validation failed:\n" + "\n".join(msgs), file=sys.stderr)
         raise SystemExit(1)
