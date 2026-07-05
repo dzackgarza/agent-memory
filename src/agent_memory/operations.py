@@ -659,6 +659,7 @@ def memory_transition(
         "type": updated_metadata["type"],
         "title": updated_metadata["title"],
         "description": updated_metadata["description"],
+        "timestamp": updated_metadata.get("timestamp", okf_timestamp()),
     }
 
     # Reconcile OKF tags to preserve extra non-canonical tags
