@@ -4198,8 +4198,64 @@ def test_plan_progress_card_frontier_and_recent_completions(tmp_path: Path) -> N
     completed_ids = {json_object(r)["id"] for r in recent}
     assert "TASK-FRONT" in completed_ids
     frontier = json_array(card["frontier"])
-    frontier_ids = {json_object(f) if isinstance(f, dict) else f for f in frontier}
+    frontier_ids = {json_object(f)["id"] for f in frontier}
     assert "TASK-FRONT" not in frontier_ids
+
+
+def test_plan_progress_frontier_excludes_unstarted_under_unstarted_parent(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-CONTT",
+        plan_id="PLAN-CONTT",
+        phase_id="PHASE-CONTT",
+        task_id="TASK-CONTT",
+        feature_title="Containment Test Feature",
+        plan_title="Containment Test Plan",
+        description_signal="conttest",
+    )
+    run_agent_memory(workspace.repo, "feature", "update", "FEATURE-CONTT", "--set", "status=unstarted")
+    run_agent_memory(workspace.repo, "plan", "update", "PLAN-CONTT", "--set", "status=approved-and-unstarted")
+    run_agent_memory(workspace.repo, "phase", "update", "PHASE-CONTT", "--set", "status=unstarted")
+    run_agent_memory(workspace.repo, "task", "update", "TASK-CONTT", "--set", "status=unstarted")
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    card = json_object(progress["card_progress"])
+    frontier = json_array(card["frontier"])
+    frontier_ids = {json_object(f)["id"] for f in frontier}
+    assert "TASK-CONTT" not in frontier_ids
+    assert "PHASE-CONTT" not in frontier_ids
+    assert "PLAN-CONTT" not in frontier_ids
+    assert "FEATURE-CONTT" in frontier_ids
+
+
+def test_plan_progress_frontier_includes_unstarted_under_started_parent(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-ACTIVE",
+        plan_id="PLAN-ACTIVE",
+        phase_id="PHASE-ACTIVE",
+        task_id="TASK-ACTIVE-1",
+        feature_title="Active Feature",
+        plan_title="Active Plan",
+        description_signal="active",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "task", "add", "TASK-ACTIVE-2",
+        "--parent", "PHASE-ACTIVE",
+        "--set", "title=Second Task",
+        "--set", "status=unstarted",
+        "--set", "description=unstarted task under active phase",
+        "--set", "parents=[[PHASE-ACTIVE]]",
+        "--set", "successCriteria=task ships",
+        "--set", "tags=FEATURE-ACTIVE",
+    )
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    card = json_object(progress["card_progress"])
+    frontier = json_array(card["frontier"])
+    frontier_ids = {json_object(f)["id"] for f in frontier}
+    assert "TASK-ACTIVE-2" in frontier_ids
 
 
 def test_unbound_doctor_includes_unmigrated_cards(tmp_path: Path) -> None:

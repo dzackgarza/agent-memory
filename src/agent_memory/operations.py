@@ -33,7 +33,7 @@ from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
 from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, split_card
 from agent_memory.cards.storage import update_card as write_card_updates
-from agent_memory.cards.validation import CardRecord, StatusRoles, card_status, children_by_parent, depends_targets, load_card_records, status_roles, validate_cards
+from agent_memory.cards.validation import CardRecord, StatusRoles, card_status, children_by_parent, depends_targets, load_card_records, parent_ids, status_roles, validate_cards
 from agent_memory.models import (
     BaseNoteMetadata,
     GlobalNoteMetadata,
@@ -933,14 +933,24 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
     features = sorted(cid for cid in card_records if card_records[cid].type_name == "feature")
     feature_rollups: list[JsonObject] = [_card_rollup(fid, card_records, children, roles, card_config) for fid in features]
 
-    frontier: list[str] = []
+    frontier: list[JsonObject] = []
     for card_id in sorted(card_records):
         record = card_records[card_id]
         status = card_status(record)
-        if status in roles.unstarted:
-            blockers = [t for t in depends_targets(record, card_records) if card_status(card_records[t]) not in roles.complete]
-            if not blockers:
-                frontier.append(card_id)
+        if status not in roles.unstarted:
+            continue
+        dep_blockers = [t for t in depends_targets(record, card_records) if card_status(card_records[t]) not in roles.complete]
+        if dep_blockers:
+            continue
+        containment_parents = parent_ids(record)
+        parent_blocked = False
+        for pid in containment_parents:
+            if pid in card_records and card_status(card_records[pid]) in roles.unstarted:
+                parent_blocked = True
+                break
+        if parent_blocked:
+            continue
+        frontier.append({"id": card_id, "type": record.type_name, "status": status})
 
     recent_completions: list[JsonObject] = []
     for card_id in sorted(card_records):
