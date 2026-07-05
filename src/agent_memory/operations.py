@@ -33,7 +33,7 @@ from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
 from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, split_card
 from agent_memory.cards.storage import update_card as write_card_updates
-from agent_memory.cards.validation import CardRecord, load_card_records, validate_cards
+from agent_memory.cards.validation import CardRecord, load_card_records, status_roles, validate_cards
 from agent_memory.models import (
     BaseNoteMetadata,
     GlobalNoteMetadata,
@@ -848,6 +848,81 @@ def todo_mapping(value: MetadataValue, path: Path) -> dict[str, MetadataValue]:
     return value
 
 
+def flatten_todo_statuses(todos: list[MetadataValue], path: Path) -> list[str]:
+    statuses: list[str] = []
+    for item in todos:
+        todo = todo_mapping(item, path)
+        status = todo.get("status")
+        if isinstance(status, str):
+            statuses.append(status)
+        for child_key in PLAN_TODO_CHILD_KEYS:
+            children = todo.get(child_key)
+            if isinstance(children, list):
+                statuses.extend(flatten_todo_statuses(children, path))
+    return statuses
+
+
+def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
+    config = config_for_search_scope(scope, cwd)
+    card_config, _models = load_card_system(config_for_schema_advertisement(cwd))
+    records = managed_card_listings(config, scope)
+    plan_records = [r for r in records if r.card_type == "plan"]
+    if not plan_records:
+        return {
+            "scope": scope.value,
+            "plan_count": 0,
+            "plans": [],
+            "total_todos": 0,
+            "todos_by_status": {},
+            "completion_pct": 0.0,
+        }
+    roles = status_roles(card_config)
+    complete_statuses = roles.complete if roles else frozenset({"complete", "decided", "implemented", "done"})
+    plan_summaries: list[JsonObject] = []
+    total_todos = 0
+    total_complete = 0
+    global_status_counts: Counter[str] = Counter()
+    for record in plan_records:
+        document = read_memory(record.path)
+        todos_value = document.metadata.get("todos")
+        if not isinstance(todos_value, list):
+            plan_summaries.append({
+                "key": record.key,
+                "title": record.title,
+                "has_todo_tree": False,
+                "todo_count": 0,
+                "complete_count": 0,
+                "completion_pct": 0.0,
+            })
+            continue
+        statuses = flatten_todo_statuses(todos_value, record.path)
+        status_counts = Counter(statuses)
+        todo_count = len(statuses)
+        complete_count = sum(status_counts.get(s, 0) for s in complete_statuses)
+        pct = round(100.0 * complete_count / todo_count, 1) if todo_count > 0 else 0.0
+        total_todos += todo_count
+        total_complete += complete_count
+        global_status_counts.update(status_counts)
+        plan_summaries.append({
+            "key": record.key,
+            "title": record.title,
+            "has_todo_tree": True,
+            "todo_count": todo_count,
+            "complete_count": complete_count,
+            "todos_by_status": dict(status_counts),
+            "completion_pct": pct,
+        })
+    overall_pct = round(100.0 * total_complete / total_todos, 1) if total_todos > 0 else 0.0
+    return {
+        "scope": scope.value,
+        "plan_count": len(plan_records),
+        "plans": json_list(plan_summaries),
+        "total_todos": total_todos,
+        "todos_by_status": dict(global_status_counts),
+        "completion_pct": overall_pct,
+    }
+
+
 def raw_memory_body(path: Path) -> str:
     raw = path.read_text(encoding="utf-8")
     parts = raw.split("---\n", 2)
@@ -1541,6 +1616,7 @@ def unbound_doctor(basic: JsonObject) -> JsonObject:
         "project_root": None,
         "project_bound": False,
         "agent_state": [],
+        "unmigrated_cards": json_list([card_listing_json(record) for record in unmigrated_card_listings(config, SearchScope.GLOBAL)]),
         "auto_sync": sync_auto_status(),
         "last_sync": sync_state(),
         "tools": basic["tools"],
@@ -2606,7 +2682,8 @@ def is_internal_vault_path(path: Path) -> bool:
 
 
 def is_managed_card_path(config: ProjectConfig, path: Path) -> bool:
-    for scope in (MemoryScope.GLOBAL, MemoryScope.PROJECT):
+    scopes = (MemoryScope.GLOBAL, MemoryScope.PROJECT) if config.project_id is not None else (MemoryScope.GLOBAL,)
+    for scope in scopes:
         for memory_type in MemoryType:
             directory = memory_directory(config, scope, memory_type)
             if path.is_relative_to(directory):
@@ -2682,7 +2759,7 @@ def card_scope_for_path(config: ProjectConfig, path: Path, metadata: Mapping[str
     scope = metadata.get("scope")
     if isinstance(scope, str) and scope in (MemoryScope.PROJECT.value, MemoryScope.GLOBAL.value):
         return MemoryScope(scope)
-    if path.is_relative_to(scope_root(config, MemoryScope.PROJECT)):
+    if config.project_id is not None and path.is_relative_to(scope_root(config, MemoryScope.PROJECT)):
         return MemoryScope.PROJECT
     return MemoryScope.GLOBAL
 

@@ -71,6 +71,7 @@ from agent_memory.operations import (
     merge_memory,
     migrate_cards,
     move_memory,
+    plan_progress,
     remove_sync_systemd_timer,
     retrieve_memory,
     rewrite_wikilinks,
@@ -537,6 +538,14 @@ def list_command(
     emit(list_cards(card_type=type_, scope=scope, cwd=Path.cwd()))
 
 
+def plan_progress_command(
+    *,
+    scope: Annotated[SearchScope, Parameter(help="Scope to report: project, global, or both.")] = SearchScope.BOTH,
+) -> None:
+    """Summarize plan todo progress across the scoped vault."""
+    emit(plan_progress(scope=scope, cwd=Path.cwd()))
+
+
 def resolve_card_body(card_id: str, body: str | None, body_file: Path | None) -> str:
     if body is not None and body_file is not None:
         raise CliUsageError("Cannot specify both --body and --body-file")
@@ -823,6 +832,7 @@ def register_generated_card_type_commands(config: CardSystemConfig) -> None:
             type_app.command(card_validate_command, name="validate")
             type_app.command(card_dag_command, name="dag")
             type_app.command(card_migrate_command, name="migrate")
+            type_app.command(plan_progress_command, name="progress")
 
 
 def field_help(config: CardSystemConfig, card_type_name: str, field_name: str, field_type: str) -> str:

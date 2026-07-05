@@ -4087,3 +4087,91 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     assert listed["type"] == "plan"
     assert listed["scope"] == "both"
     assert json_array(listed["results"]) == []
+
+
+def test_plan_progress_reports_empty_when_no_plans(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    assert progress["plan_count"] == 0
+    assert progress["total_todos"] == 0
+    assert progress["completion_pct"] == 0.0
+    assert json_array(progress["plans"]) == []
+
+
+def test_plan_progress_reports_todo_summary(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    card_plan_key = add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-PROG",
+        plan_id="PLAN-PROG",
+        phase_id="PHASE-PROG",
+        task_id="TASK-PROG",
+        feature_title="Progress Feature",
+        plan_title="Progress Plan",
+        description_signal="progress",
+    )
+    legacy_plan_key, _plan_path = write_legacy_plan_with_todos(workspace, slug="prog-plan")
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    assert progress["plan_count"] == 2
+    assert progress["total_todos"] == 3
+    assert progress["completion_pct"] == 0.0
+    plans_by_key = {json_string(p["key"]): p for p in json_records(progress, "plans")}
+    card_plan = plans_by_key[card_plan_key]
+    assert card_plan["has_todo_tree"] is False
+    assert card_plan["todo_count"] == 0
+    legacy_plan = plans_by_key[legacy_plan_key]
+    assert legacy_plan["has_todo_tree"] is True
+    assert legacy_plan["todo_count"] == 3
+    assert legacy_plan["complete_count"] == 0
+
+
+def test_plan_progress_counts_complete_todos(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plan_key, _plan_path = write_legacy_plan_with_todos(workspace, slug="done-plan")
+    run_agent_memory(workspace.repo, "todo", "set", plan_key, "--todo-id", "T2", "--status", "complete")
+    run_agent_memory(workspace.repo, "todo", "set", plan_key, "--todo-id", "T1", "--status", "in-progress")
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    assert progress["total_todos"] == 3
+    plans_by_key = {json_string(p["key"]): p for p in json_records(progress, "plans")}
+    plan = plans_by_key[plan_key]
+    assert plan["complete_count"] == 1
+    assert plan["todos_by_status"]["complete"] == 1
+    assert plan["todos_by_status"]["in-progress"] == 1
+    assert plan["todos_by_status"]["unstarted"] == 1
+    assert round(float(plan["completion_pct"]), 1) == 33.3
+
+
+def test_unbound_doctor_includes_unmigrated_cards(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    harness_dir = vault / "harnesses" / "codex" / "memories" / "extensions" / "ad_hoc" / "notes"
+    harness_dir.mkdir(parents=True, exist_ok=True)
+    harness_plan = harness_dir / "global-stranded.md"
+    harness_plan.write_text(
+        "---\n"
+        "type: plan\n"
+        "title: Global Stranded Plan\n"
+        "description: A plan in harness area\n"
+        "tags:\n  - global\n  - plan\n"
+        "timestamp: 2026-07-05T00:00:00Z\n"
+        "scope: global\n"
+        "source: agent\n"
+        "confidence: high\n"
+        "promotable: false\n"
+        "---\n"
+        "# Global Stranded Plan\n\nStranded body.\n",
+        encoding="utf-8",
+    )
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+    doctor = parse_json_stdout(run_agent_memory_subprocess(loose, "doctor", env=env))
+    assert "unmigrated_cards" in doctor
+    unmigrated = json_array(doctor["unmigrated_cards"])
+    assert len(unmigrated) == 1
+    record = json_object(unmigrated[0])
+    assert record["managed"] is False
+    assert record["type"] == "plan"
+    assert record["scope"] == "global"
+    assert record["suggested_destination"] == "global/plans"
