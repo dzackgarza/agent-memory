@@ -652,17 +652,24 @@ def memory_transition(
     new_type = memory_type if memory_type is not None else old_type
     body = updated_memory_body(document.body, new_title, content)
     description = okf_description(content if content is not None else body)
-    old_tags = document.metadata.get("tags", [])
-    extra_tags = old_tags if isinstance(old_tags, list) else ()
-    new_tags_raw = okf_tags(scope, new_type, tuple(str(x) for x in extra_tags if x not in {scope.value, new_type.value, "plan"}))
-    new_tags: list[MetadataValue] = [tag for tag in new_tags_raw]
-    metadata: dict[str, MetadataValue] = {
+
+    updated_metadata = note_metadata(config, scope, new_type, new_title, description)
+    metadata = {
         **document.metadata,
-        "type": new_type.value,
-        "title": new_title,
-        "description": description,
-        "tags": new_tags,
+        "type": updated_metadata["type"],
+        "title": updated_metadata["title"],
+        "description": updated_metadata["description"],
     }
+
+    # Reconcile OKF tags to preserve extra non-canonical tags
+    raw_tags = document.metadata.get("tags", [])
+    old_tags = raw_tags if isinstance(raw_tags, list) else []
+    old_scope = str(document.metadata.get("scope", "project"))
+    old_type_str = str(document.metadata.get("type", "decision"))
+    extra_tags = [t for t in old_tags if t not in {old_scope, old_type_str}]
+
+    new_tags_raw = okf_tags(scope, new_type, tuple(str(x) for x in extra_tags))
+    metadata["tags"] = [x for x in new_tags_raw]
     destination_path = memory_directory(config, scope, new_type) / f"{memory_slug(new_title)}.md"
     return MemoryTransition(
         old_key=key,
@@ -2171,8 +2178,7 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
 
 
 def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int | None]:
-    if not index_path.is_file():
-        return [], None
+    assert index_path.is_file(), "index must exist before editing a link"
     # IWE rewrites the OKF bullet marker to "-" when it renames linked notes, so an
     # entry may start with either bullet. This is the single owner of that contract.
     link_prefixes = (f"* [{title}](", f"- [{title}](")
@@ -2188,8 +2194,9 @@ def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int | No
 def replace_index_link(index_path: Path, existing_title: str, new_title: str, target: str, description: str) -> None:
     lines, entry_start = locate_index_link(index_path, existing_title)
     if entry_start is None:
-        return
-    lines[entry_start] = okf_index_entry(new_title, target, description)
+        lines.append(okf_index_entry(new_title, target, description))
+    else:
+        lines[entry_start] = okf_index_entry(new_title, target, description)
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
