@@ -4144,6 +4144,126 @@ def test_plan_progress_reports_structured_card_dag(tmp_path: Path) -> None:
     assert task["child_count"] == 0
 
 
+def test_plan_progress_structured_card_dag_full_rollup(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-ALPHA",
+        plan_id="PLAN-ALPHA",
+        phase_id="PHASE-ALPHA",
+        task_id="TASK-A1",
+        feature_title="Alpha Feature",
+        plan_title="Alpha Plan",
+        description_signal="alpha",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "task", "add", "TASK-A2",
+        "--parent", "PHASE-ALPHA",
+        "--set", "title=Alpha Task 2",
+        "--set", "status=complete",
+        "--set", "description=alpha task 2",
+        "--set", "parents=[[PHASE-ALPHA]]",
+        "--set", "successCriteria=done",
+        "--set", "tags=FEATURE-ALPHA",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "task", "add", "TASK-A3",
+        "--parent", "PHASE-ALPHA",
+        "--set", "title=Alpha Task 3",
+        "--set", "status=blocked",
+        "--set", "description=alpha task 3",
+        "--set", "parents=[[PHASE-ALPHA]]",
+        "--set", "successCriteria=done",
+        "--set", "tags=FEATURE-ALPHA",
+    )
+    add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-BETA",
+        plan_id="PLAN-BETA",
+        phase_id="PHASE-BETA",
+        task_id="TASK-B1",
+        feature_title="Beta Feature",
+        plan_title="Beta Plan",
+        description_signal="beta",
+    )
+    run_agent_memory(workspace.repo, "feature", "update", "FEATURE-BETA", "--set", "status=unstarted")
+    run_agent_memory(workspace.repo, "plan", "update", "PLAN-BETA", "--set", "status=approved-and-unstarted")
+    run_agent_memory(workspace.repo, "phase", "update", "PHASE-BETA", "--set", "status=unstarted")
+    run_agent_memory(workspace.repo, "task", "update", "TASK-B1", "--set", "status=unstarted")
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    card = json_object(progress["card_progress"])
+
+    assert card["total_cards"] == 10
+    by_type = json_object(card["by_type"])
+    assert by_type["feature"] == 2
+    assert by_type["plan"] == 2
+    assert by_type["phase"] == 2
+    assert by_type["task"] == 4
+
+    by_type_status = json_object(card["by_type_status"])
+    task_status = json_object(by_type_status["task"])
+    assert task_status["complete"] == 1
+    assert task_status["in-progress"] == 1
+    assert task_status["blocked"] == 1
+    assert task_status["unstarted"] == 1
+
+    features = json_array(card["features"])
+    assert len(features) == 2
+    feat_map = {json_object(f)["id"]: json_object(f) for f in features}
+
+    alpha = feat_map["FEATURE-ALPHA"]
+    assert alpha["is_started"] is True
+    assert alpha["child_count"] == 1
+    assert alpha["children_complete"] == 0
+    assert alpha["children_started"] == 1
+    alpha_plans = json_array(alpha["children"])
+    assert len(alpha_plans) == 1
+    alpha_plan = json_object(alpha_plans[0])
+    assert alpha_plan["id"] == "PLAN-ALPHA"
+    assert alpha_plan["is_started"] is True
+    assert alpha_plan["child_count"] == 1
+    alpha_phases = json_array(alpha_plan["children"])
+    assert len(alpha_phases) == 1
+    alpha_phase = json_object(alpha_phases[0])
+    assert alpha_phase["id"] == "PHASE-ALPHA"
+    assert alpha_phase["child_count"] == 3
+    assert alpha_phase["children_complete"] == 1
+    assert alpha_phase["children_started"] == 3
+    assert round(float(alpha_phase["completion_pct"]), 1) == 33.3
+
+    beta = feat_map["FEATURE-BETA"]
+    assert beta["is_started"] is False
+    assert beta["child_count"] == 1
+    assert beta["children_complete"] == 0
+    assert beta["children_started"] == 0
+    beta_plans = json_array(beta["children"])
+    beta_plan = json_object(beta_plans[0])
+    assert beta_plan["is_started"] is False
+    beta_phases = json_array(beta_plan["children"])
+    beta_phase = json_object(beta_phases[0])
+    assert beta_phase["child_count"] == 1
+    assert beta_phase["children_complete"] == 0
+    assert beta_phase["children_started"] == 0
+    assert round(float(beta_phase["completion_pct"])) == 0
+
+    frontier = json_array(card["frontier"])
+    frontier_ids = {json_object(f)["id"] for f in frontier}
+    assert "FEATURE-BETA" in frontier_ids
+    assert "TASK-A1" not in frontier_ids
+    assert "TASK-A3" not in frontier_ids
+    assert "PLAN-BETA" not in frontier_ids
+    assert "PHASE-BETA" not in frontier_ids
+    assert "TASK-B1" not in frontier_ids
+
+    recent = json_array(card["recent_completions"])
+    recent_ids = {json_object(r)["id"] for r in recent}
+    assert "TASK-A2" in recent_ids
+
+    assert round(float(card["completion_pct"]), 1) == 10.0
+
+
 def test_plan_progress_reports_legacy_todo_progress(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     legacy_plan_key, _plan_path = write_legacy_plan_with_todos(workspace, slug="prog-plan")
