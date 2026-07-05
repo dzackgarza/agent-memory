@@ -4092,15 +4092,20 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
 def test_plan_progress_reports_empty_when_no_plans(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
-    assert progress["plan_count"] == 0
-    assert progress["total_todos"] == 0
-    assert progress["completion_pct"] == 0.0
-    assert json_array(progress["plans"]) == []
+    card = json_object(progress["card_progress"])
+    legacy = json_object(progress["legacy_todo_progress"])
+    assert card["total_cards"] == 0
+    assert json_array(card["features"]) == []
+    assert json_array(card["frontier"]) == []
+    assert json_array(card["recent_completions"]) == []
+    assert legacy["plan_count"] == 0
+    assert legacy["total_todos"] == 0
+    assert legacy["completion_pct"] == 0.0
 
 
-def test_plan_progress_reports_todo_summary(tmp_path: Path) -> None:
+def test_plan_progress_reports_structured_card_dag(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    card_plan_key = add_cli_plan_tree(
+    add_cli_plan_tree(
         workspace,
         feature_id="FEATURE-PROG",
         plan_id="PLAN-PROG",
@@ -4110,19 +4115,49 @@ def test_plan_progress_reports_todo_summary(tmp_path: Path) -> None:
         plan_title="Progress Plan",
         description_signal="progress",
     )
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    card = json_object(progress["card_progress"])
+    assert card["total_cards"] == 4
+    by_type = json_object(card["by_type"])
+    assert by_type["feature"] == 1
+    assert by_type["plan"] == 1
+    assert by_type["phase"] == 1
+    assert by_type["task"] == 1
+    features = json_array(card["features"])
+    assert len(features) == 1
+    feature = json_object(features[0])
+    assert feature["id"] == "FEATURE-PROG"
+    assert feature["is_started"] is True
+    feature_children = json_array(feature["children"])
+    assert len(feature_children) == 1
+    plan = json_object(feature_children[0])
+    assert plan["id"] == "PLAN-PROG"
+    plan_children = json_array(plan["children"])
+    assert len(plan_children) == 1
+    phase = json_object(plan_children[0])
+    assert phase["id"] == "PHASE-PROG"
+    phase_children = json_array(phase["children"])
+    assert len(phase_children) == 1
+    task = json_object(phase_children[0])
+    assert task["id"] == "TASK-PROG"
+    assert task["is_started"] is True
+    assert task["child_count"] == 0
+
+
+def test_plan_progress_reports_legacy_todo_progress(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
     legacy_plan_key, _plan_path = write_legacy_plan_with_todos(workspace, slug="prog-plan")
     progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
-    assert progress["plan_count"] == 2
-    assert progress["total_todos"] == 3
-    assert progress["completion_pct"] == 0.0
-    plans_by_key = {json_string(p["key"]): p for p in json_records(progress, "plans")}
-    card_plan = plans_by_key[card_plan_key]
-    assert card_plan["has_todo_tree"] is False
-    assert card_plan["todo_count"] == 0
-    legacy_plan = plans_by_key[legacy_plan_key]
-    assert legacy_plan["has_todo_tree"] is True
-    assert legacy_plan["todo_count"] == 3
-    assert legacy_plan["complete_count"] == 0
+    legacy = json_object(progress["legacy_todo_progress"])
+    assert legacy["plan_count"] == 1
+    assert legacy["total_todos"] == 3
+    assert legacy["completion_pct"] == 0.0
+    plans = json_array(legacy["plans"])
+    assert len(plans) == 1
+    plan = json_object(plans[0])
+    assert plan["has_todo_tree"] is True
+    assert plan["todo_count"] == 3
+    assert plan["complete_count"] == 0
 
 
 def test_plan_progress_counts_complete_todos(tmp_path: Path) -> None:
@@ -4131,14 +4166,40 @@ def test_plan_progress_counts_complete_todos(tmp_path: Path) -> None:
     run_agent_memory(workspace.repo, "todo", "set", plan_key, "--todo-id", "T2", "--status", "complete")
     run_agent_memory(workspace.repo, "todo", "set", plan_key, "--todo-id", "T1", "--status", "in-progress")
     progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
-    assert progress["total_todos"] == 3
-    plans_by_key = {json_string(p["key"]): p for p in json_records(progress, "plans")}
-    plan = plans_by_key[plan_key]
+    legacy = json_object(progress["legacy_todo_progress"])
+    assert legacy["total_todos"] == 3
+    plans = json_array(legacy["plans"])
+    plan = json_object(plans[0])
     assert plan["complete_count"] == 1
-    assert plan["todos_by_status"]["complete"] == 1
-    assert plan["todos_by_status"]["in-progress"] == 1
-    assert plan["todos_by_status"]["unstarted"] == 1
+    todos_by_status = json_object(plan["todos_by_status"])
+    assert todos_by_status["complete"] == 1
+    assert todos_by_status["in-progress"] == 1
+    assert todos_by_status["unstarted"] == 1
     assert round(float(plan["completion_pct"]), 1) == 33.3
+
+
+def test_plan_progress_card_frontier_and_recent_completions(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-FRONT",
+        plan_id="PLAN-FRONT",
+        phase_id="PHASE-FRONT",
+        task_id="TASK-FRONT",
+        feature_title="Frontier Feature",
+        plan_title="Frontier Plan",
+        description_signal="frontier",
+    )
+    run_agent_memory(workspace.repo, "task", "update", "TASK-FRONT", "--set", "status=complete")
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    card = json_object(progress["card_progress"])
+    recent = json_array(card["recent_completions"])
+    assert len(recent) >= 1
+    completed_ids = {json_object(r)["id"] for r in recent}
+    assert "TASK-FRONT" in completed_ids
+    frontier = json_array(card["frontier"])
+    frontier_ids = {json_object(f) if isinstance(f, dict) else f for f in frontier}
+    assert "TASK-FRONT" not in frontier_ids
 
 
 def test_unbound_doctor_includes_unmigrated_cards(tmp_path: Path) -> None:
@@ -4175,3 +4236,40 @@ def test_unbound_doctor_includes_unmigrated_cards(tmp_path: Path) -> None:
     assert record["type"] == "plan"
     assert record["scope"] == "global"
     assert record["suggested_destination"] == "global/plans"
+
+
+def test_unbound_doctor_handles_project_scoped_stranded_card(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    harness_dir = vault / "harnesses" / "codex" / "memories" / "extensions" / "ad_hoc" / "notes"
+    harness_dir.mkdir(parents=True, exist_ok=True)
+    harness_plan = harness_dir / "project-stranded.md"
+    harness_plan.write_text(
+        "---\n"
+        "type: plan\n"
+        "title: Project Stranded Plan\n"
+        "description: A plan with project scope in harness area\n"
+        "tags:\n  - project\n  - plan\n"
+        "timestamp: 2026-07-05T00:00:00Z\n"
+        "scope: project\n"
+        "source: agent\n"
+        "confidence: high\n"
+        "promotable: false\n"
+        "project_id: github.com__some__project\n"
+        "---\n"
+        "# Project Stranded Plan\n\nStranded project body.\n",
+        encoding="utf-8",
+    )
+    env = agent_memory_env()
+    env["AGENT_MEMORY_VAULT"] = str(vault)
+    doctor = parse_json_stdout(run_agent_memory_subprocess(loose, "doctor", env=env))
+    assert "unmigrated_cards" in doctor
+    unmigrated = json_array(doctor["unmigrated_cards"])
+    assert len(unmigrated) == 1
+    record = json_object(unmigrated[0])
+    assert record["managed"] is False
+    assert record["type"] == "plan"
+    assert record["scope"] == "project"
+    assert record["suggested_destination"] == "projects/<unknown>/plans"

@@ -33,7 +33,7 @@ from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
 from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, split_card
 from agent_memory.cards.storage import update_card as write_card_updates
-from agent_memory.cards.validation import CardRecord, load_card_records, status_roles, validate_cards
+from agent_memory.cards.validation import CardRecord, StatusRoles, card_status, children_by_parent, depends_targets, load_card_records, status_roles, validate_cards
 from agent_memory.models import (
     BaseNoteMetadata,
     GlobalNoteMetadata,
@@ -862,64 +862,161 @@ def flatten_todo_statuses(todos: list[MetadataValue], path: Path) -> list[str]:
     return statuses
 
 
+def _card_timestamp(metadata: dict[str, object]) -> str:
+    ts = metadata.get("timestamp")
+    return ts if isinstance(ts, str) else ""
+
+
+def _card_rollup(
+    card_id: str,
+    records: dict[str, CardRecord],
+    children: dict[str, list[str]],
+    roles: StatusRoles,
+    card_config: CardSystemConfig,
+) -> JsonObject:
+    record = records[card_id]
+    status = card_status(record)
+    child_ids = children.get(card_id, [])
+    child_rollups: list[JsonObject] = [_card_rollup(child_id, records, children, roles, card_config) for child_id in child_ids]
+    child_statuses = [card_status(records[cid]) for cid in child_ids]
+    child_counts = Counter(child_statuses)
+    total_children = len(child_ids)
+    complete_children = sum(child_counts.get(s, 0) for s in roles.complete)
+    started_children = sum(child_counts.get(s, 0) for s in roles.started)
+    pct = round(100.0 * complete_children / total_children, 1) if total_children > 0 else (100.0 if status in roles.complete else 0.0)
+    title = record.metadata.get("title")
+    title_str = title if isinstance(title, str) else card_id
+    return {
+        "id": card_id,
+        "type": record.type_name,
+        "title": title_str,
+        "status": status,
+        "is_complete": status in roles.complete,
+        "is_started": status in roles.started,
+        "child_count": total_children,
+        "children_complete": complete_children,
+        "children_started": started_children,
+        "completion_pct": pct,
+        "children": json_list(child_rollups),
+    }
+
+
 def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
-    card_config, _models = load_card_system(config_for_schema_advertisement(cwd))
-    records = managed_card_listings(config, scope)
-    plan_records = [r for r in records if r.card_type == "plan"]
-    if not plan_records:
-        return {
-            "scope": scope.value,
-            "plan_count": 0,
-            "plans": [],
-            "total_todos": 0,
-            "todos_by_status": {},
-            "completion_pct": 0.0,
-        }
+    schema_advert_config = config_for_schema_advertisement(cwd)
+    card_config, models = load_card_system(schema_advert_config)
     roles = status_roles(card_config)
-    complete_statuses = roles.complete if roles else frozenset({"complete", "decided", "implemented", "done"})
-    plan_summaries: list[JsonObject] = []
-    total_todos = 0
-    total_complete = 0
-    global_status_counts: Counter[str] = Counter()
-    for record in plan_records:
-        document = read_memory(record.path)
+    if roles is None:
+        roles = StatusRoles(
+            started={"in-progress", "needs-agent-review", "needs-human-input", "revision-required", "complete", "blocked", "decided", "implemented", "handed-off", "done"},
+            complete={"complete", "decided", "implemented", "done"},
+            unstarted={"unstarted", "approved-and-unstarted"},
+        )
+
+    plans_roots = all_plans_roots(config, card_config) if config.project_id is not None else []
+    card_records: dict[str, CardRecord] = {}
+    if plans_roots:
+        try:
+            card_records = load_card_records(plans_roots, card_config, models)
+        except (AssertionError, FileNotFoundError, KeyError):
+            card_records = {}
+
+    by_type: Counter[str] = Counter()
+    by_type_status: dict[str, Counter[str]] = {}
+    for card_id in sorted(card_records):
+        record = card_records[card_id]
+        by_type[record.type_name] += 1
+        by_type_status.setdefault(record.type_name, Counter())[card_status(record)] += 1
+
+    children = children_by_parent(card_records) if card_records else {}
+
+    features = sorted(cid for cid in card_records if card_records[cid].type_name == "feature")
+    feature_rollups: list[JsonObject] = [_card_rollup(fid, card_records, children, roles, card_config) for fid in features]
+
+    frontier: list[str] = []
+    for card_id in sorted(card_records):
+        record = card_records[card_id]
+        status = card_status(record)
+        if status in roles.unstarted:
+            blockers = [t for t in depends_targets(record, card_records) if card_status(card_records[t]) not in roles.complete]
+            if not blockers:
+                frontier.append(card_id)
+
+    recent_completions: list[JsonObject] = []
+    for card_id in sorted(card_records):
+        record = card_records[card_id]
+        status = card_status(record)
+        if status in roles.complete:
+            title = record.metadata.get("title")
+            title_str = title if isinstance(title, str) else card_id
+            ts = _card_timestamp(record.metadata)
+            recent_completions.append({"id": card_id, "type": record.type_name, "title": title_str, "status": status, "timestamp": ts})
+    recent_completions.sort(key=lambda r: str(r.get("timestamp", "")), reverse=True)
+    recent_completions = recent_completions[:10]
+
+    total_cards = sum(by_type.values())
+    total_complete = sum(
+        by_type_status.get(tn, Counter()).get(s, 0)
+        for tn in by_type
+        for s in roles.complete
+    )
+    overall_pct = round(100.0 * total_complete / total_cards, 1) if total_cards > 0 else 0.0
+
+    legacy_listings = managed_card_listings(config, scope)
+    legacy_plans = [r for r in legacy_listings if r.card_type == "plan"]
+    legacy_summaries: list[JsonObject] = []
+    legacy_total_todos = 0
+    legacy_total_complete = 0
+    legacy_status_counts: Counter[str] = Counter()
+    for listing in legacy_plans:
+        document = read_memory(listing.path)
         todos_value = document.metadata.get("todos")
         if not isinstance(todos_value, list):
-            plan_summaries.append({
-                "key": record.key,
-                "title": record.title,
+            legacy_summaries.append({
+                "key": listing.key,
+                "title": listing.title,
                 "has_todo_tree": False,
                 "todo_count": 0,
                 "complete_count": 0,
                 "completion_pct": 0.0,
             })
             continue
-        statuses = flatten_todo_statuses(todos_value, record.path)
-        status_counts = Counter(statuses)
+        statuses = flatten_todo_statuses(todos_value, listing.path)
+        sc = Counter(statuses)
         todo_count = len(statuses)
-        complete_count = sum(status_counts.get(s, 0) for s in complete_statuses)
+        complete_count = sum(sc.get(s, 0) for s in roles.complete)
         pct = round(100.0 * complete_count / todo_count, 1) if todo_count > 0 else 0.0
-        total_todos += todo_count
-        total_complete += complete_count
-        global_status_counts.update(status_counts)
-        plan_summaries.append({
-            "key": record.key,
-            "title": record.title,
+        legacy_total_todos += todo_count
+        legacy_total_complete += complete_count
+        legacy_status_counts.update(sc)
+        legacy_summaries.append({
+            "key": listing.key,
+            "title": listing.title,
             "has_todo_tree": True,
             "todo_count": todo_count,
             "complete_count": complete_count,
-            "todos_by_status": dict(status_counts),
+            "todos_by_status": dict(sc),
             "completion_pct": pct,
         })
-    overall_pct = round(100.0 * total_complete / total_todos, 1) if total_todos > 0 else 0.0
+
     return {
         "scope": scope.value,
-        "plan_count": len(plan_records),
-        "plans": json_list(plan_summaries),
-        "total_todos": total_todos,
-        "todos_by_status": dict(global_status_counts),
-        "completion_pct": overall_pct,
+        "card_progress": {
+            "total_cards": total_cards,
+            "by_type": dict(by_type),
+            "by_type_status": {tn: dict(counter) for tn, counter in by_type_status.items()},
+            "completion_pct": overall_pct,
+            "features": json_list(feature_rollups),
+            "frontier": json_list(frontier),
+            "recent_completions": json_list(recent_completions),
+        },
+        "legacy_todo_progress": {
+            "plan_count": len(legacy_plans),
+            "plans": json_list(legacy_summaries),
+            "total_todos": legacy_total_todos,
+            "todos_by_status": dict(legacy_status_counts),
+            "completion_pct": round(100.0 * legacy_total_complete / legacy_total_todos, 1) if legacy_total_todos > 0 else 0.0,
+        },
     }
 
 
@@ -2771,7 +2868,9 @@ def suggested_card_destination(config: ProjectConfig, scope: MemoryScope, card_t
         directory = MEMORY_TYPE_DIRECTORIES[MemoryType.PLAN]
     if scope is MemoryScope.GLOBAL:
         return f"global/{directory}"
-    return f"projects/{require_project_id(config)}/{directory}"
+    if config.project_id is not None:
+        return f"projects/{config.project_id}/{directory}"
+    return f"projects/<unknown>/{directory}"
 
 
 def inspect_note_records(config: ProjectConfig, scope: SearchScope) -> tuple[NoteRecord, ...]:
