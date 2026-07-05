@@ -53,7 +53,8 @@ def just_value(name: str) -> str:
 
 ZK_VERSION = just_value("ZK_VERSION")
 ZK_ASSET = just_value("ZK_ASSET")
-ZK_BIN_DIR = Path(tempfile.mkdtemp(prefix="agent-memory-zk-"))
+ZK_TEMP_DIR = tempfile.TemporaryDirectory(prefix="agent-memory-zk-")
+ZK_BIN_DIR = Path(ZK_TEMP_DIR.name)
 
 
 def ensure_zk_binary() -> Path:
