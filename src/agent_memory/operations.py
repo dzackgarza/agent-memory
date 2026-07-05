@@ -2171,7 +2171,8 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
 
 
 def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int | None]:
-    assert index_path.is_file(), "index must exist before editing a link"
+    if not index_path.is_file():
+        return [], None
     # IWE rewrites the OKF bullet marker to "-" when it renames linked notes, so an
     # entry may start with either bullet. This is the single owner of that contract.
     link_prefixes = (f"* [{title}](", f"- [{title}](")
@@ -2187,9 +2188,8 @@ def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int | No
 def replace_index_link(index_path: Path, existing_title: str, new_title: str, target: str, description: str) -> None:
     lines, entry_start = locate_index_link(index_path, existing_title)
     if entry_start is None:
-        lines.append(okf_index_entry(new_title, target, description))
-    else:
-        lines[entry_start] = okf_index_entry(new_title, target, description)
+        return
+    lines[entry_start] = okf_index_entry(new_title, target, description)
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
