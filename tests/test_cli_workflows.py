@@ -7,6 +7,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
@@ -4098,6 +4099,7 @@ def test_plan_progress_reports_empty_when_no_plans(tmp_path: Path) -> None:
     assert json_array(card["features"]) == []
     assert json_array(card["frontier"]) == []
     assert json_array(card["recent_completions"]) == []
+    assert json_array(card["card_load_errors"]) == []
     assert legacy["plan_count"] == 0
     assert legacy["total_todos"] == 0
     assert legacy["completion_pct"] == 0.0
@@ -4449,3 +4451,124 @@ def test_unbound_doctor_handles_project_scoped_stranded_card(tmp_path: Path) -> 
     assert record["type"] == "plan"
     assert record["scope"] == "project"
     assert record["suggested_destination"] == "projects/<unknown>/plans"
+
+
+def test_plan_progress_scope_project_excludes_other_projects(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    project_a = initialized_git_repo_with_remote(tmp_path, "scope-proj-a", "scope-project-a")
+    project_b = initialized_git_repo_with_remote(tmp_path, "scope-proj-b", "scope-project-b")
+    run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
+    run_agent_memory(project_b.path, "init", "project", "--vault", str(vault))
+
+    add_cli_plan_tree(
+        CliWorkspace(repo=project_a.path, vault=vault, project_id=project_a.project_id),
+        feature_id="FEATURE-PROJ-A",
+        plan_id="PLAN-PROJ-A",
+        phase_id="PHASE-PROJ-A",
+        task_id="TASK-PROJ-A",
+        feature_title="Project A Feature",
+        plan_title="Project A Plan",
+        description_signal="proj-a",
+    )
+    add_cli_plan_tree(
+        CliWorkspace(repo=project_b.path, vault=vault, project_id=project_b.project_id),
+        feature_id="FEATURE-PROJ-B",
+        plan_id="PLAN-PROJ-B",
+        phase_id="PHASE-PROJ-B",
+        task_id="TASK-PROJ-B",
+        feature_title="Project B Feature",
+        plan_title="Project B Plan",
+        description_signal="proj-b",
+    )
+
+    progress_a = parse_json_stdout(run_agent_memory(project_a.path, "plan", "progress", "--scope", "project"))
+    card_a = json_object(progress_a["card_progress"])
+    assert card_a["total_cards"] == 4
+    by_type_a = json_object(card_a["by_type"])
+    assert by_type_a["feature"] == 1
+    features_a = json_array(card_a["features"])
+    assert len(features_a) == 1
+    assert json_object(features_a[0])["id"] == "FEATURE-PROJ-A"
+
+    progress_b = parse_json_stdout(run_agent_memory(project_b.path, "plan", "progress", "--scope", "project"))
+    card_b = json_object(progress_b["card_progress"])
+    assert card_b["total_cards"] == 4
+    by_type_b = json_object(card_b["by_type"])
+    assert by_type_b["feature"] == 1
+    features_b = json_array(card_b["features"])
+    assert len(features_b) == 1
+    assert json_object(features_b[0])["id"] == "FEATURE-PROJ-B"
+
+    progress_both = parse_json_stdout(run_agent_memory(project_a.path, "plan", "progress", "--scope", "both"))
+    card_both = json_object(progress_both["card_progress"])
+    assert card_both["total_cards"] == 8
+    features_both = json_array(card_both["features"])
+    assert len(features_both) == 2
+    both_ids = {json_object(f)["id"] for f in features_both}
+    assert both_ids == {"FEATURE-PROJ-A", "FEATURE-PROJ-B"}
+
+    progress_global = parse_json_stdout(run_agent_memory(project_a.path, "plan", "progress", "--scope", "global"))
+    card_global = json_object(progress_global["card_progress"])
+    assert card_global["total_cards"] == 0
+
+
+def test_plan_progress_reports_card_load_errors_for_malformed_graph(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plans_dir = workspace.vault / "projects" / workspace.project_id / "plans" / "features"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    bad_card = plans_dir / "FEATURE-BAD" / "FEATURE-BAD.md"
+    bad_card.parent.mkdir(parents=True, exist_ok=True)
+    bad_card.write_text(
+        "---\nid: FEATURE-MISMATCH\ntitle: Bad Card\nstatus: in-progress\n---\n# Bad Card\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Seed malformed card fixture"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    card = json_object(progress["card_progress"])
+    errors = json_array(card["card_load_errors"])
+    assert len(errors) >= 1
+    first_error = json_object(errors[0])
+    assert "error_type" in first_error
+    assert "error_message" in first_error
+    assert json_string(first_error["error_type"]) == "AssertionError"
+
+
+def test_plan_progress_recent_completions_ordering_by_mtime(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-ORDER",
+        plan_id="PLAN-ORDER",
+        phase_id="PHASE-ORDER",
+        task_id="TASK-ORDER-EARLY",
+        feature_title="Order Feature",
+        plan_title="Order Plan",
+        description_signal="order",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "task", "add", "TASK-ORDER-LATE",
+        "--parent", "PHASE-ORDER",
+        "--set", "title=Late Task",
+        "--set", "status=unstarted",
+        "--set", "description=completed later",
+        "--set", "parents=[[PHASE-ORDER]]",
+        "--set", "successCriteria=done",
+        "--set", "tags=FEATURE-ORDER",
+    )
+
+    run_agent_memory(workspace.repo, "task", "update", "TASK-ORDER-EARLY", "--set", "status=complete")
+    time.sleep(1.1)
+    run_agent_memory(workspace.repo, "task", "update", "TASK-ORDER-LATE", "--set", "status=complete")
+
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+    card = json_object(progress["card_progress"])
+    recent = json_array(card["recent_completions"])
+    assert len(recent) >= 2
+    recent_ids = [json_object(r)["id"] for r in recent]
+    late_index = recent_ids.index("TASK-ORDER-LATE")
+    early_index = recent_ids.index("TASK-ORDER-EARLY")
+    assert late_index < early_index, f"TASK-ORDER-LATE (completed later) should appear before TASK-ORDER-EARLY (completed earlier); got order: {recent_ids}"

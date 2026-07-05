@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import Enum
 from functools import cache
 from importlib import resources
@@ -867,6 +867,14 @@ def _card_timestamp(metadata: dict[str, object]) -> str:
     return ts if isinstance(ts, str) else ""
 
 
+def _card_mtime_iso(record: CardRecord) -> str:
+    try:
+        mtime = record.path.stat().st_mtime
+        return datetime.fromtimestamp(mtime, tz=UTC).isoformat()
+    except OSError:
+        return ""
+
+
 def _card_rollup(
     card_id: str,
     records: dict[str, CardRecord],
@@ -913,13 +921,22 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
             unstarted={"unstarted", "approved-and-unstarted"},
         )
 
-    plans_roots = all_plans_roots(config, card_config) if config.project_id is not None else []
+    if config.project_id is not None:
+        if scope is SearchScope.PROJECT:
+            plans_roots = [project_plans_root(config, card_config)]
+        elif scope is SearchScope.GLOBAL:
+            plans_roots = []
+        else:
+            plans_roots = all_plans_roots(config, card_config)
+    else:
+        plans_roots = []
     card_records: dict[str, CardRecord] = {}
+    card_load_errors: list[JsonObject] = []
     if plans_roots:
         try:
             card_records = load_card_records(plans_roots, card_config, models)
-        except (AssertionError, FileNotFoundError, KeyError):
-            card_records = {}
+        except (AssertionError, FileNotFoundError, KeyError) as exc:
+            card_load_errors.append({"error_type": type(exc).__name__, "error_message": str(exc)})
 
     by_type: Counter[str] = Counter()
     by_type_status: dict[str, Counter[str]] = {}
@@ -959,7 +976,7 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         if status in roles.complete:
             title = record.metadata.get("title")
             title_str = title if isinstance(title, str) else card_id
-            ts = _card_timestamp(record.metadata)
+            ts = _card_mtime_iso(record)
             recent_completions.append({"id": card_id, "type": record.type_name, "title": title_str, "status": status, "timestamp": ts})
     recent_completions.sort(key=lambda r: str(r.get("timestamp", "")), reverse=True)
     recent_completions = recent_completions[:10]
@@ -1019,6 +1036,7 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
             "features": json_list(feature_rollups),
             "frontier": json_list(frontier),
             "recent_completions": json_list(recent_completions),
+            "card_load_errors": json_list(card_load_errors),
         },
         "legacy_todo_progress": {
             "plan_count": len(legacy_plans),
