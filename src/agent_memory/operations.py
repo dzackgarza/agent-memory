@@ -473,6 +473,50 @@ def default_cards_schema_text() -> str:
     return resources.files("agent_memory.defaults").joinpath("cards.yaml").read_text(encoding="utf-8")
 
 
+def active_card_schema_path(config: ProjectConfig) -> Path:
+    project_id = require_project_id(config)
+    project_schema = config.vault / "projects" / project_id / "_meta" / "cards.yaml"
+    if project_schema.is_file():
+        return project_schema
+    return config.vault / "_meta" / "cards.yaml"
+
+
+def add_card_status_option(status_set_name: str, status: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    path = active_card_schema_path(config)
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise MemoryOperationError(f"card schema must contain a mapping: {path}")
+    statuses = payload.get("statuses")
+    if not isinstance(statuses, list) or status not in statuses:
+        raise MemoryOperationError(f"status {status!r} is not declared in the card schema catalog")
+    status_sets = payload.get("status_sets")
+    if not isinstance(status_sets, dict) or status_set_name not in status_sets:
+        raise MemoryOperationError(f"unknown card schema status set: {status_set_name}")
+    status_set = status_sets[status_set_name]
+    if not isinstance(status_set, dict) or not isinstance(status_set.get("options"), list):
+        raise MemoryOperationError(f"card schema status set {status_set_name!r} must declare an options list")
+    options = status_set["options"]
+    if status in options:
+        return {"changed": False, "path": str(path), "status": status, "status_set": status_set_name}
+
+    options.append(status)
+    CardSystemConfig.model_validate(payload)
+    rendered = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(rendered)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(path.stat().st_mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    commit_vault_changes(config.vault, f"Add {status!r} to card status set {status_set_name!r}", paths=[path])
+    return {"changed": True, "path": str(path), "status": status, "status_set": status_set_name}
+
+
 def init_global_vault(vault: Path) -> JsonObject:
     vault = normalize_vault_path(vault)
     vault.mkdir(parents=True)
