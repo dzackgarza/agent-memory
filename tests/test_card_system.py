@@ -110,6 +110,26 @@ def test_built_model_rejects_status_outside_declared_status_set() -> None:
         models["feature"].model_validate(card)
 
 
+def test_shipped_plan_status_set_accepts_canonical_unstarted() -> None:
+    config = load_card_system_config()
+    assert "unstarted" in config.status_sets["plan"].options
+
+    models = build_card_models(config)
+    validated = models["plan"].model_validate(
+        {
+            "id": "PLAN-X",
+            "parents": ["[[FEATURE-X]]"],
+            "title": "A plan",
+            "status": "unstarted",
+            "description": "A schema-valid plan.",
+            "successCriteria": ["The plan validates."],
+            "tasks": ["[[TASK-X]]"],
+        }
+    )
+
+    assert validated.model_dump()["status"] == "unstarted"
+
+
 def test_built_model_rejects_missing_required_field() -> None:
     models = build_card_models(CardSystemConfig.model_validate(CONFIG))
     card = valid_feature_card()
