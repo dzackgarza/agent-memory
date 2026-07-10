@@ -9,6 +9,7 @@ import sys
 import tempfile
 import tomllib
 from contextlib import redirect_stderr, redirect_stdout
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -2426,6 +2427,44 @@ card_types:
 
     clean = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
     assert json_array(clean["problems"]) == []
+
+
+def test_maintain_add_card_status_option_updates_only_named_status_set(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_path = workspace.vault / "_meta" / "cards.yaml"
+    payload = yaml.safe_load(cards_path.read_text(encoding="utf-8"))
+    payload["status_sets"]["plan"]["options"].remove("unstarted")
+    cards_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    before = yaml.safe_load(cards_path.read_text(encoding="utf-8"))
+
+    changed = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "add-card-status-option",
+            "plan",
+            "unstarted",
+        )
+    )
+
+    expected = deepcopy(before)
+    expected["status_sets"]["plan"]["options"].append("unstarted")
+    assert changed == {"changed": True, "path": str(cards_path), "status": "unstarted", "status_set": "plan"}
+    assert yaml.safe_load(cards_path.read_text(encoding="utf-8")) == expected
+    assert list(cards_path.parent.glob(f".{cards_path.name}.*.tmp")) == []
+
+    commit_count = len(git_commit_subjects(workspace.vault))
+    unchanged = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "add-card-status-option",
+            "plan",
+            "unstarted",
+        )
+    )
+    assert unchanged == {"changed": False, "path": str(cards_path), "status": "unstarted", "status_set": "plan"}
+    assert len(git_commit_subjects(workspace.vault)) == commit_count
 
 
 def test_inspect_schema_operation_uses_explicit_cwd_for_project_schema(tmp_path: Path) -> None:
