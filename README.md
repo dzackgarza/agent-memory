@@ -184,9 +184,7 @@ agent-memory maintain merge <key> --reference <other-key>
 agent-memory maintain squash <key> --depth 3
 ```
 
-The vault should be committed at all times.
-Treat staged or unstaged vault changes as an ephemeral error state.
-Use the bundled `vault-maintenance` skill for the sanctioned recovery path: checking vault state, repairing malformed or interrupted work, and committing validated vault changes.
+Run the bundled `vault-maintenance` skill only after an `agent-memory` command has a commit or validation failure, or when vault recovery is explicitly requested. A dirty worktree alone does not block normal path-scoped memory CRUD; preserve unrelated changes.
 
 ## Dependencies
 
