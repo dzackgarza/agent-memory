@@ -2214,8 +2214,13 @@ def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int | No
     md = MarkdownIt()
     tokens = md.parse(content)
     matching_indexes = []
+    list_item_depth = 0
     for token in tokens:
-        if token.type == "inline" and token.children:
+        if token.type == "list_item_open":
+            list_item_depth += 1
+        elif token.type == "list_item_close":
+            list_item_depth -= 1
+        elif token.type == "inline" and token.children and list_item_depth > 0:
             is_link = False
             current_title = ""
             for child in token.children:
@@ -2260,8 +2265,13 @@ def remove_index_link_by_target(index_path: Path, target: str) -> None:
     md = MarkdownIt()
     tokens = md.parse(content)
     matching_indexes = []
+    list_item_depth = 0
     for token in tokens:
-        if token.type == "inline" and token.children:
+        if token.type == "list_item_open":
+            list_item_depth += 1
+        elif token.type == "list_item_close":
+            list_item_depth -= 1
+        elif token.type == "inline" and token.children and list_item_depth > 0:
             is_link = False
             current_target = ""
             for child in token.children:
