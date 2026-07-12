@@ -184,7 +184,7 @@ agent-memory maintain merge <key> --reference <other-key>
 agent-memory maintain squash <key> --depth 3
 ```
 
-Run the bundled `vault-maintenance` skill only after an `agent-memory` command has a commit or validation failure, or when vault recovery is explicitly requested. A dirty worktree alone does not block normal path-scoped memory CRUD; preserve unrelated changes.
+When an `agent-memory` command has a real commit or validation failure, or vault recovery is explicitly requested, dispatch a dedicated `vault-maintenance` subagent. It owns inspection, repair, validation, commit, and push of affected vault paths while the parent task continues unrelated work. A dirty worktree alone neither triggers maintenance nor blocks path-scoped memory CRUD; preserve unrelated changes.
 
 ## Dependencies
 

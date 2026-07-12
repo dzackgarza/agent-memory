@@ -3701,7 +3701,6 @@ def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
     assert "Vault commit failed" in str(exc_info.value)
     assert "gpg" in str(exc_info.value).lower() or "signing" in str(exc_info.value).lower()
     assert "agent-memory maintain skill vault-maintenance" in str(exc_info.value)
-    assert "before retrying normal memory work" in str(exc_info.value)
 
     # Note file should not exist
     note_path = workspace.vault / "global" / "traps" / "failing-commit-memory.md"

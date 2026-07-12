@@ -123,9 +123,10 @@ PROJECT_AGENT_STATE_DIRECTORIES: tuple[str, ...] = (".agents", ".hermes")
 BUNDLED_SKILL_NAMES: tuple[str, ...] = ("vault-maintenance",)
 VAULT_MAINTENANCE_SKILL_COMMAND = "agent-memory maintain skill vault-maintenance"
 VAULT_MAINTENANCE_SKILL_HINT = (
-    "\nVault recovery is owned by the bundled vault-maintenance skill. "
-    f"Run `{VAULT_MAINTENANCE_SKILL_COMMAND}` and follow its referenced workflows "
-    "before retrying normal memory work."
+    "\nDispatch a dedicated vault-maintenance subagent for this failure. "
+    "It owns inspection, repair, validation, commit, and push of the affected vault paths; "
+    "continue the parent task rather than treating vault maintenance as a blocker. "
+    f"Use `{VAULT_MAINTENANCE_SKILL_COMMAND}` for the delegated workflow."
 )
 SYNC_SYSTEMD_SERVICE_NAME = "agent-memory-sync.service"
 SYNC_SYSTEMD_TIMER_NAME = "agent-memory-sync.timer"
