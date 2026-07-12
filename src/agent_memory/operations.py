@@ -2209,11 +2209,25 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
 
 def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int | None]:
     assert index_path.is_file(), "index must exist before editing a link"
-    # IWE rewrites the OKF bullet marker to "-" when it renames linked notes, so an
-    # entry may start with either bullet. This is the single owner of that contract.
-    link_prefixes = (f"* [{title}](", f"- [{title}](")
-    lines = index_path.read_text(encoding="utf-8").splitlines()
-    matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
+    content = index_path.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    md = MarkdownIt()
+    tokens = md.parse(content)
+    matching_indexes = []
+    for token in tokens:
+        if token.type == "inline" and token.children:
+            is_link = False
+            current_title = ""
+            for child in token.children:
+                if child.type == "link_open":
+                    is_link = True
+                    current_title = ""
+                elif child.type == "text" and is_link:
+                    current_title += child.content
+                elif child.type == "link_close":
+                    if current_title == title and token.map is not None:
+                        matching_indexes.append(token.map[0])
+                    is_link = False
     if len(matching_indexes) > 1:
         raise MemoryOperationError(f"index {index_path} contains multiple links for title: {title}")
     if not matching_indexes:
@@ -2241,14 +2255,25 @@ def remove_index_link(index_path: Path, title: str) -> None:
 def remove_index_link_by_target(index_path: Path, target: str) -> None:
     if not index_path.is_file():
         return
-    lines = index_path.read_text(encoding="utf-8").splitlines()
+    content = index_path.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    md = MarkdownIt()
+    tokens = md.parse(content)
     matching_indexes = []
-    for index, line in enumerate(lines):
-        striped = line.strip()
-        if (striped.startswith("* [") or striped.startswith("- [")) and f"]({target})" in striped:
-            matching_indexes.append(index)
+    for token in tokens:
+        if token.type == "inline" and token.children:
+            is_link = False
+            current_target = ""
+            for child in token.children:
+                if child.type == "link_open":
+                    is_link = True
+                    current_target = str(child.attrGet("href") or "")
+                elif child.type == "link_close":
+                    if current_target == target and token.map is not None:
+                        matching_indexes.append(token.map[0])
+                    is_link = False
     if matching_indexes:
-        for idx in reversed(matching_indexes):
+        for idx in sorted(set(matching_indexes), reverse=True):
             del lines[idx]
         index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

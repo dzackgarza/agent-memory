@@ -35,5 +35,4 @@ Design the narrow mutation command, validate it against the todo schema/allowed 
 ## Automated gates
 
 `just test-ci` exited 0 on 2026-07-04 with both pytest passes green, diff-cover at 85%, deptry/import-linter/semgrep/vibecheck green, and push/CI quality checks completed.
-The ai-slop-detector step still printed a critical-threshold notice for `operations.py`; that outstanding detector debt is tracked by #80.
-PR body publication, automated review, and #77 merge/close synchronization remain before merge.
+The ai-slop-detector step still printed a critical-threshold notice for `operations.py`; that outstanding detector debt is tracked by #80. PR body publication, automated review, and #77 merge/close synchronization remain before merge.
