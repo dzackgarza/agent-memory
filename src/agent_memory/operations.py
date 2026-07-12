@@ -2206,36 +2206,36 @@ class ParsedIndexEntry:
     line_index: int
     target: str
 
+
 def _parse_index_entries(lines: list[str]) -> list[ParsedIndexEntry]:
     entries = []
-    
+
     body_start = 0
     if lines and lines[0].startswith("---"):
         for i in range(1, len(lines)):
             if lines[i].startswith("---") or lines[i].startswith("..."):
                 body_start = i + 1
                 break
-                
+
     body_content = "".join(lines[body_start:])
-    md = MarkdownIt("commonmark")
-    tokens = md.parse(body_content)
-    
+    tokens = MARKDOWN_PARSER.parse(body_content)
+
     current_section = None
     list_item_depth = 0
-    
+
     for i, token in enumerate(tokens):
         if token.type == "heading_open":
-            if i + 1 < len(tokens) and tokens[i+1].type == "inline":
-                heading_text = tokens[i+1].content
+            if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
+                heading_text = tokens[i + 1].content
                 if heading_text in ("Concepts", "Subdirectories"):
                     current_section = heading_text
                 else:
                     current_section = None
             continue
-            
+
         if not current_section:
             continue
-            
+
         if token.type == "bullet_list_open":
             list_item_depth += 1
         elif token.type == "bullet_list_close":
@@ -2247,41 +2247,42 @@ def _parse_index_entries(lines: list[str]) -> list[ParsedIndexEntry]:
                 continue
             start_line = token.map[0] + body_start
             end_line = token.map[1] + body_start
-            
+
             if end_line - start_line != 1:
                 continue
-                
-            if i + 4 < len(tokens) and \
-               tokens[i+1].type == "paragraph_open" and \
-               tokens[i+2].type == "inline" and \
-               tokens[i+3].type == "paragraph_close" and \
-               tokens[i+4].type == "list_item_close":
-                
-                inline_token = tokens[i+2]
+
+            if (
+                i + 4 < len(tokens)
+                and tokens[i + 1].type == "paragraph_open"
+                and tokens[i + 2].type == "inline"
+                and tokens[i + 3].type == "paragraph_close"
+                and tokens[i + 4].type == "list_item_close"
+            ):
+                inline_token = tokens[i + 2]
                 children = inline_token.children
                 if not children:
                     continue
-                    
+
                 if children[0].type != "link_open":
                     continue
-                    
+
                 target = str(children[0].attrGet("href") or "")
-                
+
                 link_close_idx = -1
                 for j, child in enumerate(children):
                     if child.type == "link_close":
                         link_close_idx = j
                         break
-                        
+
                 if link_close_idx == -1 or link_close_idx + 1 >= len(children):
                     continue
-                    
+
                 next_child = children[link_close_idx + 1]
                 if next_child.type != "text" or not next_child.content.startswith(" - "):
                     continue
-                    
+
                 entries.append(ParsedIndexEntry(line_index=start_line, target=target))
-                
+
     return entries
 
 
@@ -2294,13 +2295,13 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
 def locate_index_link(index_path: Path, target: str) -> tuple[list[str], int | None]:
     if not index_path.is_file():
         return [], None
-        
+
     with index_path.open("r", encoding="utf-8") as f:
         lines = f.readlines()
-        
+
     entries = _parse_index_entries(lines)
     matching = [e.line_index for e in entries if e.target == target]
-    
+
     if len(matching) > 1:
         raise MemoryOperationError(f"index {index_path} contains multiple links for target: {target}")
     if not matching:
