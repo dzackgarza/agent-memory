@@ -1,12 +1,13 @@
 ## Intended result
 
-An onboarding agent can ask the CLI what plans/cards exist, where they live, and whether any are stranded in unmanaged harness memory areas, instead of treating an empty managed `plans/` folder as proof that no plans exist.
+An onboarding agent can see progress already recorded in a managed plan's todo tree without inferring progress for plans whose schema does not carry one.
 
 ## Scope
 
-- Included: #46 doctor warning for unmigrated plan/card records, first-class list command with type/scope/unmigrated filters, and plan progress summary surface once todo metadata is available.
-- Excluded: archive/retire semantics (#47), todo mutation (#62), and global queue implementation (#39).
-- Preserved behavior: normal search/retrieval semantics remain unchanged except for explicit listing/discovery additions.
+- Included: the remaining #46 plan-progress surface over existing `type: plan` todo metadata.
+- Already delivered on `main`: doctor warning for unmigrated plan/card records and `list --type --scope --unmigrated` (#59).
+- Excluded: archive/retire semantics (#47), todo mutation (#62), card-hierarchy progress inference, and global queue implementation (#39).
+- Preserved behavior: structured `PLAN-*` cards remain separate from plan-memory todo trees.
 
 ## GitHub tracking
 
@@ -21,16 +22,15 @@ An onboarding agent can ask the CLI what plans/cards exist, where they live, and
 
 ## Implementation plan
 
-Define the unmanaged harness scan roots and managed-scope classification first, with fixtures for stranded cards/plans. Add `doctor` warnings using those classifiers, then expose the same classification through a list command. Add progress summaries only to the extent the current plan/todo schema can support them without inventing hidden state.
+Expose `agent-memory plan progress --scope <project|global|both>` for plan-memory records with a `todos` tree. Count completion using the active card schema's complete workflow role, aggregate nested todo statuses, and report plan records without a `todos` list separately.
 
 ## Claim map
 
-- [ ] **#46 - unmigrated plans/cards are visible through doctor and list/progress surfaces**
-  - Proof obligations claimed: unmanaged harness record is flagged with path and suggested destination; managed records are not false positives; list filters by type/scope/unmigrated; progress summary reflects real plan todo metadata where present.
-  - Partial / not claimed: no archive state or retire workflow.
-  - Evidence required: CLI fixture tests covering managed, unmanaged, and mixed states; clear output assertions; no hard-coded downstream repo names.
-  - Current evidence: issue report only.
+- [x] **#46 - plan progress reflects existing todo metadata without inventing card progress**
+  - Proof obligations claimed: nested todo statuses aggregate per plan and across the selected scope; complete states come from the active schema; plan records without a todo tree are explicit unsupported records.
+  - Partial / not claimed: no archive state, retire workflow, or card-hierarchy progress model.
+  - Evidence: `tests/test_cli_workflows.py::test_plan_progress_summarizes_only_plan_todo_trees` passed locally.
 
 ## Automated gates
 
-Keep draft until the discovery surfaces are proven by subprocess or equivalent integration tests over fixture vaults.
+Keep draft until the PR checks verify the focused integration proof.
