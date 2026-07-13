@@ -1279,6 +1279,80 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     assert_note_finding(both_progress, nonlist_plan_path, workspace)
 
 
+def test_plan_progress_both_excludes_scope_without_workflow_roles(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    project_key, _project_path = write_legacy_plan_with_todos(workspace, slug="excluded-project-progress")
+    project_schema_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    project_schema_path.parent.mkdir(parents=True)
+    project_schema = yaml.safe_load((workspace.vault / "_meta" / "cards.yaml").read_text(encoding="utf-8"))
+    assert isinstance(project_schema, dict)
+    project_schema.pop("workflow_roles")
+    project_schema_path.write_text(yaml.safe_dump(project_schema, sort_keys=False), encoding="utf-8")
+
+    global_path = workspace.vault / "global" / "plans" / "computable-global-progress.md"
+    global_path.write_text(
+        "---\n"
+        + yaml.safe_dump(
+            {
+                "type": "plan",
+                "title": "Computable Global Plan",
+                "description": "global plan survives project schema exclusion",
+                "tags": ["global", "plan"],
+                "timestamp": "2026-07-04T00:00:00Z",
+                "scope": "global",
+                "source": "agent",
+                "confidence": "high",
+                "promotable": False,
+                "todos": [{"id": "G1", "content": "Complete global task", "status": "complete"}],
+            },
+            sort_keys=False,
+        )
+        + "---\n# Computable Global Plan\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "add", str(project_schema_path.relative_to(workspace.vault)), str(global_path.relative_to(workspace.vault))],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "commit", "-m", "Seed mixed-schema plan progress fixtures"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+
+    project_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "project"))
+    global_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "global"))
+    both_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+
+    assert project_progress["total_todos"] is None
+    assert project_progress["completed_todos"] is None
+    assert project_progress["completion_percent"] is None
+    assert json_records(project_progress, "plans") == []
+    assert [excluded["scope"] for excluded in json_records(project_progress, "excluded_scopes")] == ["project"]
+
+    assert global_progress["total_todos"] == 1
+    assert global_progress["completed_todos"] == 1
+    assert global_progress["completion_percent"] == 100
+    assert [plan["key"] for plan in json_records(global_progress, "plans")] == ["global/plans/computable-global-progress"]
+    assert json_records(global_progress, "excluded_scopes") == []
+
+    assert both_progress["total_todos"] is None
+    assert both_progress["completed_todos"] is None
+    assert both_progress["completion_percent"] is None
+    assert [plan["key"] for plan in json_records(both_progress, "plans")] == ["global/plans/computable-global-progress"]
+    assert [excluded["scope"] for excluded in json_records(both_progress, "excluded_scopes")] == ["project"]
+    assert project_key not in {plan["key"] for plan in json_records(both_progress, "plans")}
+
+
+def test_inspect_schema_advertises_plan_progress_command(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+
+    schema = parse_json_stdout(run_agent_memory(workspace.repo, "inspect", "schema", "--format", "json"))
+    commands = json_object(schema["commands"])
+
+    assert "progress" in json_array(commands["plan"])
+    assert "progress" not in json_array(commands["card"])
+
+
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(

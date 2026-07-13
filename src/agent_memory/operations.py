@@ -847,11 +847,13 @@ def update_plan_todo(
 def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
     complete_statuses_by_scope: dict[MemoryScope, set[str]] = {}
+    excluded_scopes: list[JsonObject] = []
     for memory_scope in search_scope_memory_scopes(scope, both_order=(MemoryScope.PROJECT, MemoryScope.GLOBAL)):
         schema_project_id = require_project_id(config) if memory_scope is MemoryScope.PROJECT else None
         cards_config = load_card_system_config(config.vault, schema_project_id)
         if not cards_config.workflow_roles:
-            raise MemoryOperationError("plan progress requires workflow_roles in the active card schema")
+            excluded_scopes.append({"scope": memory_scope.value, "reason": "active card schema has no workflow_roles"})
+            continue
         complete_statuses_by_scope[memory_scope] = cards_config.statuses_with_role("complete")
     note_scan = scan_note_records(config, scope)
     findings = list(note_scan.findings)
@@ -861,6 +863,8 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
     completed_todos = 0
     for record in note_scan.records:
         if record.memory_type is not MemoryType.PLAN:
+            continue
+        if record.scope not in complete_statuses_by_scope:
             continue
         path = record.path
         if "todos" not in record.document.metadata:
@@ -890,14 +894,20 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
                 "status_counts": dict(sorted(status_counts.items())),
             }
         )
+    aggregate_totals: JsonValue = total_todos if not excluded_scopes else None
+    aggregate_completed: JsonValue = completed_todos if not excluded_scopes else None
+    aggregate_percent: JsonValue = (100 * completed_todos / total_todos) if total_todos else 0
+    if excluded_scopes:
+        aggregate_percent = None
     return {
         "scope": scope.value,
         "plans": plans,
         "unsupported_plans": unsupported_plans,
         "findings": note_findings_json(findings),
-        "total_todos": total_todos,
-        "completed_todos": completed_todos,
-        "completion_percent": (100 * completed_todos / total_todos) if total_todos else 0,
+        "excluded_scopes": json_list(excluded_scopes),
+        "total_todos": aggregate_totals,
+        "completed_todos": aggregate_completed,
+        "completion_percent": aggregate_percent,
     }
 
 
@@ -3261,6 +3271,7 @@ def inspect_schema(*, output_format: InspectOutputFormat, cwd: Path) -> JsonObje
         "commands": {
             "inspect": list(INSPECT_COMMAND_NAMES),
             "card": ["add", "update", "delete", "show", "validate", "dag", "migrate"],
+            "plan": ["add", "update", "delete", "show", "validate", "dag", "migrate", "progress"],
             "todo": ["set"],
             "card_types": [card_type.name for card_type in cards_config.card_types],
         },
