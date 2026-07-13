@@ -36,8 +36,9 @@ Bind a repository to that vault:
 agent-memory init project --vault <vault>
 ```
 
-This writes `.agent-memory.toml` in the repository, adds an `AGENTS.md` pointer to the project memory key, and symlinks the repository `.agents` and `.hermes` paths to the same vault-owned project directory.
+This registers the project in the vault's `_meta/projects.toml`, adds an `AGENTS.md` pointer to the project memory key, and symlinks the repository `.agents` and `.hermes` paths to the same vault-owned project directory.
 Existing local `.agents` or `.hermes` contents are merged into that vault-owned project directory during initialization.
+The project id is derived from the GitHub origin remote when available and from the git root folder name otherwise; use `--project-id <name>` only when that derived name should be overridden.
 
 ### Global operations from an unbound directory
 
@@ -183,9 +184,7 @@ agent-memory maintain merge <key> --reference <other-key>
 agent-memory maintain squash <key> --depth 3
 ```
 
-The vault should be committed at all times.
-Treat staged or unstaged vault changes as an ephemeral error state.
-Use the bundled `vault-maintenance` skill for the sanctioned recovery path: checking vault state, repairing malformed or interrupted work, and committing validated vault changes.
+When an `agent-memory` command has a real commit or validation failure, or vault recovery is explicitly requested, dispatch a dedicated `vault-maintenance` subagent. It owns inspection, repair, validation, commit, and push of affected vault paths while the parent task continues unrelated work. A dirty worktree alone neither triggers maintenance nor blocks path-scoped memory CRUD; preserve unrelated changes.
 
 ## Dependencies
 

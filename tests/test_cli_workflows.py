@@ -9,10 +9,13 @@ import sys
 import tempfile
 import tomllib
 from contextlib import redirect_stderr, redirect_stdout
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from io import StringIO
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -20,7 +23,7 @@ import yaml
 from agent_memory.cards import load_card_system_config
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
-from agent_memory.models import InspectOutputFormat, MemoryType
+from agent_memory.models import InspectOutputFormat, MemoryType, ProjectConfig
 from agent_memory.operations import (
     OKF_VERSION,
     DependencyCheck,
@@ -33,6 +36,7 @@ from agent_memory.operations import (
     inspect_schema,
     merge_probe_payloads,
     outgoing_link_keys,
+    read_memory,
     update_memory,
 )
 from agent_memory.operations import load_project_config as operations_load_project_config
@@ -51,7 +55,8 @@ def just_value(name: str) -> str:
 
 ZK_VERSION = just_value("ZK_VERSION")
 ZK_ASSET = just_value("ZK_ASSET")
-ZK_BIN_DIR = Path(tempfile.mkdtemp(prefix="agent-memory-zk-"))
+ZK_TEMP_DIR = tempfile.TemporaryDirectory(prefix="agent-memory-zk-")
+ZK_BIN_DIR = Path(ZK_TEMP_DIR.name)
 
 
 def ensure_zk_binary() -> Path:
@@ -140,9 +145,14 @@ def run_agent_memory(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def run_agent_memory_subprocess(cwd: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_agent_memory_subprocess(
+    cwd: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    pythonpath: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     command_env = env if env is not None else agent_memory_env()
-    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+    command_env["PYTHONPATH"] = str(PROJECT_ROOT / "src" if pythonpath is None else pythonpath)
     return subprocess.run(
         [sys.executable, "-m", "agent_memory", *args],
         cwd=cwd,
@@ -286,11 +296,16 @@ def json_string(value: JsonValue) -> str:
     return value
 
 
+class ExpectedSyncAutoState(Enum):
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+
+
 def expected_sync_auto_status(
     env: dict[str, str] | None = None,
     interval_seconds: int | None = None,
     *,
-    enabled: bool = False,
+    state: ExpectedSyncAutoState = ExpectedSyncAutoState.DISABLED,
 ) -> JsonObject:
     source_env = env if env is not None else os.environ
     xdg_config_home = source_env.get("XDG_CONFIG_HOME")
@@ -299,7 +314,7 @@ def expected_sync_auto_status(
     timer_path = config_home / "systemd" / "user" / "agent-memory-sync.timer"
     timer_wants_path = config_home / "systemd" / "user" / "timers.target.wants" / "agent-memory-sync.timer"
     status: JsonObject = {
-        "enabled": enabled,
+        "enabled": state is ExpectedSyncAutoState.ENABLED,
         "installed": interval_seconds is not None,
         "service_path": str(service_path),
         "timer_path": str(timer_path),
@@ -365,6 +380,20 @@ def initialized_git_repo(tmp_path: Path) -> GitRepo:
     repo = tmp_path / "repo"
     repo.mkdir()
     return GitRepo(path=repo, project_id=init_git_repo(repo))
+
+
+def initialized_git_repo_with_remote(tmp_path: Path, name: str, repo_slug: str) -> GitRepo:
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", f"git@github.com:dzackgarza/{repo_slug}.git"],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return GitRepo(path=repo, project_id=f"github.com__dzackgarza__{repo_slug}")
 
 
 def initialized_project_workspace(tmp_path: Path, git_repo: GitRepo) -> CliWorkspace:
@@ -617,6 +646,96 @@ def test_maintain_skill_prints_vault_maintenance_entrypoint(tmp_path: Path) -> N
     assert "ephemeral error state" in result.stdout
 
 
+def test_maintain_normalize_reconciles_extra_okf_frontmatter_before_iwe_writes(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    created = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Normalize legacy frontmatter",
+        content="This body should be normalized through the IWE boundary.",
+    )
+    note_path = Path(str(created["path"]))
+    metadata = frontmatter(note_path)
+    original_body = note_path.read_text(encoding="utf-8").split("---\n", 2)[2]
+    note_path.write_text(
+        "---\n"
+        "title: Normalize legacy frontmatter\n"
+        "tags:\n"
+        "  - project\n"
+        "  - decision\n"
+        "---\n"
+        + original_body
+        + "\n---\n"
+        + yaml.safe_dump(metadata, sort_keys=False)
+        + "---\n",
+        encoding="utf-8",
+    )
+
+    result = run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
+
+    normalized = read_memory(note_path).metadata
+    assert normalized == metadata
+    assert result.stdout
+    assert "\n---\n" not in read_memory(note_path).body
+
+
+def test_maintain_normalize_fails_before_iwe_writes_unreconcilable_frontmatter(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    created = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Reject unknown legacy frontmatter",
+        content="This body must remain unchanged when reconciliation fails.",
+    )
+    note_path = Path(str(created["path"]))
+    original = note_path.read_text(encoding="utf-8") + "\n---\nlegacy_status: active\n---\n"
+    note_path.write_text(original, encoding="utf-8")
+
+    result = run_agent_memory_subprocess(workspace.repo, "maintain", "normalize", "--scope", "project")
+
+    assert result.returncode != 0
+    assert str(note_path) in result.stderr
+    assert note_path.read_text(encoding="utf-8") == original
+
+
+def test_maintain_normalize_project_does_not_rewrite_global_memories(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    project_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Normalize only the project scope",
+        content="The selected project note exercises the normalization boundary.",
+    )
+    global_note = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="advice",
+        title="Leave unselected global memory alone",
+        content="This global note must not be rewritten by project normalization.",
+    )
+    project_path = Path(str(project_note["path"]))
+    global_path = Path(str(global_note["path"]))
+    global_original = global_path.read_text(encoding="utf-8").replace(
+        "This global note must not be rewritten by project normalization.",
+        "This global note has intentionally irregular spacing.\n\n\nIt must remain byte-for-byte unchanged.",
+    )
+    global_path.write_text(global_original, encoding="utf-8")
+
+    result = parse_json_stdout(
+        run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
+    )
+
+    assert read_memory(project_path).metadata["scope"] == "project"
+    assert result == {
+        "scope": "project",
+        "normalized": [project_path.relative_to(workspace.vault).with_suffix("").as_posix()],
+    }
+    assert global_path.read_text(encoding="utf-8") == global_original
+
+
 def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
     vault = tmp_path / "module-vault"
 
@@ -746,18 +865,26 @@ def test_init_project_with_explicit_project_id_preserves_no_origin_project_plan_
     assert not (vault / "global" / "plans" / "FEATURE-VENDOR.md").exists()
 
 
-def test_init_project_without_remote_or_project_id_fails_before_global_write(tmp_path: Path) -> None:
+def test_project_config_model_excludes_repo_owned_settings() -> None:
+    assert "project_root_strategy" not in ProjectConfig.model_fields
+    assert "global_scopes" not in ProjectConfig.model_fields
+    assert "search_max_results" not in ProjectConfig.model_fields
+    assert "search_max_tokens" not in ProjectConfig.model_fields
+
+
+def test_init_project_without_remote_or_project_id_uses_git_root_name(tmp_path: Path) -> None:
     repo = tmp_path / "vendor"
     repo.mkdir()
     init_git_repo_without_remote(repo)
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
 
-    result = run_agent_memory_subprocess(repo, "init", "project", "--vault", str(vault))
+    initialized = parse_json_stdout(run_agent_memory(repo, "init", "project", "--vault", str(vault)))
 
-    assert result.returncode != 0
+    assert initialized["project_id"] == "vendor"
     assert not (repo / ".agent-memory.toml").exists()
-    assert tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"] == []
+    assert operations_load_project_config(repo).project_id == "vendor"
+    assert tomllib.loads((vault / "_meta" / "projects.toml").read_text(encoding="utf-8"))["projects"] == [{"project_id": "vendor", "root": str(repo), "remote": ""}]
 
 
 def test_init_global_normalizes_literal_tilde_vault_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -925,6 +1052,109 @@ def test_generic_add_refuses_plain_plan_memory(tmp_path: Path) -> None:
     assert "Traceback" not in result.stderr
     plain_plan = workspace.vault / "projects" / workspace.project_id / "plans" / "tree-less-plan.md"
     assert not plain_plan.exists()
+
+
+def write_legacy_plan_with_todos(workspace: CliWorkspace, slug: str = "legacy-plan") -> tuple[str, Path]:
+    plan_path = workspace.vault / "projects" / workspace.project_id / "plans" / f"{slug}.md"
+    metadata: dict[str, JsonValue] = {
+        "type": "plan",
+        "title": "Legacy Plan",
+        "description": "legacy plan with mutable todos",
+        "tags": ["project", "plan"],
+        "timestamp": "2026-07-04T00:00:00Z",
+        "scope": "project",
+        "source": "agent",
+        "confidence": "high",
+        "promotable": False,
+        "project_id": workspace.project_id,
+        "custom_state": {"owner": "plan-runner", "preserve": True},
+        "todos": [
+            {
+                "id": "M1",
+                "content": "Milestone one",
+                "status": "unstarted",
+                "priority": "high",
+                "depends_on": [],
+                "note": "Keep parent note",
+                "children": [
+                    {
+                        "id": "T1",
+                        "content": "Start implementation",
+                        "status": "unstarted",
+                        "priority": "medium",
+                        "depends_on": ["T0"],
+                        "note": "old note",
+                    },
+                    {
+                        "id": "T2",
+                        "content": "Leave untouched",
+                        "status": "unstarted",
+                    },
+                ],
+            }
+        ],
+    }
+    plan_path.write_text("---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n# Legacy Plan\n\nBody text must survive.\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(plan_path.relative_to(workspace.vault))], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Seed legacy plan todo fixture"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    return f"projects/{workspace.project_id}/plans/{slug}", plan_path
+
+
+def test_todo_set_mutates_nested_plan_todo_and_preserves_record(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plan_key, plan_path = write_legacy_plan_with_todos(workspace)
+    before_body = plan_path.read_text(encoding="utf-8").split("---\n", 2)[2]
+
+    updated = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "todo",
+            "set",
+            plan_key,
+            "T1",
+            "--status",
+            "in-progress",
+            "--content",
+            "Start implementation with a committed reproducer",
+            "--note",
+            "red test landed",
+        )
+    )
+
+    assert updated["key"] == plan_key
+    assert updated["todo_id"] == "T1"
+    assert updated["status"] == "in-progress"
+    metadata = frontmatter(plan_path)
+    assert metadata["custom_state"] == {"owner": "plan-runner", "preserve": True}
+    assert plan_path.read_text(encoding="utf-8").split("---\n", 2)[2] == before_body
+    parent = json_object(json_array(cast(JsonValue, metadata["todos"]))[0])
+    assert parent["note"] == "Keep parent note"
+    target = json_object(json_array(parent["children"])[0])
+    assert target["id"] == "T1"
+    assert target["status"] == "in-progress"
+    assert target["content"] == "Start implementation with a committed reproducer"
+    assert target["note"] == "red test landed"
+    untouched = json_object(json_array(parent["children"])[1])
+    assert untouched == {"id": "T2", "content": "Leave untouched", "status": "unstarted"}
+    assert git_status_lines(workspace.vault) == set()
+    assert git_commit_subjects(workspace.vault)[0] == "Update todo T1 in plan: Legacy Plan"
+
+
+def test_todo_set_reports_clean_errors_for_invalid_inputs(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plan_key, _plan_path = write_legacy_plan_with_todos(workspace)
+
+    invalid_status = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T1", "--status", "not-a-status")
+    invalid_status_stderr = assert_structured_cli_error(invalid_status)
+    assert "invalid todo status 'not-a-status'" in invalid_status_stderr
+
+    missing_todo = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T-MISSING", "--status", "in-progress")
+    missing_todo_stderr = assert_structured_cli_error(missing_todo)
+    assert "todo id not found: T-MISSING" in missing_todo_stderr
+
+    missing_plan = run_agent_memory_subprocess(workspace.repo, "todo", "set", f"projects/{workspace.project_id}/plans/missing-plan", "T1", "--status", "in-progress")
+    missing_plan_stderr = assert_structured_cli_error(missing_plan)
+    assert "plan memory not found" in missing_plan_stderr
 
 
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
@@ -1530,7 +1760,7 @@ def test_project_commands_without_config_fail_with_first_time_setup_guidance(
     )
 
     assert result.returncode != 0
-    assert "No project memory config found" in result.stderr
+    assert "No project memory binding found" in result.stderr
     assert "agent-memory init project --vault" in result.stderr
     assert "ProjectNotInitializedError" not in result.stderr
     assert "Traceback" not in result.stderr
@@ -1586,7 +1816,7 @@ def test_load_project_config_raises_project_not_initialized(tmp_path: Path) -> N
     with pytest.raises(ProjectNotInitializedError) as excinfo:
         operations_load_project_config(repo)
     message = str(excinfo.value)
-    assert "No project memory config found" in message
+    assert "No project memory binding found" in message
     assert "agent-memory init project --vault" in message
 
 
@@ -1720,18 +1950,7 @@ def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> Non
         plan_title="Managed Plan",
         description_signal="managed",
     )
-    unmigrated = (
-        workspace.vault
-        / "projects"
-        / workspace.project_id
-        / "harnesses"
-        / "codex"
-        / "memories"
-        / "extensions"
-        / "ad_hoc"
-        / "notes"
-        / "stranded-plan.md"
-    )
+    unmigrated = workspace.vault / "projects" / workspace.project_id / "harnesses" / "codex" / "memories" / "extensions" / "ad_hoc" / "notes" / "stranded-plan.md"
     write_unmigrated_plan(unmigrated, "Stranded Harness Plan", workspace.project_id)
 
     doctor = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
@@ -1937,13 +2156,13 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert enabled.returncode == 0
     assert parse_json_stdout(enabled) == {
-        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED),
         "vault": str(vault),
     }
     assert timer_wants_path.is_symlink()
     assert timer_wants_path.resolve() == timer_path.resolve()
     enabled_status = parse_json_stdout(run_agent_memory_subprocess(loose, "sync", "status", env=env))
-    assert enabled_status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300, enabled=True)
+    assert enabled_status["auto_sync"] == expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED)
 
     disabled = run_agent_memory_subprocess(loose, "sync", "disable", env=env)
 
@@ -1958,7 +2177,7 @@ def test_sync_install_status_and_remove_systemd_timer_from_unbound_directory(tmp
 
     assert enabled_again.returncode == 0
     assert parse_json_stdout(enabled_again) == {
-        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, enabled=True),
+        "auto_sync": expected_sync_auto_status(env, interval_seconds=300, state=ExpectedSyncAutoState.ENABLED),
         "vault": str(vault),
     }
 
@@ -2063,6 +2282,19 @@ def test_cli_main_runs_doctor_gate_then_dispatches_and_exits_zero(tmp_path: Path
     assert excinfo.value.code == 0
     payload = json.loads(stdout.getvalue())
     assert payload["project_root"] == str(workspace.repo)
+
+
+def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_yaml = workspace.vault / "_meta" / "cards.yaml"
+    cards_yaml.write_text("statuses: [unterminated\n", encoding="utf-8")
+
+    result = run_agent_memory_subprocess(workspace.repo, "plan", "validate")
+
+    stderr = assert_structured_cli_error(result)
+    assert str(cards_yaml) in stderr
+    assert "cards.yaml" in stderr
+    assert "ParserError" not in stderr
 
 
 def test_python_dash_m_agent_memory_module_entrypoint_runs_doctor(tmp_path: Path) -> None:
@@ -2288,6 +2520,44 @@ card_types:
     assert json_array(clean["problems"]) == []
 
 
+def test_maintain_add_card_status_option_updates_only_named_status_set(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_path = workspace.vault / "_meta" / "cards.yaml"
+    payload = yaml.safe_load(cards_path.read_text(encoding="utf-8"))
+    payload["status_sets"]["plan"]["options"].remove("unstarted")
+    cards_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    before = yaml.safe_load(cards_path.read_text(encoding="utf-8"))
+
+    changed = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "add-card-status-option",
+            "plan",
+            "unstarted",
+        )
+    )
+
+    expected = deepcopy(before)
+    expected["status_sets"]["plan"]["options"].append("unstarted")
+    assert changed == {"changed": True, "path": str(cards_path), "status": "unstarted", "status_set": "plan"}
+    assert yaml.safe_load(cards_path.read_text(encoding="utf-8")) == expected
+    assert list(cards_path.parent.glob(f".{cards_path.name}.*.tmp")) == []
+
+    commit_count = len(git_commit_subjects(workspace.vault))
+    unchanged = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "maintain",
+            "add-card-status-option",
+            "plan",
+            "unstarted",
+        )
+    )
+    assert unchanged == {"changed": False, "path": str(cards_path), "status": "unstarted", "status_set": "plan"}
+    assert len(git_commit_subjects(workspace.vault)) == commit_count
+
+
 def test_inspect_schema_operation_uses_explicit_cwd_for_project_schema(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
@@ -2428,6 +2698,13 @@ def assert_note_finding(payload: JsonObject, note: Path, workspace: CliWorkspace
     return finding
 
 
+def write_raw_project_plan(workspace: CliWorkspace, slug: str, text: str) -> Path:
+    note = workspace.vault / "projects" / workspace.project_id / "plans" / f"{slug}.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(text, encoding="utf-8")
+    return note
+
+
 def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     good = add_cli_memory(
@@ -2462,6 +2739,67 @@ def test_search_returns_good_records_and_malformed_note_findings(tmp_path: Path)
     assert "UTF-8" in json_string(utf8_finding["message"])
     mixed_tags_finding = assert_note_finding(payload, mixed_tags, workspace)
     assert "tags" in json_string(mixed_tags_finding["message"])
+
+
+def test_inspect_export_returns_nested_todo_plan_and_malformed_note_finding(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    good = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Export Survives",
+        content="well-formed export node",
+    )
+    nested_plan = write_raw_project_plan(
+        workspace,
+        "nested-todo-tree",
+        """---
+type: plan
+scope: project
+title: Nested Todo Tree
+description: nested todo_tree must not abort export
+tags: [project, plan]
+timestamp: 2026-07-04T00:00:00Z
+todo_tree:
+  - id: T1
+    content: Reproduce nested plan state
+    status: in-progress
+    children:
+      - id: T1.1
+        content: Child task
+        status: unstarted
+---
+# Nested Todo Tree
+
+Nested todo-tree plan body.
+""",
+    )
+    bad = write_raw_project_note(
+        workspace,
+        "bad-export-tags",
+        "---\ntype: decision\nscope: project\ntitle: Bad Export Tags\ndescription: x\ntags: project\n---\nBody.\n",
+    )
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "inspect",
+        "export",
+        "--scope",
+        "project",
+        "--profile",
+        "map",
+        "--format",
+        "graph-json",
+    )
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    payload = parse_json_stdout(result)
+    node_keys = {json_string(record["key"]) for record in json_records(payload, "nodes")}
+    assert json_string(good["key"]) in node_keys
+    assert nested_plan.relative_to(workspace.vault).with_suffix("").as_posix() in node_keys
+    finding = assert_note_finding(payload, bad, workspace)
+    assert "tags" in json_string(finding["message"])
 
 
 def test_inspect_overview_reports_malformed_note_findings(tmp_path: Path) -> None:
@@ -3162,7 +3500,7 @@ def unbound_dir(tmp_path: Path) -> Path:
 def test_global_add_and_search_run_without_project_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Issue #25: storing or searching a *global* memory must not require the cwd to be a
     # bound project. The global vault is resolved from AGENT_MEMORY_VAULT (falling back to
-    # the shipped default) independent of any cwd `.agent-memory.toml`.
+    # the shipped default) independent of any cwd project binding file.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))
@@ -3229,6 +3567,160 @@ def test_global_op_error_names_init_global_only_when_vault_missing(tmp_path: Pat
     assert result.returncode != 0
     assert "maintain init-global" in result.stderr
     assert "init project" not in result.stderr
+
+
+def test_queue_add_and_list_round_trip_across_projects(tmp_path: Path) -> None:
+    # Issue #39: the queue is a single global-vault surface, not project-local checkout
+    # state. Two distinct project bindings that share one vault must see the same item.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
+    project_b = initialized_git_repo_with_remote(tmp_path, "project-b", "queue-project-b")
+    run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
+    run_agent_memory(project_b.path, "init", "project", "--vault", str(vault))
+
+    added = parse_json_stdout(
+        run_agent_memory(
+            project_a.path,
+            "queue",
+            "add",
+            "--project",
+            project_a.project_id,
+            "--agent",
+            "claude-1",
+            "--status",
+            "handed-off",
+            "--summary",
+            "OAuth PR half-done; token refresh untested",
+            "--link",
+            "[[PLAN-oauth]]",
+        )
+    )
+    queue_id = json_string(added["id"])
+    assert queue_id.startswith("QUEUE-")
+    queue_path = Path(json_string(added["path"]))
+    assert queue_path.is_file()
+    assert queue_path.parent == vault / "queue"
+    assert frontmatter(queue_path) == {
+        "id": queue_id,
+        "project": project_a.project_id,
+        "agent": "claude-1",
+        "status": "handed-off",
+        "summary": "OAuth PR half-done; token refresh untested",
+        "links": ["[[PLAN-oauth]]"],
+    }
+
+    listed = parse_json_stdout(run_agent_memory(project_b.path, "queue", "list"))
+    items = json_records(listed, "items")
+    assert len(items) == 1
+    item = items[0]
+    assert item["id"] == queue_id
+    assert item["path"] == str(queue_path)
+    assert item["metadata"] == frontmatter(queue_path)
+
+
+def test_queue_add_rejects_schema_invalid_items_without_writing(tmp_path: Path) -> None:
+    # Issue #39: malformed queue items are rejected by the card-schema path before any
+    # global queue file is written.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
+    run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
+
+    queue_help = run_agent_memory_subprocess(project_a.path, "queue", "add", "--help")
+    assert queue_help.returncode == 0
+    assert "queue" in queue_help.stdout
+
+    missing_summary = run_agent_memory_subprocess(
+        project_a.path,
+        "queue",
+        "add",
+        "--project",
+        project_a.project_id,
+        "--status",
+        "handed-off",
+    )
+    assert_structured_cli_error(missing_summary)
+
+    invalid_status = run_agent_memory_subprocess(
+        project_a.path,
+        "queue",
+        "add",
+        "--project",
+        project_a.project_id,
+        "--status",
+        "paused",
+        "--summary",
+        "Invalid status must not write",
+    )
+    assert_structured_cli_error(invalid_status)
+
+    unknown_field = run_agent_memory_subprocess(
+        project_a.path,
+        "queue",
+        "add",
+        "--project",
+        project_a.project_id,
+        "--status",
+        "handed-off",
+        "--summary",
+        "Unknown field must not write",
+        "--set",
+        "bogus=1",
+    )
+    assert_structured_cli_error(unknown_field)
+    queue_root = vault / "queue"
+    assert not queue_root.exists() or list(queue_root.rglob("*.md")) == []
+
+
+def test_queue_add_requires_vault_owned_card_schema(tmp_path: Path) -> None:
+    # Issue #39: the global queue is a vault-owned card surface. Removing the vault schema
+    # must fail loudly rather than falling back to the packaged schema.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    (vault / "_meta" / "cards.yaml").unlink()
+    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
+    run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
+
+    result = run_agent_memory_subprocess(
+        project_a.path,
+        "queue",
+        "add",
+        "--project",
+        project_a.project_id,
+        "--status",
+        "handed-off",
+        "--summary",
+        "Missing vault schema must not write",
+    )
+
+    stderr = assert_structured_cli_error(result)
+    assert "global queue requires vault card schema" in stderr
+    assert list((vault / "queue").rglob("*.md")) == []
+
+
+def test_queue_item_cannot_be_added_through_project_card_command(tmp_path: Path) -> None:
+    # Issue #39: queue-item is a schema-defined card type, but creation belongs to the
+    # global queue command, not the project-local generic card command.
+    workspace = initialized_workspace(tmp_path)
+
+    result = run_agent_memory_subprocess(
+        workspace.repo,
+        "card",
+        "add",
+        "queue-item",
+        "QUEUE-LOCAL",
+        "--set",
+        f"project={workspace.project_id}",
+        "--set",
+        "status=handed-off",
+        "--set",
+        "summary=Project-local queue writes are invalid",
+    )
+
+    stderr = assert_structured_cli_error(result)
+    assert "agent-memory queue add" in stderr
+    assert list(workspace.vault.rglob("QUEUE-LOCAL.md")) == []
 
 
 def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3339,7 +3831,6 @@ def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
     assert "Vault commit failed" in str(exc_info.value)
     assert "gpg" in str(exc_info.value).lower() or "signing" in str(exc_info.value).lower()
     assert "agent-memory maintain skill vault-maintenance" in str(exc_info.value)
-    assert "before retrying normal memory work" in str(exc_info.value)
 
     # Note file should not exist
     note_path = workspace.vault / "global" / "traps" / "failing-commit-memory.md"
@@ -3654,6 +4145,37 @@ def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> N
     assert unsupported_type in stderr
     assert {"feature", "task"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr)))
     assert list(workspace.vault.rglob(f"{unsupported_id}.md")) == []
+
+
+def test_generated_card_update_unknown_id_prefix_is_structured_cli_error(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    unsupported_id = "MILESTONE-1"
+
+    result = run_agent_memory_subprocess(workspace.repo, "plan", "update", unsupported_id, "--set", "title=x")
+
+    stderr = assert_structured_cli_error(result)
+    assert unsupported_id in stderr
+    assert {"FEATURE", "PLAN", "TASK"}.issubset(set(re.findall(r"[A-Z][A-Z_-]+", stderr)))
+
+
+def test_root_list_global_memory_type_does_not_require_project_card_schema(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    global_decision = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="decision",
+        title="Schema Independent Decision",
+        content="Global memory listing must not depend on project card schema.",
+    )
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True, exist_ok=True)
+    cards_path.write_text("not: [valid\n", encoding="utf-8")
+
+    listed = parse_json_stdout(run_agent_memory_module(workspace.repo, "list", "--type", "decision", "--scope", "global"))
+
+    assert listed["type"] == "decision"
+    assert listed["scope"] == "global"
+    assert set(records_by_key(listed, "results")) == {global_decision["key"]}
 
 
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:

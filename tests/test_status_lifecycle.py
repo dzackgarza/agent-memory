@@ -59,9 +59,9 @@ def test_shipped_config_ports_status_catalog_workflow_roles() -> None:
     started = config.statuses_with_role("started")
     complete = config.statuses_with_role("complete")
     unstarted = config.statuses_with_role("unstarted")
-    # Ported from ~/ai/planning/status-catalog.yaml, minus "done" (not a status here).
+    # Ported from ~/ai/planning/status-catalog.yaml.
     assert {"in-progress", "needs-agent-review", "complete", "blocked", "decided", "implemented"} <= started
-    assert {"complete", "decided", "implemented"} == complete
+    assert {"complete", "decided", "implemented", "done"} == complete
     assert {"unstarted", "approved-and-unstarted"} == unstarted
     # complete statuses are a subset of started (a completed card has been started).
     assert complete <= started
