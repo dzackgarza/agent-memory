@@ -73,6 +73,7 @@ from agent_memory.operations import (
     migrate_cards,
     move_memory,
     normalize_memories,
+    plan_progress,
     remove_sync_systemd_timer,
     retrieve_memory,
     rewrite_wikilinks,
@@ -243,6 +244,14 @@ def todo_set_command(
 ) -> None:
     """Update one todo node in a plan memory record."""
     emit(update_plan_todo(key=key, todo_id=todo_id, status=status, content=content, note=note, cwd=Path.cwd()))
+
+
+def plan_progress_command(
+    *,
+    scope: Annotated[SearchScope, Parameter(help="Scope to summarize: project, global, or both.")] = SearchScope.BOTH,
+) -> None:
+    """Summarize progress for plan memories with structured todo trees."""
+    emit(plan_progress(scope=scope, cwd=Path.cwd()))
 
 
 def queue_add_command(
@@ -843,6 +852,7 @@ def register_generated_card_type_commands(config: CardSystemConfig) -> None:
             type_app.command(card_validate_command, name="validate")
             type_app.command(card_dag_command, name="dag")
             type_app.command(card_migrate_command, name="migrate")
+            type_app.command(plan_progress_command, name="progress")
 
 
 def field_help(config: CardSystemConfig, card_type_name: str, field_name: str, field_type: str) -> str:

@@ -1157,6 +1157,232 @@ def test_todo_set_reports_clean_errors_for_invalid_inputs(tmp_path: Path) -> Non
     assert "plan memory not found" in missing_plan_stderr
 
 
+def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards = yaml.safe_load((workspace.vault / "_meta" / "cards.yaml").read_text(encoding="utf-8"))
+    assert isinstance(cards, dict)
+    cards["statuses"].append("card-only")
+    cards["statuses"].append("project-complete")
+    cards["workflow_roles"]["complete"] = ["project-complete"]
+    cards["workflow_roles"]["started"].append("project-complete")
+    cards_path.write_text(yaml.safe_dump(cards, sort_keys=False), encoding="utf-8")
+
+    project_key, project_path = write_legacy_plan_with_todos(workspace, slug="project-progress")
+    project_metadata = frontmatter(project_path)
+    project_todos = json_array(project_metadata["todos"])
+    json_object(project_todos[0])["status"] = "legacy-pending"
+    project_children = json_array(json_object(project_todos[0])["children"])
+    json_object(project_children[0])["status"] = "complete"
+    json_object(project_children[1])["status"] = "project-complete"
+    project_path.write_text("---\n" + yaml.safe_dump(project_metadata, sort_keys=False) + "---\n# Legacy Project Plan\n", encoding="utf-8")
+    _malformed_plan_key, malformed_plan_path = write_legacy_plan_with_todos(workspace, slug="malformed-progress")
+    malformed_plan_metadata = frontmatter(malformed_plan_path)
+    json_object(json_array(malformed_plan_metadata["todos"])[0])["children"] = "not-a-todo-list"
+    malformed_plan_path.write_text("---\n" + yaml.safe_dump(malformed_plan_metadata, sort_keys=False) + "---\n# Malformed Legacy Plan\n", encoding="utf-8")
+    _nonlist_plan_key, nonlist_plan_path = write_legacy_plan_with_todos(workspace, slug="nonlist-progress")
+    nonlist_plan_metadata = frontmatter(nonlist_plan_path)
+    nonlist_plan_metadata["todos"] = "not-a-todo-list"
+    nonlist_plan_path.write_text("---\n" + yaml.safe_dump(nonlist_plan_metadata, sort_keys=False) + "---\n# Non-list Legacy Plan\n", encoding="utf-8")
+
+    global_path = workspace.vault / "global" / "plans" / "global-progress.md"
+    global_metadata: dict[str, JsonValue] = {
+        "type": "plan",
+        "title": "Legacy Global Plan",
+        "description": "global plan progress fixture",
+        "tags": ["global", "plan"],
+        "timestamp": "2026-07-04T00:00:00Z",
+        "scope": "global",
+        "source": "agent",
+        "confidence": "high",
+        "promotable": False,
+        "todos": [
+            {"id": "G1", "content": "Complete global task", "status": "complete"},
+            {"id": "G2", "content": "Await global task", "status": "unstarted"},
+        ],
+    }
+    global_path.write_text("---\n" + yaml.safe_dump(global_metadata, sort_keys=False) + "---\n# Legacy Global Plan\n", encoding="utf-8")
+    unsupported_path = project_path.parent / "plan-without-todos.md"
+    write_unmigrated_plan(unsupported_path, "Plan Without Todos", workspace.project_id)
+    malformed_note = write_raw_project_note(
+        workspace,
+        "malformed-decision",
+        "---\ntype: decision\nscope: project\ntitle: Malformed Decision\ndescription: malformed fixture\ntags: project\n---\nBody.\n",
+    )
+    subprocess.run(
+        [
+            "git",
+            "add",
+            str(cards_path.relative_to(workspace.vault)),
+            str(project_path.relative_to(workspace.vault)),
+            str(malformed_plan_path.relative_to(workspace.vault)),
+            str(nonlist_plan_path.relative_to(workspace.vault)),
+            str(global_path.relative_to(workspace.vault)),
+        ],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "commit", "-m", "Seed scoped legacy plan progress fixtures"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+
+    project_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "project"))
+    global_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "global"))
+    both_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+
+    assert project_progress["scope"] == "project"
+    assert project_progress["total_todos"] == 3
+    assert project_progress["completed_todos"] == 1
+    assert project_progress["completion_percent"] == pytest.approx(33.333333333333336)
+    project_plans = json_records(project_progress, "plans")
+    assert len(project_plans) == 1
+    assert project_plans[0]["key"] == project_key
+    assert project_plans[0]["status_counts"] == {"complete": 1, "legacy-pending": 1, "project-complete": 1}
+    assert json_records(project_progress, "unsupported_plans") == [
+        {
+            "key": f"projects/{workspace.project_id}/plans/plan-without-todos",
+            "path": str(unsupported_path),
+            "title": "Plan Without Todos",
+            "reason": "plan has no todos list",
+        }
+    ]
+    assert_note_finding(project_progress, malformed_note, workspace)
+    assert_note_finding(project_progress, malformed_plan_path, workspace)
+    assert_note_finding(project_progress, nonlist_plan_path, workspace)
+
+    assert global_progress["scope"] == "global"
+    assert global_progress["total_todos"] == 2
+    assert global_progress["completed_todos"] == 1
+    assert global_progress["completion_percent"] == 50
+    global_plans = json_records(global_progress, "plans")
+    assert [plan["key"] for plan in global_plans] == ["global/plans/global-progress"]
+    assert global_plans[0]["status_counts"] == {"complete": 1, "unstarted": 1}
+    assert json_records(global_progress, "unsupported_plans") == []
+    assert json_records(global_progress, "findings") == []
+
+    assert both_progress["scope"] == "both"
+    assert both_progress["total_todos"] == 5
+    assert both_progress["completed_todos"] == 2
+    assert both_progress["completion_percent"] == 40
+    assert {plan["key"] for plan in json_records(both_progress, "plans")} == {project_key, "global/plans/global-progress"}
+    assert json_records(both_progress, "unsupported_plans") == [
+        {
+            "key": f"projects/{workspace.project_id}/plans/plan-without-todos",
+            "path": str(unsupported_path),
+            "title": "Plan Without Todos",
+            "reason": "plan has no todos list",
+        }
+    ]
+    assert_note_finding(both_progress, malformed_note, workspace)
+    assert_note_finding(both_progress, malformed_plan_path, workspace)
+    assert_note_finding(both_progress, nonlist_plan_path, workspace)
+
+
+def test_plan_progress_both_excludes_scope_without_workflow_roles(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    project_key, _project_path = write_legacy_plan_with_todos(workspace, slug="excluded-project-progress")
+    excluded_unsupported_path = workspace.vault / "projects" / workspace.project_id / "plans" / "excluded-plan-without-todos.md"
+    write_unmigrated_plan(excluded_unsupported_path, "Excluded Plan Without Todos", workspace.project_id)
+    _excluded_malformed_key, excluded_malformed_path = write_legacy_plan_with_todos(workspace, slug="excluded-malformed-progress")
+    excluded_malformed_metadata = frontmatter(excluded_malformed_path)
+    json_object(json_array(excluded_malformed_metadata["todos"])[0])["children"] = "not-a-todo-list"
+    excluded_malformed_path.write_text("---\n" + yaml.safe_dump(excluded_malformed_metadata, sort_keys=False) + "---\n# Excluded Malformed Plan\n", encoding="utf-8")
+    project_schema_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    project_schema_path.parent.mkdir(parents=True)
+    project_schema = yaml.safe_load((workspace.vault / "_meta" / "cards.yaml").read_text(encoding="utf-8"))
+    assert isinstance(project_schema, dict)
+    project_schema.pop("workflow_roles")
+    project_schema_path.write_text(yaml.safe_dump(project_schema, sort_keys=False), encoding="utf-8")
+
+    global_path = workspace.vault / "global" / "plans" / "computable-global-progress.md"
+    global_path.write_text(
+        "---\n"
+        + yaml.safe_dump(
+            {
+                "type": "plan",
+                "title": "Computable Global Plan",
+                "description": "global plan survives project schema exclusion",
+                "tags": ["global", "plan"],
+                "timestamp": "2026-07-04T00:00:00Z",
+                "scope": "global",
+                "source": "agent",
+                "confidence": "high",
+                "promotable": False,
+                "todos": [{"id": "G1", "content": "Complete global task", "status": "complete"}],
+            },
+            sort_keys=False,
+        )
+        + "---\n# Computable Global Plan\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            "git",
+            "add",
+            str(project_schema_path.relative_to(workspace.vault)),
+            str(excluded_malformed_path.relative_to(workspace.vault)),
+            str(global_path.relative_to(workspace.vault)),
+        ],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "commit", "-m", "Seed mixed-schema plan progress fixtures"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+
+    project_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "project"))
+    global_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "global"))
+    both_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+
+    assert project_progress["total_todos"] is None
+    assert project_progress["completed_todos"] is None
+    assert project_progress["completion_percent"] is None
+    assert json_records(project_progress, "plans") == []
+    assert [excluded["scope"] for excluded in json_records(project_progress, "excluded_scopes")] == ["project"]
+    assert json_records(project_progress, "unsupported_plans") == [
+        {
+            "key": f"projects/{workspace.project_id}/plans/excluded-plan-without-todos",
+            "path": str(excluded_unsupported_path),
+            "title": "Excluded Plan Without Todos",
+            "reason": "plan has no todos list",
+        }
+    ]
+    assert_note_finding(project_progress, excluded_malformed_path, workspace)
+
+    assert global_progress["total_todos"] == 1
+    assert global_progress["completed_todos"] == 1
+    assert global_progress["completion_percent"] == 100
+    assert [plan["key"] for plan in json_records(global_progress, "plans")] == ["global/plans/computable-global-progress"]
+    assert json_records(global_progress, "excluded_scopes") == []
+
+    assert both_progress["total_todos"] is None
+    assert both_progress["completed_todos"] is None
+    assert both_progress["completion_percent"] is None
+    assert [plan["key"] for plan in json_records(both_progress, "plans")] == ["global/plans/computable-global-progress"]
+    assert [excluded["scope"] for excluded in json_records(both_progress, "excluded_scopes")] == ["project"]
+    assert project_key not in {plan["key"] for plan in json_records(both_progress, "plans")}
+    assert json_records(both_progress, "unsupported_plans") == [
+        {
+            "key": f"projects/{workspace.project_id}/plans/excluded-plan-without-todos",
+            "path": str(excluded_unsupported_path),
+            "title": "Excluded Plan Without Todos",
+            "reason": "plan has no todos list",
+        }
+    ]
+    assert_note_finding(both_progress, excluded_malformed_path, workspace)
+
+
+def test_inspect_schema_advertises_plan_progress_command(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+
+    schema = parse_json_stdout(run_agent_memory(workspace.repo, "inspect", "schema", "--format", "json"))
+    commands = json_object(schema["commands"])
+
+    assert "progress" in json_array(commands["plan"])
+    assert "progress" not in json_array(commands["card"])
+
+
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
@@ -2594,9 +2820,10 @@ card_types:
         encoding="utf-8",
     )
 
-    schema = inspect_schema(output_format=InspectOutputFormat.JSON, cwd=workspace.repo)
+    schema = parse_json_stdout(run_agent_memory(workspace.repo, "inspect", "schema", "--format", "json"))
     schema_type_names = {json_string(item["name"]) for item in json_records(json_object(schema["card_system"]), "types")}
     assert schema_type_names == {"ticket"}
+    assert "plan" not in json_object(schema["commands"])
 
 
 def test_search_content_exact_handles_paths_with_colons(tmp_path: Path) -> None:

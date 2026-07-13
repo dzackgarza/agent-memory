@@ -844,6 +844,91 @@ def update_plan_todo(
     return result
 
 
+def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
+    config = config_for_search_scope(scope, cwd)
+    complete_statuses_by_scope: dict[MemoryScope, set[str]] = {}
+    excluded_scopes: list[JsonObject] = []
+    for memory_scope in search_scope_memory_scopes(scope, both_order=(MemoryScope.PROJECT, MemoryScope.GLOBAL)):
+        schema_project_id = require_project_id(config) if memory_scope is MemoryScope.PROJECT else None
+        cards_config = load_card_system_config(config.vault, schema_project_id)
+        if not cards_config.workflow_roles:
+            excluded_scopes.append({"scope": memory_scope.value, "reason": "active card schema has no workflow_roles"})
+            continue
+        complete_statuses_by_scope[memory_scope] = cards_config.statuses_with_role("complete")
+    note_scan = scan_note_records(config, scope)
+    findings = list(note_scan.findings)
+    plans: list[JsonObject] = []
+    unsupported_plans: list[JsonObject] = []
+    total_todos = 0
+    completed_todos = 0
+    for record in note_scan.records:
+        if record.memory_type is not MemoryType.PLAN:
+            continue
+        path = record.path
+        if "todos" not in record.document.metadata:
+            unsupported_plans.append({"key": record.key, "path": str(path), "title": record.title, "reason": "plan has no todos list"})
+            continue
+        todos = record.document.metadata["todos"]
+        if not isinstance(todos, list):
+            findings.append(note_finding_for_error(config, path, MalformedMemoryError(path, "plan todos must be a list")))
+            continue
+        try:
+            status_counts = Counter(plan_todo_statuses(todos, path))
+        except MalformedMemoryError as error:
+            findings.append(note_finding_for_error(config, path, error))
+            continue
+        if record.scope not in complete_statuses_by_scope:
+            continue
+        plan_total = sum(status_counts.values())
+        plan_completed = sum(count for status, count in status_counts.items() if status in complete_statuses_by_scope[record.scope])
+        total_todos += plan_total
+        completed_todos += plan_completed
+        plans.append(
+            {
+                "key": record.key,
+                "path": str(path),
+                "title": record.title,
+                "total_todos": plan_total,
+                "completed_todos": plan_completed,
+                "completion_percent": (100 * plan_completed / plan_total) if plan_total else 0,
+                "status_counts": dict(sorted(status_counts.items())),
+            }
+        )
+    aggregate_totals: JsonValue = total_todos if not excluded_scopes else None
+    aggregate_completed: JsonValue = completed_todos if not excluded_scopes else None
+    aggregate_percent: JsonValue = (100 * completed_todos / total_todos) if total_todos else 0
+    if excluded_scopes:
+        aggregate_percent = None
+    return {
+        "scope": scope.value,
+        "plans": plans,
+        "unsupported_plans": unsupported_plans,
+        "findings": note_findings_json(findings),
+        "excluded_scopes": json_list(excluded_scopes),
+        "total_todos": aggregate_totals,
+        "completed_todos": aggregate_completed,
+        "completion_percent": aggregate_percent,
+    }
+
+
+def plan_todo_statuses(todos: list[MetadataValue], path: Path) -> list[str]:
+    statuses: list[str] = []
+    for item in todos:
+        todo = todo_mapping(item, path)
+        status = todo.get("status")
+        if not isinstance(status, str) or not status.strip():
+            raise MalformedMemoryError(path, f"todo {todo['id']!r} must have a nonempty string status")
+        statuses.append(status)
+        for child_key in PLAN_TODO_CHILD_KEYS:
+            children = todo.get(child_key)
+            if children is None:
+                continue
+            if not isinstance(children, list):
+                raise MalformedMemoryError(path, f"todo field {child_key} must be a list")
+            statuses.extend(plan_todo_statuses(children, path))
+    return statuses
+
+
 def mutate_todo_tree(
     todos: list[MetadataValue],
     *,
@@ -3182,13 +3267,16 @@ def inspect_schema(*, output_format: InspectOutputFormat, cwd: Path) -> JsonObje
     assert output_format is InspectOutputFormat.JSON, "inspect schema currently emits JSON"
     config = config_for_schema_advertisement(cwd)
     cards_config, card_model_by_type = load_card_system(config)
+    commands: JsonObject = {
+        "inspect": list(INSPECT_COMMAND_NAMES),
+        "card": ["add", "update", "delete", "show", "validate", "dag", "migrate"],
+        "todo": ["set"],
+        "card_types": [card_type.name for card_type in cards_config.card_types],
+    }
+    if any(card_type.name == "plan" for card_type in cards_config.card_types):
+        commands["plan"] = ["add", "update", "delete", "show", "validate", "dag", "migrate", "progress"]
     return {
-        "commands": {
-            "inspect": list(INSPECT_COMMAND_NAMES),
-            "card": ["add", "update", "delete", "show", "validate", "dag", "migrate"],
-            "todo": ["set"],
-            "card_types": [card_type.name for card_type in cards_config.card_types],
-        },
+        "commands": commands,
         "scopes": [scope.value for scope in SearchScope],
         "memory_types": [memory_type.value for memory_type in WRITABLE_MEMORY_TYPES],
         "path_kinds": [kind.value for kind in InspectPathKind],
