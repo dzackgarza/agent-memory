@@ -1,22 +1,22 @@
 ## Intended result
 
-The remaining ledger issues are either resolved with concrete disposition evidence or redirected into live implementation issues, so review residue and urgent-frontmatter debt are not left as ambiguous permanent backlog.
+Urgent-frontmatter debt is either resolved with concrete disposition evidence or redirected into live implementation issues, so it is not left as ambiguous permanent backlog.
 
 ## Scope
 
-- Included: #57 urgent-frontmatter debt ledger disposition and #67 non-blocking PR #35 review residue disposition.
+- Included: #57 urgent-frontmatter debt ledger disposition.
+- Excluded: #67 non-blocking PR #35 review residue disposition; it remains an open issue and requires its own evidence pass.
 - Excluded: implementing the substantive child work already owned elsewhere unless this PR deliberately narrows to a concrete residual fix; silent closure of any residue without evidence.
 - Preserved behavior: ledger cleanup must not pretend implementation work is complete merely because it was cataloged.
 
 ## GitHub tracking
 
-- Target issue set: #57, #67
+- Target issue set: #57
 - Milestone: unassigned ledger cleanup.
 - Closes on merge:
   - Closes #57
-  - Closes #67
 - References only:
-  - Refs #35
+  - Refs #67
   - Refs #41
 
 ## Implementation plan
@@ -51,12 +51,6 @@ This ledger closes no implementation issue by itself. Its completion condition i
   - Partial / not claimed: no administrative closure that hides unowned implementation work.
   - Evidence: the disposition ledger above links every original #57 bullet to its merged implementation or open successor.
 
-- [ ] **#67 - PR #35 review residue has no remaining actionable work**
-  - Proof obligations claimed: Kilo/Copilot residue is checked against final PR #35 state and current policy; any still-actionable item is moved to a live issue before #67 closes.
-  - Partial / not claimed: no reopening of #35 or broad card-schema work.
-  - Evidence required: disposition note with links to review/check state and successor issues if any.
-  - Current evidence: issue text only.
-
 ## Automated gates
 
-Keep draft until the disposition ledger is evidence-linked and does not launder unfinished implementation work as mere cleanup.
+Ready for review: the disposition ledger is evidence-linked and does not launder unfinished implementation work as mere cleanup.
