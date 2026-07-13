@@ -617,6 +617,60 @@ def test_maintain_skill_prints_vault_maintenance_entrypoint(tmp_path: Path) -> N
     assert "ephemeral error state" in result.stdout
 
 
+def test_maintain_normalize_reconciles_extra_okf_frontmatter_before_iwe_writes(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    created = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Normalize legacy frontmatter",
+        content="This body should be normalized through the IWE boundary.",
+    )
+    note_path = Path(str(created["path"]))
+    metadata = frontmatter(note_path)
+    original_body = note_path.read_text(encoding="utf-8").split("---\n", 2)[2]
+    note_path.write_text(
+        "---\n"
+        "title: Normalize legacy frontmatter\n"
+        "tags:\n"
+        "  - project\n"
+        "  - decision\n"
+        "---\n"
+        + original_body
+        + "\n---\n"
+        + yaml.safe_dump(metadata, sort_keys=False)
+        + "---\n",
+        encoding="utf-8",
+    )
+
+    result = run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
+
+    normalized = frontmatter(note_path)
+    assert normalized == metadata
+    assert result.stdout
+    assert note_path.read_text(encoding="utf-8").count("\n---\n") == 2
+
+
+def test_maintain_normalize_fails_before_iwe_writes_unreconcilable_frontmatter(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    created = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Reject unknown legacy frontmatter",
+        content="This body must remain unchanged when reconciliation fails.",
+    )
+    note_path = Path(str(created["path"]))
+    original = note_path.read_text(encoding="utf-8") + "\n---\nlegacy_status: active\n---\n"
+    note_path.write_text(original, encoding="utf-8")
+
+    result = run_agent_memory_process(workspace.repo, "maintain", "normalize", "--scope", "project")
+
+    assert result.returncode != 0
+    assert str(note_path) in result.stderr
+    assert note_path.read_text(encoding="utf-8") == original
+
+
 def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
     vault = tmp_path / "module-vault"
 
