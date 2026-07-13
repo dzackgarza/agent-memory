@@ -850,19 +850,18 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
     if not cards_config.workflow_roles:
         raise MemoryOperationError("plan progress requires workflow_roles in the active card schema")
     complete_statuses = cards_config.statuses_with_role("complete")
+    note_scan = scan_note_records(config, scope)
     plans: list[JsonObject] = []
     unsupported_plans: list[JsonObject] = []
     total_todos = 0
     completed_todos = 0
-    for path in memory_files(config, scope):
-        document = read_memory(path)
-        if document.metadata.get("type") != MemoryType.PLAN.value:
+    for record in note_scan.records:
+        if record.memory_type is not MemoryType.PLAN:
             continue
-        title = metadata_string(document.metadata, "title", path)
-        key = memory_key(config.vault, path)
-        todos = document.metadata.get("todos")
+        path = record.path
+        todos = record.document.metadata.get("todos")
         if not isinstance(todos, list):
-            unsupported_plans.append({"key": key, "path": str(path), "title": title, "reason": "plan has no todos list"})
+            unsupported_plans.append({"key": record.key, "path": str(path), "title": record.title, "reason": "plan has no todos list"})
             continue
         status_counts = Counter(plan_todo_statuses(todos, path))
         plan_total = sum(status_counts.values())
@@ -871,9 +870,9 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         completed_todos += plan_completed
         plans.append(
             {
-                "key": key,
+                "key": record.key,
                 "path": str(path),
-                "title": title,
+                "title": record.title,
                 "total_todos": plan_total,
                 "completed_todos": plan_completed,
                 "completion_percent": (100 * plan_completed / plan_total) if plan_total else 0,
@@ -884,6 +883,7 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         "scope": scope.value,
         "plans": plans,
         "unsupported_plans": unsupported_plans,
+        "findings": note_findings_json(note_scan.findings),
         "total_todos": total_todos,
         "completed_todos": completed_todos,
         "completion_percent": (100 * completed_todos / total_todos) if total_todos else 0,

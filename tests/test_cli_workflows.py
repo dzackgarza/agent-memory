@@ -1193,6 +1193,11 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     global_path.write_text("---\n" + yaml.safe_dump(global_metadata, sort_keys=False) + "---\n# Legacy Global Plan\n", encoding="utf-8")
     unsupported_path = project_path.parent / "plan-without-todos.md"
     write_unmigrated_plan(unsupported_path, "Plan Without Todos", workspace.project_id)
+    malformed_note = write_raw_project_note(
+        workspace,
+        "malformed-decision",
+        "---\ntype: decision\nscope: project\ntitle: Malformed Decision\ndescription: malformed fixture\ntags: project\n---\nBody.\n",
+    )
     subprocess.run(
         ["git", "add", str(cards_path.relative_to(workspace.vault)), str(project_path.relative_to(workspace.vault)), str(global_path.relative_to(workspace.vault))],
         cwd=workspace.vault,
@@ -1222,6 +1227,7 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
             "reason": "plan has no todos list",
         }
     ]
+    assert_note_finding(project_progress, malformed_note, workspace)
 
     assert global_progress["scope"] == "global"
     assert global_progress["total_todos"] == 2
@@ -1231,6 +1237,7 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     assert [plan["key"] for plan in global_plans] == ["global/plans/global-progress"]
     assert global_plans[0]["status_counts"] == {"complete": 1, "unstarted": 1}
     assert json_records(global_progress, "unsupported_plans") == []
+    assert json_records(global_progress, "findings") == []
 
     assert both_progress["scope"] == "both"
     assert both_progress["total_todos"] == 5
@@ -1245,6 +1252,7 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
             "reason": "plan has no todos list",
         }
     ]
+    assert_note_finding(both_progress, malformed_note, workspace)
 
 
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
