@@ -846,10 +846,13 @@ def update_plan_todo(
 
 def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
-    cards_config = load_card_system_config(config.vault, config.project_id)
-    if not cards_config.workflow_roles:
-        raise MemoryOperationError("plan progress requires workflow_roles in the active card schema")
-    complete_statuses = cards_config.statuses_with_role("complete")
+    complete_statuses_by_scope: dict[MemoryScope, set[str]] = {}
+    for memory_scope in search_scope_memory_scopes(scope, both_order=(MemoryScope.PROJECT, MemoryScope.GLOBAL)):
+        schema_project_id = require_project_id(config) if memory_scope is MemoryScope.PROJECT else None
+        cards_config = load_card_system_config(config.vault, schema_project_id)
+        if not cards_config.workflow_roles:
+            raise MemoryOperationError("plan progress requires workflow_roles in the active card schema")
+        complete_statuses_by_scope[memory_scope] = cards_config.statuses_with_role("complete")
     note_scan = scan_note_records(config, scope)
     findings = list(note_scan.findings)
     plans: list[JsonObject] = []
@@ -873,7 +876,7 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
             findings.append(note_finding_for_error(config, path, error))
             continue
         plan_total = sum(status_counts.values())
-        plan_completed = sum(count for status, count in status_counts.items() if status in complete_statuses)
+        plan_completed = sum(count for status, count in status_counts.items() if status in complete_statuses_by_scope[record.scope])
         total_todos += plan_total
         completed_todos += plan_completed
         plans.append(

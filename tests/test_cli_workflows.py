@@ -1164,14 +1164,18 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     cards = yaml.safe_load((workspace.vault / "_meta" / "cards.yaml").read_text(encoding="utf-8"))
     assert isinstance(cards, dict)
     cards["statuses"].append("card-only")
+    cards["statuses"].append("project-complete")
+    cards["workflow_roles"]["complete"] = ["project-complete"]
+    cards["workflow_roles"]["started"].append("project-complete")
     cards_path.write_text(yaml.safe_dump(cards, sort_keys=False), encoding="utf-8")
 
     project_key, project_path = write_legacy_plan_with_todos(workspace, slug="project-progress")
     project_metadata = frontmatter(project_path)
     project_todos = json_array(project_metadata["todos"])
+    json_object(project_todos[0])["status"] = "legacy-pending"
     project_children = json_array(json_object(project_todos[0])["children"])
     json_object(project_children[0])["status"] = "complete"
-    json_object(project_children[1])["status"] = "legacy-pending"
+    json_object(project_children[1])["status"] = "project-complete"
     project_path.write_text("---\n" + yaml.safe_dump(project_metadata, sort_keys=False) + "---\n# Legacy Project Plan\n", encoding="utf-8")
     _malformed_plan_key, malformed_plan_path = write_legacy_plan_with_todos(workspace, slug="malformed-progress")
     malformed_plan_metadata = frontmatter(malformed_plan_path)
@@ -1234,7 +1238,7 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     project_plans = json_records(project_progress, "plans")
     assert len(project_plans) == 1
     assert project_plans[0]["key"] == project_key
-    assert project_plans[0]["status_counts"] == {"complete": 1, "legacy-pending": 1, "unstarted": 1}
+    assert project_plans[0]["status_counts"] == {"complete": 1, "legacy-pending": 1, "project-complete": 1}
     assert json_records(project_progress, "unsupported_plans") == [
         {
             "key": f"projects/{workspace.project_id}/plans/plan-without-todos",
