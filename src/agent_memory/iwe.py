@@ -35,3 +35,7 @@ def extract(vault: Path, key: str, section: str) -> list[str]:
 
 def inline(vault: Path, key: str, reference: str) -> list[str]:
     return _iwe.inline(str(vault), key, reference)
+
+
+def normalize(vault: Path) -> list[str]:
+    return _iwe.normalize(str(vault))

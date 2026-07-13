@@ -266,3 +266,16 @@ pub fn inline(vault: &Path, key: &str, reference: &str) -> Result<Vec<String>, I
     apply_changes(&changes, vault);
     Ok(affected)
 }
+
+/// `iwe normalize`: render every document through liwe's canonical Markdown writer.
+pub fn normalize(vault: &Path) -> Vec<String> {
+    let graph = load_graph(vault);
+    let normalized = graph.export();
+    let mut keys: Vec<String> = normalized.keys().cloned().collect();
+    keys.sort();
+    for (key, markdown) in normalized {
+        std::fs::write(vault.join(format!("{}.md", key)), markdown)
+            .expect("Failed to write normalized document file");
+    }
+    keys
+}

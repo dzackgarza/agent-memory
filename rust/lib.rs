@@ -55,6 +55,12 @@ fn inline(vault: &str, key: &str, reference: &str) -> PyResult<Vec<String>> {
     ops::inline(std::path::Path::new(vault), key, reference).map_err(to_py_err)
 }
 
+/// `iwe normalize`: render every vault document in canonical Markdown form.
+#[pyfunction]
+fn normalize(vault: &str) -> Vec<String> {
+    ops::normalize(std::path::Path::new(vault))
+}
+
 #[pymodule]
 fn _iwe(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(retrieve, module)?)?;
@@ -63,5 +69,6 @@ fn _iwe(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(delete, module)?)?;
     module.add_function(wrap_pyfunction!(extract, module)?)?;
     module.add_function(wrap_pyfunction!(inline, module)?)?;
+    module.add_function(wrap_pyfunction!(normalize, module)?)?;
     Ok(())
 }

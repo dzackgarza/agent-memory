@@ -33,6 +33,7 @@ from agent_memory.operations import (
     inspect_schema,
     merge_probe_payloads,
     outgoing_link_keys,
+    read_memory,
     update_memory,
 )
 from agent_memory.operations import load_project_config as operations_load_project_config
@@ -645,10 +646,10 @@ def test_maintain_normalize_reconciles_extra_okf_frontmatter_before_iwe_writes(t
 
     result = run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
 
-    normalized = frontmatter(note_path)
+    normalized = read_memory(note_path).metadata
     assert normalized == metadata
     assert result.stdout
-    assert note_path.read_text(encoding="utf-8").count("\n---\n") == 2
+    assert "\n---\n" not in read_memory(note_path).body
 
 
 def test_maintain_normalize_fails_before_iwe_writes_unreconcilable_frontmatter(tmp_path: Path) -> None:
@@ -664,7 +665,7 @@ def test_maintain_normalize_fails_before_iwe_writes_unreconcilable_frontmatter(t
     original = note_path.read_text(encoding="utf-8") + "\n---\nlegacy_status: active\n---\n"
     note_path.write_text(original, encoding="utf-8")
 
-    result = run_agent_memory_process(workspace.repo, "maintain", "normalize", "--scope", "project")
+    result = run_agent_memory_subprocess(workspace.repo, "maintain", "normalize", "--scope", "project")
 
     assert result.returncode != 0
     assert str(note_path) in result.stderr
