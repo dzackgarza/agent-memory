@@ -95,6 +95,27 @@ def test_6_replace_index_link_behavior(tmp_path: Path) -> None:
     assert "* [Appended](appended.md) - Desc" in index_file.read_text(encoding="utf-8")
 
 
+def test_replace_index_link_preserves_crlf_terminators(tmp_path: Path) -> None:
+    index_file = tmp_path / "index.md"
+    index_file.write_bytes(b"# Concepts\r\n\r\n* [Old Title](old.md) - Old desc\r\n")
+
+    replace_index_link(index_file, "old.md", "New Title", "new.md", "New desc")
+
+    assert index_file.read_bytes() == b"# Concepts\r\n\r\n* [New Title](new.md) - New desc\r\n"
+
+
+def test_replace_index_link_appends_after_unterminated_content(tmp_path: Path) -> None:
+    index_file = tmp_path / "index.md"
+    original = "# Concepts\n\nUnrelated final prose"
+    index_file.write_text(original, encoding="utf-8")
+
+    replace_index_link(index_file, "missing.md", "Added", "added.md", "Description")
+    assert index_file.read_text(encoding="utf-8") == original + "\n* [Added](added.md) - Description\n"
+
+    remove_index_link(index_file, "added.md")
+    assert index_file.read_text(encoding="utf-8") == original + "\n"
+
+
 def test_7_duplicate_targets(tmp_path: Path) -> None:
     index_file = tmp_path / "index.md"
     content = """# Concepts
@@ -133,12 +154,12 @@ def test_9_special_title_round_trips(tmp_path: Path) -> None:
 
 def test_10_exact_output_assertions(tmp_path: Path) -> None:
     index_file = tmp_path / "index.md"
-    content = "---\\nfoo: bar\\n---\\n# Concepts\\n\\n* [Victim](victim.md) - Desc\\n\\nSome prose.\\n"
-    index_file.write_bytes(content.encode("utf-8"))
+    content = b"---\nfoo: bar\n---\n# Concepts\n\n* [Victim](victim.md) - Desc\n\nSome prose.\n"
+    index_file.write_bytes(content)
 
     # Try removing a non-existent link
     remove_index_link(index_file, "missing.md")
-    assert index_file.read_bytes() == content.encode("utf-8")
+    assert index_file.read_bytes() == content
 
 
 def test_11_idempotence(tmp_path: Path) -> None:

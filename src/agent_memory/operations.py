@@ -2296,7 +2296,7 @@ def locate_index_link(index_path: Path, target: str) -> tuple[list[str], int | N
     if not index_path.is_file():
         return [], None
 
-    with index_path.open("r", encoding="utf-8") as f:
+    with index_path.open("r", encoding="utf-8", newline="") as f:
         lines = f.readlines()
 
     entries = _parse_index_entries(lines)
@@ -2312,12 +2312,15 @@ def locate_index_link(index_path: Path, target: str) -> tuple[list[str], int | N
 def replace_index_link(index_path: Path, old_target: str, new_title: str, new_target: str, description: str) -> None:
     lines, entry_start = locate_index_link(index_path, old_target)
     if entry_start is None:
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines.append("\n")
         lines.append(okf_index_entry(new_title, new_target, description) + "\n")
     else:
         original_line = lines[entry_start]
         ending = "\r\n" if original_line.endswith("\r\n") else ("\n" if original_line.endswith("\n") else "")
         lines[entry_start] = okf_index_entry(new_title, new_target, description) + ending
-    index_path.write_text("".join(lines), encoding="utf-8")
+    with index_path.open("w", encoding="utf-8", newline="") as index_file:
+        index_file.write("".join(lines))
 
 
 def remove_index_link(index_path: Path, target: str) -> None:
@@ -2325,7 +2328,8 @@ def remove_index_link(index_path: Path, target: str) -> None:
     if entry_start is None:
         return
     del lines[entry_start]
-    index_path.write_text("".join(lines), encoding="utf-8")
+    with index_path.open("w", encoding="utf-8", newline="") as index_file:
+        index_file.write("".join(lines))
 
 
 def remove_index_link_by_target(index_path: Path, target: str) -> None:
