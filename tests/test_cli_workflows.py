@@ -1157,34 +1157,90 @@ def test_todo_set_reports_clean_errors_for_invalid_inputs(tmp_path: Path) -> Non
     assert "plan memory not found" in missing_plan_stderr
 
 
-def test_plan_progress_summarizes_only_plan_todo_trees(tmp_path: Path) -> None:
+def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    plan_key, plan_path = write_legacy_plan_with_todos(workspace)
-    metadata = frontmatter(plan_path)
-    todos = json_array(metadata["todos"])
-    root = json_object(todos[0])
-    children = json_array(root["children"])
-    json_object(children[0])["status"] = "complete"
-    json_object(children[1])["status"] = "in-progress"
-    plan_path.write_text("---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n# Legacy Plan\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(plan_path.relative_to(workspace.vault))], cwd=workspace.vault, check=True, text=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "Set plan progress fixture statuses"], cwd=workspace.vault, check=True, text=True, capture_output=True)
-    write_unmigrated_plan(plan_path.parent / "plan-without-todos.md", "Plan Without Todos", workspace.project_id)
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards = yaml.safe_load((workspace.vault / "_meta" / "cards.yaml").read_text(encoding="utf-8"))
+    assert isinstance(cards, dict)
+    cards["statuses"].append("card-only")
+    cards_path.write_text(yaml.safe_dump(cards, sort_keys=False), encoding="utf-8")
 
-    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "project"))
+    project_key, project_path = write_legacy_plan_with_todos(workspace, slug="project-progress")
+    project_metadata = frontmatter(project_path)
+    project_todos = json_array(project_metadata["todos"])
+    project_children = json_array(json_object(project_todos[0])["children"])
+    json_object(project_children[0])["status"] = "complete"
+    json_object(project_children[1])["status"] = "legacy-pending"
+    project_path.write_text("---\n" + yaml.safe_dump(project_metadata, sort_keys=False) + "---\n# Legacy Project Plan\n", encoding="utf-8")
 
-    assert progress["scope"] == "project"
-    assert progress["total_todos"] == 3
-    assert progress["completed_todos"] == 1
-    assert progress["completion_percent"] == pytest.approx(33.333333333333336)
-    plans = json_records(progress, "plans")
-    assert len(plans) == 1
-    assert plans[0]["key"] == plan_key
-    assert plans[0]["status_counts"] == {"complete": 1, "in-progress": 1, "unstarted": 1}
-    assert json_records(progress, "unsupported_plans") == [
+    global_path = workspace.vault / "global" / "plans" / "global-progress.md"
+    global_metadata: dict[str, JsonValue] = {
+        "type": "plan",
+        "title": "Legacy Global Plan",
+        "description": "global plan progress fixture",
+        "tags": ["global", "plan"],
+        "timestamp": "2026-07-04T00:00:00Z",
+        "scope": "global",
+        "source": "agent",
+        "confidence": "high",
+        "promotable": False,
+        "todos": [
+            {"id": "G1", "content": "Complete global task", "status": "complete"},
+            {"id": "G2", "content": "Await global task", "status": "unstarted"},
+        ],
+    }
+    global_path.write_text("---\n" + yaml.safe_dump(global_metadata, sort_keys=False) + "---\n# Legacy Global Plan\n", encoding="utf-8")
+    unsupported_path = project_path.parent / "plan-without-todos.md"
+    write_unmigrated_plan(unsupported_path, "Plan Without Todos", workspace.project_id)
+    subprocess.run(
+        ["git", "add", str(cards_path.relative_to(workspace.vault)), str(project_path.relative_to(workspace.vault)), str(global_path.relative_to(workspace.vault))],
+        cwd=workspace.vault,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "commit", "-m", "Seed scoped legacy plan progress fixtures"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+
+    project_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "project"))
+    global_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "global"))
+    both_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "both"))
+
+    assert project_progress["scope"] == "project"
+    assert project_progress["total_todos"] == 3
+    assert project_progress["completed_todos"] == 1
+    assert project_progress["completion_percent"] == pytest.approx(33.333333333333336)
+    project_plans = json_records(project_progress, "plans")
+    assert len(project_plans) == 1
+    assert project_plans[0]["key"] == project_key
+    assert project_plans[0]["status_counts"] == {"complete": 1, "legacy-pending": 1, "unstarted": 1}
+    assert json_records(project_progress, "unsupported_plans") == [
         {
             "key": f"projects/{workspace.project_id}/plans/plan-without-todos",
-            "path": str(plan_path.parent / "plan-without-todos.md"),
+            "path": str(unsupported_path),
+            "title": "Plan Without Todos",
+            "reason": "plan has no todos list",
+        }
+    ]
+
+    assert global_progress["scope"] == "global"
+    assert global_progress["total_todos"] == 2
+    assert global_progress["completed_todos"] == 1
+    assert global_progress["completion_percent"] == 50
+    global_plans = json_records(global_progress, "plans")
+    assert [plan["key"] for plan in global_plans] == ["global/plans/global-progress"]
+    assert global_plans[0]["status_counts"] == {"complete": 1, "unstarted": 1}
+    assert json_records(global_progress, "unsupported_plans") == []
+
+    assert both_progress["scope"] == "both"
+    assert both_progress["total_todos"] == 5
+    assert both_progress["completed_todos"] == 2
+    assert both_progress["completion_percent"] == 40
+    assert {plan["key"] for plan in json_records(both_progress, "plans")} == {project_key, "global/plans/global-progress"}
+    assert json_records(both_progress, "unsupported_plans") == [
+        {
+            "key": f"projects/{workspace.project_id}/plans/plan-without-todos",
+            "path": str(unsupported_path),
             "title": "Plan Without Todos",
             "reason": "plan has no todos list",
         }

@@ -864,7 +864,7 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         if not isinstance(todos, list):
             unsupported_plans.append({"key": key, "path": str(path), "title": title, "reason": "plan has no todos list"})
             continue
-        status_counts = Counter(plan_todo_statuses(todos, path, set(cards_config.statuses)))
+        status_counts = Counter(plan_todo_statuses(todos, path))
         plan_total = sum(status_counts.values())
         plan_completed = sum(count for status, count in status_counts.items() if status in complete_statuses)
         total_todos += plan_total
@@ -890,13 +890,13 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
     }
 
 
-def plan_todo_statuses(todos: list[MetadataValue], path: Path, known_statuses: set[str]) -> list[str]:
+def plan_todo_statuses(todos: list[MetadataValue], path: Path) -> list[str]:
     statuses: list[str] = []
     for item in todos:
         todo = todo_mapping(item, path)
         status = todo.get("status")
-        if not isinstance(status, str) or status not in known_statuses:
-            raise MalformedMemoryError(path, f"todo {todo['id']!r} has status outside the active card schema")
+        if not isinstance(status, str) or not status.strip():
+            raise MalformedMemoryError(path, f"todo {todo['id']!r} must have a nonempty string status")
         statuses.append(status)
         for child_key in PLAN_TODO_CHILD_KEYS:
             children = todo.get(child_key)
@@ -904,7 +904,7 @@ def plan_todo_statuses(todos: list[MetadataValue], path: Path, known_statuses: s
                 continue
             if not isinstance(children, list):
                 raise MalformedMemoryError(path, f"todo field {child_key} must be a list")
-            statuses.extend(plan_todo_statuses(children, path, known_statuses))
+            statuses.extend(plan_todo_statuses(children, path))
     return statuses
 
 
