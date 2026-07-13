@@ -72,6 +72,7 @@ from agent_memory.operations import (
     merge_memory,
     migrate_cards,
     move_memory,
+    normalize_memories,
     remove_sync_systemd_timer,
     retrieve_memory,
     rewrite_wikilinks,
@@ -528,6 +529,14 @@ def maintain_merge_command(
     emit(merge_memory(key=key, reference=reference, cwd=Path.cwd()))
 
 
+def maintain_normalize_command(
+    *,
+    scope: Annotated[SearchScope, Parameter(help="Memory scope to reconcile before normalizing: project, global, or both.")],
+) -> None:
+    """Reconcile OKF frontmatter, then normalize the selected vault memories."""
+    emit(normalize_memories(scope=scope, cwd=Path.cwd()))
+
+
 def doctor_command() -> None:
     """Validate dependencies and the current repository memory setup."""
     emit(run_doctor(cwd=Path.cwd()))
@@ -798,6 +807,7 @@ def register_commands(registration_state: CardConfigRegistrationState) -> None:
     maintain_app.command(maintain_move_command, name="move")
     maintain_app.command(maintain_split_command, name="split")
     maintain_app.command(maintain_merge_command, name="merge")
+    maintain_app.command(maintain_normalize_command, name="normalize")
     card_app.command(card_add_command, name="add")
     card_app.command(card_update_command, name="update")
     card_app.command(card_delete_command, name="delete")

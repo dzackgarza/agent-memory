@@ -36,6 +36,7 @@ from agent_memory.operations import (
     inspect_schema,
     merge_probe_payloads,
     outgoing_link_keys,
+    read_memory,
     update_memory,
 )
 from agent_memory.operations import load_project_config as operations_load_project_config
@@ -643,6 +644,96 @@ def test_maintain_skill_prints_vault_maintenance_entrypoint(tmp_path: Path) -> N
     assert "references/commit-vault-work.md" in result.stdout
     assert "committed at all times" in result.stdout
     assert "ephemeral error state" in result.stdout
+
+
+def test_maintain_normalize_reconciles_extra_okf_frontmatter_before_iwe_writes(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    created = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Normalize legacy frontmatter",
+        content="This body should be normalized through the IWE boundary.",
+    )
+    note_path = Path(str(created["path"]))
+    metadata = frontmatter(note_path)
+    original_body = note_path.read_text(encoding="utf-8").split("---\n", 2)[2]
+    note_path.write_text(
+        "---\n"
+        "title: Normalize legacy frontmatter\n"
+        "tags:\n"
+        "  - project\n"
+        "  - decision\n"
+        "---\n"
+        + original_body
+        + "\n---\n"
+        + yaml.safe_dump(metadata, sort_keys=False)
+        + "---\n",
+        encoding="utf-8",
+    )
+
+    result = run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
+
+    normalized = read_memory(note_path).metadata
+    assert normalized == metadata
+    assert result.stdout
+    assert "\n---\n" not in read_memory(note_path).body
+
+
+def test_maintain_normalize_fails_before_iwe_writes_unreconcilable_frontmatter(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    created = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Reject unknown legacy frontmatter",
+        content="This body must remain unchanged when reconciliation fails.",
+    )
+    note_path = Path(str(created["path"]))
+    original = note_path.read_text(encoding="utf-8") + "\n---\nlegacy_status: active\n---\n"
+    note_path.write_text(original, encoding="utf-8")
+
+    result = run_agent_memory_subprocess(workspace.repo, "maintain", "normalize", "--scope", "project")
+
+    assert result.returncode != 0
+    assert str(note_path) in result.stderr
+    assert note_path.read_text(encoding="utf-8") == original
+
+
+def test_maintain_normalize_project_does_not_rewrite_global_memories(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    project_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Normalize only the project scope",
+        content="The selected project note exercises the normalization boundary.",
+    )
+    global_note = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="advice",
+        title="Leave unselected global memory alone",
+        content="This global note must not be rewritten by project normalization.",
+    )
+    project_path = Path(str(project_note["path"]))
+    global_path = Path(str(global_note["path"]))
+    global_original = global_path.read_text(encoding="utf-8").replace(
+        "This global note must not be rewritten by project normalization.",
+        "This global note has intentionally irregular spacing.\n\n\nIt must remain byte-for-byte unchanged.",
+    )
+    global_path.write_text(global_original, encoding="utf-8")
+
+    result = parse_json_stdout(
+        run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
+    )
+
+    assert read_memory(project_path).metadata["scope"] == "project"
+    assert result == {
+        "scope": "project",
+        "normalized": [project_path.relative_to(workspace.vault).with_suffix("").as_posix()],
+    }
+    assert global_path.read_text(encoding="utf-8") == global_original
 
 
 def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
