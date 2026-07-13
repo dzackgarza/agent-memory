@@ -33,6 +33,7 @@ status_sets:
     default: needs-agent-review
     required: true
     options:
+      - unstarted
       - needs-agent-review
       - needs-human-input
       - approved-and-unstarted

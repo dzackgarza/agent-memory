@@ -47,7 +47,5 @@ For false or obsolete findings, record the source-backed disposition in the PR b
 
 ## Automated gates
 
-`just test` passed on 2026-07-04 with 191 tests in 354.74s.
-`just test-ci` exited 0 on 2026-07-04 with both pytest passes green, diff-cover at 86%, deptry/import-linter/semgrep/vibecheck green, and push/CI quality checks completed.
-The ai-slop-detector step still printed a critical-threshold notice for `operations.py`; that pre-existing/out-of-scope residue is tracked by #80.
-Keep draft until PR body publication, automated review, and #77 merge/close synchronization are complete.
+`just test` passed on 2026-07-04 with 191 tests in 354.74s. `just test-ci` exited 0 on 2026-07-04 with both pytest passes green, diff-cover at 86%, deptry/import-linter/semgrep/vibecheck green, and push/CI quality checks completed.
+The ai-slop-detector step still printed a critical-threshold notice for `operations.py`; that pre-existing/out-of-scope residue is tracked by #80. Keep draft until PR body publication, automated review, and #77 merge/close synchronization are complete.

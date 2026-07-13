@@ -474,6 +474,50 @@ def default_cards_schema_text() -> str:
     return resources.files("agent_memory.defaults").joinpath("cards.yaml").read_text(encoding="utf-8")
 
 
+def active_card_schema_path(config: ProjectConfig) -> Path:
+    project_id = require_project_id(config)
+    project_schema = config.vault / "projects" / project_id / "_meta" / "cards.yaml"
+    if project_schema.is_file():
+        return project_schema
+    return config.vault / "_meta" / "cards.yaml"
+
+
+def add_card_status_option(status_set_name: str, status: str, cwd: Path) -> JsonObject:
+    config = load_project_config(cwd)
+    path = active_card_schema_path(config)
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise MemoryOperationError(f"card schema must contain a mapping: {path}")
+    statuses = payload.get("statuses")
+    if not isinstance(statuses, list) or status not in statuses:
+        raise MemoryOperationError(f"status {status!r} is not declared in the card schema catalog")
+    status_sets = payload.get("status_sets")
+    if not isinstance(status_sets, dict) or status_set_name not in status_sets:
+        raise MemoryOperationError(f"unknown card schema status set: {status_set_name}")
+    status_set = status_sets[status_set_name]
+    if not isinstance(status_set, dict) or not isinstance(status_set.get("options"), list):
+        raise MemoryOperationError(f"card schema status set {status_set_name!r} must declare an options list")
+    options = status_set["options"]
+    if status in options:
+        return {"changed": False, "path": str(path), "status": status, "status_set": status_set_name}
+
+    options.append(status)
+    CardSystemConfig.model_validate(payload)
+    rendered = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(rendered)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(path.stat().st_mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    commit_vault_changes(config.vault, f"Add {status!r} to card status set {status_set_name!r}", paths=[path])
+    return {"changed": True, "path": str(path), "status": status, "status_set": status_set_name}
+
+
 def init_global_vault(vault: Path) -> JsonObject:
     vault = normalize_vault_path(vault)
     vault.mkdir(parents=True)
@@ -683,13 +727,13 @@ def sync_memory_transition_indexes(transition: MemoryTransition) -> None:
     if transition.destination_path.parent == transition.source_path.parent:
         replace_index_link(
             transition.destination_path.parent / "index.md",
-            transition.old_title,
+            transition.source_path.name,
             transition.new_title,
             transition.destination_path.name,
             transition.description,
         )
         return
-    remove_index_link(transition.source_path.parent / "index.md", transition.old_title)
+    remove_index_link(transition.source_path.parent / "index.md", transition.source_path.name)
     append_index_link(
         transition.destination_path.parent / "index.md",
         transition.new_title,
@@ -888,7 +932,7 @@ def _delete_memory(key: str, cwd: Path, backlink_disposition: DeleteBacklinkDisp
         commit_message = f"Delete memory: {key}"
     else:
         title = metadata_string(document.metadata, "title", path)
-        remove_index_link(path.parent / "index.md", title)
+        remove_index_link(path.parent / "index.md", path.name)
         commit_message = f"Delete memory: {title}"
         iwe.delete(config.vault, key)
 
@@ -1462,7 +1506,7 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     pointer_body = f"# {title}\n\nPromoted to [[{destination_key}]].\n"
     assert source_path.parent.is_dir(), "project memory parent must be a directory"
     write_new_memory(source_path, pointer_metadata, pointer_body)
-    replace_index_link(source_path.parent / "index.md", title, title, source_path.name, pointer_description)
+    replace_index_link(source_path.parent / "index.md", source_path.name, title, source_path.name, pointer_description)
     index_zk_notebook(config.vault)
     rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, destination_key),))
     index_zk_notebook(config.vault)
@@ -2158,56 +2202,140 @@ def okf_tags(
     return [scope.value, memory_type.value, *extra_tags]
 
 
+@dataclass(frozen=True)
+class ParsedIndexEntry:
+    line_index: int
+    target: str
+
+
+def _parse_index_entries(lines: list[str]) -> list[ParsedIndexEntry]:
+    entries = []
+
+    body_start = 0
+    if lines and lines[0].startswith("---"):
+        for i in range(1, len(lines)):
+            if lines[i].startswith("---") or lines[i].startswith("..."):
+                body_start = i + 1
+                break
+
+    body_content = "".join(lines[body_start:])
+    tokens = MARKDOWN_PARSER.parse(body_content)
+
+    current_section = None
+    list_item_depth = 0
+
+    for i, token in enumerate(tokens):
+        if token.type == "heading_open":
+            if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
+                heading_text = tokens[i + 1].content
+                if heading_text in ("Concepts", "Subdirectories"):
+                    current_section = heading_text
+                else:
+                    current_section = None
+            continue
+
+        if not current_section:
+            continue
+
+        if token.type == "bullet_list_open":
+            list_item_depth += 1
+        elif token.type == "bullet_list_close":
+            list_item_depth -= 1
+        elif token.type == "list_item_open":
+            if list_item_depth != 1:
+                continue
+            if token.map is None:
+                continue
+            start_line = token.map[0] + body_start
+            end_line = token.map[1] + body_start
+
+            if end_line - start_line != 1:
+                continue
+
+            if (
+                i + 4 < len(tokens)
+                and tokens[i + 1].type == "paragraph_open"
+                and tokens[i + 2].type == "inline"
+                and tokens[i + 3].type == "paragraph_close"
+                and tokens[i + 4].type == "list_item_close"
+            ):
+                inline_token = tokens[i + 2]
+                children = inline_token.children
+                if not children:
+                    continue
+
+                if children[0].type != "link_open":
+                    continue
+
+                target = str(children[0].attrGet("href") or "")
+
+                link_close_idx = -1
+                for j, child in enumerate(children):
+                    if child.type == "link_close":
+                        link_close_idx = j
+                        break
+
+                if link_close_idx == -1 or link_close_idx + 1 >= len(children):
+                    continue
+
+                next_child = children[link_close_idx + 1]
+                if next_child.type != "text" or not next_child.content.startswith(" - "):
+                    continue
+
+                entries.append(ParsedIndexEntry(line_index=start_line, target=target))
+
+    return entries
+
+
 def append_index_link(index_path: Path, title: str, target: str, description: str) -> None:
     assert index_path.is_file(), "parent index must exist before linking"
     with index_path.open("a", encoding="utf-8") as index_file:
         index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
 
 
-def locate_index_link(index_path: Path, title: str) -> tuple[list[str], int | None]:
-    assert index_path.is_file(), "index must exist before editing a link"
-    # IWE rewrites the OKF bullet marker to "-" when it renames linked notes, so an
-    # entry may start with either bullet. This is the single owner of that contract.
-    link_prefixes = (f"* [{title}](", f"- [{title}](")
-    lines = index_path.read_text(encoding="utf-8").splitlines()
-    matching_indexes = [index for index, line in enumerate(lines) if any(line.startswith(prefix) for prefix in link_prefixes)]
-    if len(matching_indexes) > 1:
-        raise MemoryOperationError(f"index {index_path} contains multiple links for title: {title}")
-    if not matching_indexes:
+def locate_index_link(index_path: Path, target: str) -> tuple[list[str], int | None]:
+    if not index_path.is_file():
+        return [], None
+
+    with index_path.open("r", encoding="utf-8", newline="") as f:
+        lines = f.readlines()
+
+    entries = _parse_index_entries(lines)
+    matching = [e.line_index for e in entries if e.target == target]
+
+    if len(matching) > 1:
+        raise MemoryOperationError(f"index {index_path} contains multiple links for target: {target}")
+    if not matching:
         return lines, None
-    return lines, matching_indexes[0]
+    return lines, matching[0]
 
 
-def replace_index_link(index_path: Path, existing_title: str, new_title: str, target: str, description: str) -> None:
-    lines, entry_start = locate_index_link(index_path, existing_title)
+def replace_index_link(index_path: Path, old_target: str, new_title: str, new_target: str, description: str) -> None:
+    lines, entry_start = locate_index_link(index_path, old_target)
     if entry_start is None:
-        lines.append(okf_index_entry(new_title, target, description))
+        line_ending = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines.append(line_ending)
+        lines.append(okf_index_entry(new_title, new_target, description) + line_ending)
     else:
-        lines[entry_start] = okf_index_entry(new_title, target, description)
-    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        original_line = lines[entry_start]
+        ending = "\r\n" if original_line.endswith("\r\n") else ("\n" if original_line.endswith("\n") else "")
+        lines[entry_start] = okf_index_entry(new_title, new_target, description) + ending
+    with index_path.open("w", encoding="utf-8", newline="") as index_file:
+        index_file.write("".join(lines))
 
 
-def remove_index_link(index_path: Path, title: str) -> None:
-    lines, entry_start = locate_index_link(index_path, title)
+def remove_index_link(index_path: Path, target: str) -> None:
+    lines, entry_start = locate_index_link(index_path, target)
     if entry_start is None:
         return
     del lines[entry_start]
-    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with index_path.open("w", encoding="utf-8", newline="") as index_file:
+        index_file.write("".join(lines))
 
 
 def remove_index_link_by_target(index_path: Path, target: str) -> None:
-    if not index_path.is_file():
-        return
-    lines = index_path.read_text(encoding="utf-8").splitlines()
-    matching_indexes = []
-    for index, line in enumerate(lines):
-        striped = line.strip()
-        if (striped.startswith("* [") or striped.startswith("- [")) and f"]({target})" in striped:
-            matching_indexes.append(index)
-    if matching_indexes:
-        for idx in reversed(matching_indexes):
-            del lines[idx]
-        index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    remove_index_link(index_path, target)
 
 
 def metadata_string(metadata: dict[str, MetadataValue], key: str, path: Path) -> str:

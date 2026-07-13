@@ -40,6 +40,7 @@ from agent_memory.operations import (
     ProjectNotInitializedError,
     VaultCommitError,
     add_card,
+    add_card_status_option,
     add_memory,
     add_queue_item,
     basic_doctor,
@@ -147,6 +148,14 @@ def maintain_skill_command(
 ) -> None:
     """Print a bundled maintenance skill entrypoint."""
     print(bundled_skill_text(name), end="")
+
+
+def maintain_add_card_status_option_command(
+    status_set: Annotated[str, Parameter(help="Named status set in the active vault card schema.")],
+    status: Annotated[str, Parameter(help="Catalog status to add to the named status set.")],
+) -> None:
+    """Add one catalog status to one active card-schema status set."""
+    emit(add_card_status_option(status_set_name=status_set, status=status, cwd=Path.cwd()))
 
 
 def init_project_command(
@@ -757,6 +766,7 @@ def active_card_config() -> CardSystemConfig:
 def register_commands(registration_state: CardConfigRegistrationState) -> None:
     maintain_app.command(maintain_init_global, name="init-global")
     maintain_app.command(maintain_skill_command, name="skill")
+    maintain_app.command(maintain_add_card_status_option_command, name="add-card-status-option")
     init_app.command(init_project_command, name="project")
     app.command(add_command, name="add")
     app.command(update_command, name="update")
