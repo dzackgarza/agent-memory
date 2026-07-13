@@ -12,7 +12,9 @@ use ops::IweError;
 
 fn to_py_err(err: IweError) -> PyErr {
     match err {
-        IweError::NotFound(key) => PyKeyError::new_err(format!("memory key does not exist: {}", key)),
+        IweError::NotFound(key) => {
+            PyKeyError::new_err(format!("memory key does not exist: {}", key))
+        }
         IweError::Operation(message) => PyRuntimeError::new_err(message),
     }
 }
@@ -57,8 +59,9 @@ fn inline(vault: &str, key: &str, reference: &str) -> PyResult<Vec<String>> {
 
 /// `iwe normalize`: render every vault document in canonical Markdown form.
 #[pyfunction]
-fn normalize(vault: &str) -> Vec<String> {
-    ops::normalize(std::path::Path::new(vault))
+#[pyo3(signature = (vault, keys = None))]
+fn normalize(vault: &str, keys: Option<Vec<String>>) -> PyResult<Vec<String>> {
+    ops::normalize(std::path::Path::new(vault), keys).map_err(to_py_err)
 }
 
 #[pymodule]

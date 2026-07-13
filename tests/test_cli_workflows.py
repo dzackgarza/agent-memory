@@ -672,6 +672,42 @@ def test_maintain_normalize_fails_before_iwe_writes_unreconcilable_frontmatter(t
     assert note_path.read_text(encoding="utf-8") == original
 
 
+def test_maintain_normalize_project_does_not_rewrite_global_memories(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    project_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Normalize only the project scope",
+        content="The selected project note exercises the normalization boundary.",
+    )
+    global_note = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="advice",
+        title="Leave unselected global memory alone",
+        content="This global note must not be rewritten by project normalization.",
+    )
+    project_path = Path(str(project_note["path"]))
+    global_path = Path(str(global_note["path"]))
+    global_original = global_path.read_text(encoding="utf-8").replace(
+        "This global note must not be rewritten by project normalization.",
+        "This global note has intentionally irregular spacing.\n\n\nIt must remain byte-for-byte unchanged.",
+    )
+    global_path.write_text(global_original, encoding="utf-8")
+
+    result = parse_json_stdout(
+        run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
+    )
+
+    assert read_memory(project_path).metadata["scope"] == "project"
+    assert result == {
+        "scope": "project",
+        "normalized": [project_path.relative_to(workspace.vault).with_suffix("").as_posix()],
+    }
+    assert global_path.read_text(encoding="utf-8") == global_original
+
+
 def test_module_entrypoint_initializes_iwe_backed_vault(tmp_path: Path) -> None:
     vault = tmp_path / "module-vault"
 

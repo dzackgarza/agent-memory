@@ -8,7 +8,9 @@
 // apply_changes / squash_command / extract_command / inline_command, and
 // crates/iwe/src/render.rs for retrieve output (vendored in render.rs).
 
-use std::path::Path;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use liwe::graph::{Graph, GraphContext};
@@ -267,15 +269,76 @@ pub fn inline(vault: &Path, key: &str, reference: &str) -> Result<Vec<String>, I
     Ok(affected)
 }
 
-/// `iwe normalize`: render every document through liwe's canonical Markdown writer.
-pub fn normalize(vault: &Path) -> Vec<String> {
+/// `iwe normalize`: render selected documents through liwe's canonical Markdown writer.
+///
+/// The rendered documents are staged beside their targets before any target is replaced.
+/// A staging failure therefore leaves every existing memory untouched. Replacements use
+/// same-directory renames, so every successful replacement is an atomic file transition;
+/// an error identifies the exact target whose transition could not complete.
+pub fn normalize(
+    vault: &Path,
+    selected_keys: Option<Vec<String>>,
+) -> Result<Vec<String>, IweError> {
     let graph = load_graph(vault);
     let normalized = graph.export();
-    let mut keys: Vec<String> = normalized.keys().cloned().collect();
+    let mut keys = selected_keys.unwrap_or_else(|| normalized.keys().cloned().collect());
     keys.sort();
-    for (key, markdown) in normalized {
-        std::fs::write(vault.join(format!("{}.md", key)), markdown)
-            .expect("Failed to write normalized document file");
+    keys.dedup();
+
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(keys.len());
+    for (index, key) in keys.iter().enumerate() {
+        let markdown = normalized.get(key).ok_or_else(|| {
+            IweError::Operation(format!("cannot normalize missing memory key: {}", key))
+        })?;
+        let target = vault.join(format!("{}.md", key));
+        let parent = target.parent().ok_or_else(|| {
+            IweError::Operation(format!(
+                "cannot determine parent directory for {}",
+                target.display()
+            ))
+        })?;
+        let temporary = parent.join(format!(
+            ".{}.normalize-{}-{}",
+            target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("memory.md"),
+            std::process::id(),
+            index
+        ));
+        let staging_result = (|| -> Result<(), std::io::Error> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(markdown.as_bytes())?;
+            file.sync_all()
+        })();
+        if let Err(error) = staging_result {
+            for (temporary, _) in &staged {
+                let _ = std::fs::remove_file(temporary);
+            }
+            let _ = std::fs::remove_file(&temporary);
+            return Err(IweError::Operation(format!(
+                "failed to stage normalized memory {}: {}",
+                target.display(),
+                error
+            )));
+        }
+        staged.push((temporary, target));
     }
-    keys
+
+    for (temporary, target) in &staged {
+        if let Err(error) = std::fs::rename(temporary, target) {
+            for (remaining, _) in &staged {
+                let _ = std::fs::remove_file(remaining);
+            }
+            return Err(IweError::Operation(format!(
+                "failed to replace normalized memory {}: {}",
+                target.display(),
+                error
+            )));
+        }
+    }
+    Ok(keys)
 }

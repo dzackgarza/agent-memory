@@ -2779,12 +2779,20 @@ def reconciled_memory_contents(path: Path) -> tuple[dict[str, MetadataValue], st
 
 def normalize_memories(scope: SearchScope, cwd: Path) -> JsonObject:
     config = config_for_search_scope(scope, cwd)
-    reconciled = [(path, *reconciled_memory_contents(path)) for path in memory_files(config, scope)]
+    selected_paths = memory_files(config, scope)
+    reconciled = [(path, *reconciled_memory_contents(path)) for path in selected_paths]
     for path, metadata, body in reconciled:
         write_memory(path, metadata, body)
-    normalized_keys = iwe.normalize(config.vault)
+    selected_keys = (
+        None if scope is SearchScope.BOTH else [memory_key(config.vault, path) for path in selected_paths]
+    )
+    normalized_keys = iwe.normalize(config.vault, selected_keys)
     index_zk_notebook(config.vault)
-    changed_paths = [config.vault / f"{key}.md" for key in normalized_keys]
+    changed_paths = (
+        [config.vault / f"{key}.md" for key in normalized_keys]
+        if scope is SearchScope.BOTH
+        else list(selected_paths)
+    )
     commit_vault_changes(config.vault, "Normalize vault Markdown and reconcile OKF frontmatter", paths=changed_paths)
     return {"scope": scope.value, "normalized": json_list(normalized_keys)}
 

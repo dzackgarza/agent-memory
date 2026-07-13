@@ -37,5 +37,5 @@ def inline(vault: Path, key: str, reference: str) -> list[str]:
     return _iwe.inline(str(vault), key, reference)
 
 
-def normalize(vault: Path) -> list[str]:
-    return _iwe.normalize(str(vault))
+def normalize(vault: Path, keys: list[str] | None = None) -> list[str]:
+    return _iwe.normalize(str(vault), keys)

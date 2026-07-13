@@ -20,15 +20,15 @@ Any planned normalization path preserves OKF frontmatter and reconciles duplicat
 
 ## Implementation plan
 
-First establish whether the normalization command now exists; if it still does not, add the guardrail tests/contract at the boundary where normalization is planned rather than pretending a nonexistent command is fixed. Once the normalizer exists, run the double-frontmatter fixture through the real path and preserve/reconcile OKF fields or fail loudly with the file path.
+The normalization command now exists. It reconciles each selected memory before the real IWE normalization boundary, then proves the double-frontmatter fixture preserves canonical OKF metadata and rejects unreconcilable fields with the affected file path.
 
 ## Claim map
 
-- [ ] **#5/#14 - normalization preserves or loudly rejects OKF/extra frontmatter**
+- [x] **#5/#14 - normalization preserves or loudly rejects OKF/extra frontmatter**
   - Proof obligations claimed: all OKF fields preserved; extra/duplicate frontmatter reconciled or named in a loud failure; no silent field discard; parent #14 has no remaining open child obligations after #5.
   - Partial / not claimed: no closure of #14 if #5 is split or if normalization remains only a future requirement without executable proof.
   - Evidence required: red fixture for the concrete double-frontmatter failure mode, green normalization/reconciliation test, and explicit parent-subtree check before ready.
-  - Current evidence: issue report only.
+  - Current evidence: `tests/test_cli_workflows.py::test_maintain_normalize_reconciles_extra_okf_frontmatter_before_iwe_writes` and `tests/test_cli_workflows.py::test_maintain_normalize_fails_before_iwe_writes_unreconcilable_frontmatter` exercise the real CLI path.
 
 ## Automated gates
 
