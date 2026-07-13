@@ -864,8 +864,6 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
     for record in note_scan.records:
         if record.memory_type is not MemoryType.PLAN:
             continue
-        if record.scope not in complete_statuses_by_scope:
-            continue
         path = record.path
         if "todos" not in record.document.metadata:
             unsupported_plans.append({"key": record.key, "path": str(path), "title": record.title, "reason": "plan has no todos list"})
@@ -878,6 +876,8 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
             status_counts = Counter(plan_todo_statuses(todos, path))
         except MalformedMemoryError as error:
             findings.append(note_finding_for_error(config, path, error))
+            continue
+        if record.scope not in complete_statuses_by_scope:
             continue
         plan_total = sum(status_counts.values())
         plan_completed = sum(count for status, count in status_counts.items() if status in complete_statuses_by_scope[record.scope])
@@ -3267,14 +3267,16 @@ def inspect_schema(*, output_format: InspectOutputFormat, cwd: Path) -> JsonObje
     assert output_format is InspectOutputFormat.JSON, "inspect schema currently emits JSON"
     config = config_for_schema_advertisement(cwd)
     cards_config, card_model_by_type = load_card_system(config)
+    commands: JsonObject = {
+        "inspect": list(INSPECT_COMMAND_NAMES),
+        "card": ["add", "update", "delete", "show", "validate", "dag", "migrate"],
+        "todo": ["set"],
+        "card_types": [card_type.name for card_type in cards_config.card_types],
+    }
+    if any(card_type.name == "plan" for card_type in cards_config.card_types):
+        commands["plan"] = ["add", "update", "delete", "show", "validate", "dag", "migrate", "progress"]
     return {
-        "commands": {
-            "inspect": list(INSPECT_COMMAND_NAMES),
-            "card": ["add", "update", "delete", "show", "validate", "dag", "migrate"],
-            "plan": ["add", "update", "delete", "show", "validate", "dag", "migrate", "progress"],
-            "todo": ["set"],
-            "card_types": [card_type.name for card_type in cards_config.card_types],
-        },
+        "commands": commands,
         "scopes": [scope.value for scope in SearchScope],
         "memory_types": [memory_type.value for memory_type in WRITABLE_MEMORY_TYPES],
         "path_kinds": [kind.value for kind in InspectPathKind],

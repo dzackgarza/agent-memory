@@ -1282,6 +1282,12 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
 def test_plan_progress_both_excludes_scope_without_workflow_roles(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_key, _project_path = write_legacy_plan_with_todos(workspace, slug="excluded-project-progress")
+    excluded_unsupported_path = workspace.vault / "projects" / workspace.project_id / "plans" / "excluded-plan-without-todos.md"
+    write_unmigrated_plan(excluded_unsupported_path, "Excluded Plan Without Todos", workspace.project_id)
+    _excluded_malformed_key, excluded_malformed_path = write_legacy_plan_with_todos(workspace, slug="excluded-malformed-progress")
+    excluded_malformed_metadata = frontmatter(excluded_malformed_path)
+    json_object(json_array(excluded_malformed_metadata["todos"])[0])["children"] = "not-a-todo-list"
+    excluded_malformed_path.write_text("---\n" + yaml.safe_dump(excluded_malformed_metadata, sort_keys=False) + "---\n# Excluded Malformed Plan\n", encoding="utf-8")
     project_schema_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
     project_schema_path.parent.mkdir(parents=True)
     project_schema = yaml.safe_load((workspace.vault / "_meta" / "cards.yaml").read_text(encoding="utf-8"))
@@ -1311,7 +1317,13 @@ def test_plan_progress_both_excludes_scope_without_workflow_roles(tmp_path: Path
         encoding="utf-8",
     )
     subprocess.run(
-        ["git", "add", str(project_schema_path.relative_to(workspace.vault)), str(global_path.relative_to(workspace.vault))],
+        [
+            "git",
+            "add",
+            str(project_schema_path.relative_to(workspace.vault)),
+            str(excluded_malformed_path.relative_to(workspace.vault)),
+            str(global_path.relative_to(workspace.vault)),
+        ],
         cwd=workspace.vault,
         check=True,
         text=True,
@@ -1328,6 +1340,15 @@ def test_plan_progress_both_excludes_scope_without_workflow_roles(tmp_path: Path
     assert project_progress["completion_percent"] is None
     assert json_records(project_progress, "plans") == []
     assert [excluded["scope"] for excluded in json_records(project_progress, "excluded_scopes")] == ["project"]
+    assert json_records(project_progress, "unsupported_plans") == [
+        {
+            "key": f"projects/{workspace.project_id}/plans/excluded-plan-without-todos",
+            "path": str(excluded_unsupported_path),
+            "title": "Excluded Plan Without Todos",
+            "reason": "plan has no todos list",
+        }
+    ]
+    assert_note_finding(project_progress, excluded_malformed_path, workspace)
 
     assert global_progress["total_todos"] == 1
     assert global_progress["completed_todos"] == 1
@@ -1341,6 +1362,15 @@ def test_plan_progress_both_excludes_scope_without_workflow_roles(tmp_path: Path
     assert [plan["key"] for plan in json_records(both_progress, "plans")] == ["global/plans/computable-global-progress"]
     assert [excluded["scope"] for excluded in json_records(both_progress, "excluded_scopes")] == ["project"]
     assert project_key not in {plan["key"] for plan in json_records(both_progress, "plans")}
+    assert json_records(both_progress, "unsupported_plans") == [
+        {
+            "key": f"projects/{workspace.project_id}/plans/excluded-plan-without-todos",
+            "path": str(excluded_unsupported_path),
+            "title": "Excluded Plan Without Todos",
+            "reason": "plan has no todos list",
+        }
+    ]
+    assert_note_finding(both_progress, excluded_malformed_path, workspace)
 
 
 def test_inspect_schema_advertises_plan_progress_command(tmp_path: Path) -> None:
@@ -2790,9 +2820,10 @@ card_types:
         encoding="utf-8",
     )
 
-    schema = inspect_schema(output_format=InspectOutputFormat.JSON, cwd=workspace.repo)
+    schema = parse_json_stdout(run_agent_memory(workspace.repo, "inspect", "schema", "--format", "json"))
     schema_type_names = {json_string(item["name"]) for item in json_records(json_object(schema["card_system"]), "types")}
     assert schema_type_names == {"ticket"}
+    assert "plan" not in json_object(schema["commands"])
 
 
 def test_search_content_exact_handles_paths_with_colons(tmp_path: Path) -> None:
