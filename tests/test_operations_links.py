@@ -116,6 +116,16 @@ def test_replace_index_link_appends_after_unterminated_content(tmp_path: Path) -
     assert index_file.read_text(encoding="utf-8") == original + "\n"
 
 
+def test_replace_index_link_appends_crlf_after_unterminated_crlf_content(tmp_path: Path) -> None:
+    index_file = tmp_path / "index.md"
+    original = b"# Concepts\r\n\r\nUnrelated final prose"
+    index_file.write_bytes(original)
+
+    replace_index_link(index_file, "missing.md", "Added", "added.md", "Description")
+
+    assert index_file.read_bytes() == original + b"\r\n* [Added](added.md) - Description\r\n"
+
+
 def test_7_duplicate_targets(tmp_path: Path) -> None:
     index_file = tmp_path / "index.md"
     content = """# Concepts

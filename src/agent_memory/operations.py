@@ -2312,9 +2312,10 @@ def locate_index_link(index_path: Path, target: str) -> tuple[list[str], int | N
 def replace_index_link(index_path: Path, old_target: str, new_title: str, new_target: str, description: str) -> None:
     lines, entry_start = locate_index_link(index_path, old_target)
     if entry_start is None:
+        line_ending = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
         if lines and not lines[-1].endswith(("\n", "\r")):
-            lines.append("\n")
-        lines.append(okf_index_entry(new_title, new_target, description) + "\n")
+            lines.append(line_ending)
+        lines.append(okf_index_entry(new_title, new_target, description) + line_ending)
     else:
         original_line = lines[entry_start]
         ending = "\r\n" if original_line.endswith("\r\n") else ("\n" if original_line.endswith("\n") else "")
