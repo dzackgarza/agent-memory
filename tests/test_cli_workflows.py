@@ -1177,6 +1177,10 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     malformed_plan_metadata = frontmatter(malformed_plan_path)
     json_object(json_array(malformed_plan_metadata["todos"])[0])["children"] = "not-a-todo-list"
     malformed_plan_path.write_text("---\n" + yaml.safe_dump(malformed_plan_metadata, sort_keys=False) + "---\n# Malformed Legacy Plan\n", encoding="utf-8")
+    _nonlist_plan_key, nonlist_plan_path = write_legacy_plan_with_todos(workspace, slug="nonlist-progress")
+    nonlist_plan_metadata = frontmatter(nonlist_plan_path)
+    nonlist_plan_metadata["todos"] = "not-a-todo-list"
+    nonlist_plan_path.write_text("---\n" + yaml.safe_dump(nonlist_plan_metadata, sort_keys=False) + "---\n# Non-list Legacy Plan\n", encoding="utf-8")
 
     global_path = workspace.vault / "global" / "plans" / "global-progress.md"
     global_metadata: dict[str, JsonValue] = {
@@ -1209,6 +1213,7 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
             str(cards_path.relative_to(workspace.vault)),
             str(project_path.relative_to(workspace.vault)),
             str(malformed_plan_path.relative_to(workspace.vault)),
+            str(nonlist_plan_path.relative_to(workspace.vault)),
             str(global_path.relative_to(workspace.vault)),
         ],
         cwd=workspace.vault,
@@ -1240,6 +1245,7 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     ]
     assert_note_finding(project_progress, malformed_note, workspace)
     assert_note_finding(project_progress, malformed_plan_path, workspace)
+    assert_note_finding(project_progress, nonlist_plan_path, workspace)
 
     assert global_progress["scope"] == "global"
     assert global_progress["total_todos"] == 2
@@ -1266,6 +1272,7 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     ]
     assert_note_finding(both_progress, malformed_note, workspace)
     assert_note_finding(both_progress, malformed_plan_path, workspace)
+    assert_note_finding(both_progress, nonlist_plan_path, workspace)
 
 
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:

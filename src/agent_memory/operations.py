@@ -860,9 +860,12 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         if record.memory_type is not MemoryType.PLAN:
             continue
         path = record.path
-        todos = record.document.metadata.get("todos")
-        if not isinstance(todos, list):
+        if "todos" not in record.document.metadata:
             unsupported_plans.append({"key": record.key, "path": str(path), "title": record.title, "reason": "plan has no todos list"})
+            continue
+        todos = record.document.metadata["todos"]
+        if not isinstance(todos, list):
+            findings.append(note_finding_for_error(config, path, MalformedMemoryError(path, "plan todos must be a list")))
             continue
         try:
             status_counts = Counter(plan_todo_statuses(todos, path))
