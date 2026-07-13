@@ -1157,6 +1157,40 @@ def test_todo_set_reports_clean_errors_for_invalid_inputs(tmp_path: Path) -> Non
     assert "plan memory not found" in missing_plan_stderr
 
 
+def test_plan_progress_summarizes_only_plan_todo_trees(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plan_key, plan_path = write_legacy_plan_with_todos(workspace)
+    metadata = frontmatter(plan_path)
+    todos = json_array(metadata["todos"])
+    root = json_object(todos[0])
+    children = json_array(root["children"])
+    json_object(children[0])["status"] = "complete"
+    json_object(children[1])["status"] = "in-progress"
+    plan_path.write_text("---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n# Legacy Plan\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(plan_path.relative_to(workspace.vault))], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Set plan progress fixture statuses"], cwd=workspace.vault, check=True, text=True, capture_output=True)
+    write_unmigrated_plan(plan_path.parent / "plan-without-todos.md", "Plan Without Todos", workspace.project_id)
+
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "project"))
+
+    assert progress["scope"] == "project"
+    assert progress["total_todos"] == 3
+    assert progress["completed_todos"] == 1
+    assert progress["completion_percent"] == pytest.approx(33.333333333333336)
+    plans = json_records(progress, "plans")
+    assert len(plans) == 1
+    assert plans[0]["key"] == plan_key
+    assert plans[0]["status_counts"] == {"complete": 1, "in-progress": 1, "unstarted": 1}
+    assert json_records(progress, "unsupported_plans") == [
+        {
+            "key": f"projects/{workspace.project_id}/plans/plan-without-todos",
+            "path": str(plan_path.parent / "plan-without-todos.md"),
+            "title": "Plan Without Todos",
+            "reason": "plan has no todos list",
+        }
+    ]
+
+
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(

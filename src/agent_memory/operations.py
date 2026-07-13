@@ -844,6 +844,70 @@ def update_plan_todo(
     return result
 
 
+def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
+    config = config_for_search_scope(scope, cwd)
+    cards_config = load_card_system_config(config.vault, config.project_id)
+    if not cards_config.workflow_roles:
+        raise MemoryOperationError("plan progress requires workflow_roles in the active card schema")
+    complete_statuses = cards_config.statuses_with_role("complete")
+    plans: list[JsonObject] = []
+    unsupported_plans: list[JsonObject] = []
+    total_todos = 0
+    completed_todos = 0
+    for path in memory_files(config, scope):
+        document = read_memory(path)
+        if document.metadata.get("type") != MemoryType.PLAN.value:
+            continue
+        title = metadata_string(document.metadata, "title", path)
+        key = memory_key(config.vault, path)
+        todos = document.metadata.get("todos")
+        if not isinstance(todos, list):
+            unsupported_plans.append({"key": key, "path": str(path), "title": title, "reason": "plan has no todos list"})
+            continue
+        status_counts = Counter(plan_todo_statuses(todos, path, set(cards_config.statuses)))
+        plan_total = sum(status_counts.values())
+        plan_completed = sum(count for status, count in status_counts.items() if status in complete_statuses)
+        total_todos += plan_total
+        completed_todos += plan_completed
+        plans.append(
+            {
+                "key": key,
+                "path": str(path),
+                "title": title,
+                "total_todos": plan_total,
+                "completed_todos": plan_completed,
+                "completion_percent": (100 * plan_completed / plan_total) if plan_total else 0,
+                "status_counts": dict(sorted(status_counts.items())),
+            }
+        )
+    return {
+        "scope": scope.value,
+        "plans": plans,
+        "unsupported_plans": unsupported_plans,
+        "total_todos": total_todos,
+        "completed_todos": completed_todos,
+        "completion_percent": (100 * completed_todos / total_todos) if total_todos else 0,
+    }
+
+
+def plan_todo_statuses(todos: list[MetadataValue], path: Path, known_statuses: set[str]) -> list[str]:
+    statuses: list[str] = []
+    for item in todos:
+        todo = todo_mapping(item, path)
+        status = todo.get("status")
+        if not isinstance(status, str) or status not in known_statuses:
+            raise MalformedMemoryError(path, f"todo {todo['id']!r} has status outside the active card schema")
+        statuses.append(status)
+        for child_key in PLAN_TODO_CHILD_KEYS:
+            children = todo.get(child_key)
+            if children is None:
+                continue
+            if not isinstance(children, list):
+                raise MalformedMemoryError(path, f"todo field {child_key} must be a list")
+            statuses.extend(plan_todo_statuses(children, path, known_statuses))
+    return statuses
+
+
 def mutate_todo_tree(
     todos: list[MetadataValue],
     *,
