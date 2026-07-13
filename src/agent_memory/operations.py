@@ -851,6 +851,7 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         raise MemoryOperationError("plan progress requires workflow_roles in the active card schema")
     complete_statuses = cards_config.statuses_with_role("complete")
     note_scan = scan_note_records(config, scope)
+    findings = list(note_scan.findings)
     plans: list[JsonObject] = []
     unsupported_plans: list[JsonObject] = []
     total_todos = 0
@@ -863,7 +864,11 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         if not isinstance(todos, list):
             unsupported_plans.append({"key": record.key, "path": str(path), "title": record.title, "reason": "plan has no todos list"})
             continue
-        status_counts = Counter(plan_todo_statuses(todos, path))
+        try:
+            status_counts = Counter(plan_todo_statuses(todos, path))
+        except MalformedMemoryError as error:
+            findings.append(note_finding_for_error(config, path, error))
+            continue
         plan_total = sum(status_counts.values())
         plan_completed = sum(count for status, count in status_counts.items() if status in complete_statuses)
         total_todos += plan_total
@@ -883,7 +888,7 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         "scope": scope.value,
         "plans": plans,
         "unsupported_plans": unsupported_plans,
-        "findings": note_findings_json(note_scan.findings),
+        "findings": note_findings_json(findings),
         "total_todos": total_todos,
         "completed_todos": completed_todos,
         "completion_percent": (100 * completed_todos / total_todos) if total_todos else 0,

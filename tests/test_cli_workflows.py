@@ -1173,6 +1173,10 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     json_object(project_children[0])["status"] = "complete"
     json_object(project_children[1])["status"] = "legacy-pending"
     project_path.write_text("---\n" + yaml.safe_dump(project_metadata, sort_keys=False) + "---\n# Legacy Project Plan\n", encoding="utf-8")
+    _malformed_plan_key, malformed_plan_path = write_legacy_plan_with_todos(workspace, slug="malformed-progress")
+    malformed_plan_metadata = frontmatter(malformed_plan_path)
+    json_object(json_array(malformed_plan_metadata["todos"])[0])["children"] = "not-a-todo-list"
+    malformed_plan_path.write_text("---\n" + yaml.safe_dump(malformed_plan_metadata, sort_keys=False) + "---\n# Malformed Legacy Plan\n", encoding="utf-8")
 
     global_path = workspace.vault / "global" / "plans" / "global-progress.md"
     global_metadata: dict[str, JsonValue] = {
@@ -1199,7 +1203,14 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
         "---\ntype: decision\nscope: project\ntitle: Malformed Decision\ndescription: malformed fixture\ntags: project\n---\nBody.\n",
     )
     subprocess.run(
-        ["git", "add", str(cards_path.relative_to(workspace.vault)), str(project_path.relative_to(workspace.vault)), str(global_path.relative_to(workspace.vault))],
+        [
+            "git",
+            "add",
+            str(cards_path.relative_to(workspace.vault)),
+            str(project_path.relative_to(workspace.vault)),
+            str(malformed_plan_path.relative_to(workspace.vault)),
+            str(global_path.relative_to(workspace.vault)),
+        ],
         cwd=workspace.vault,
         check=True,
         text=True,
@@ -1228,6 +1239,7 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
         }
     ]
     assert_note_finding(project_progress, malformed_note, workspace)
+    assert_note_finding(project_progress, malformed_plan_path, workspace)
 
     assert global_progress["scope"] == "global"
     assert global_progress["total_todos"] == 2
@@ -1253,6 +1265,7 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
         }
     ]
     assert_note_finding(both_progress, malformed_note, workspace)
+    assert_note_finding(both_progress, malformed_plan_path, workspace)
 
 
 def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> None:
