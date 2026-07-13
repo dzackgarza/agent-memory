@@ -27,9 +27,9 @@ Expose `agent-memory plan progress --scope <project|global|both>` for plan-memor
 ## Claim map
 
 - [x] **#46 - plan progress reflects existing todo metadata without inventing card progress**
-  - Proof obligations claimed: nested todo statuses aggregate per plan and across the selected scope; complete states come from the active schema; plan records without a todo tree are explicit unsupported records.
+  - Proof obligations claimed: nested todo statuses aggregate per plan and across project, global, and combined scopes; the active schema supplies only complete-state membership; plan records without a todo tree are explicit unsupported records.
   - Partial / not claimed: no archive state, retire workflow, or card-hierarchy progress model.
-  - Evidence: `tests/test_cli_workflows.py::test_plan_progress_summarizes_only_plan_todo_trees` passed locally.
+  - Evidence: `tests/test_cli_workflows.py::test_plan_progress_counts_legacy_todo_statuses_across_scopes` passed locally.
 
 ## Automated gates
 
