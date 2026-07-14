@@ -20,11 +20,19 @@ setup: install
     : "${vault:?Global memory vault path is required}"
     agent-memory maintain init-global --vault "$vault"
 
-test:
+# Run commit-tier Python QC through the central implementation.
+test-commit:
     #!/usr/bin/env bash
     set -euo pipefail
-    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test
+    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test-commit
 
+# Run the full Python test suite before pushing.
+test-push:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test-push
+
+# Run CI acceptance QC through the central implementation.
 test-ci:
     #!/usr/bin/env bash
     set -euo pipefail
