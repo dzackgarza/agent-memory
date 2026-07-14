@@ -1,3 +1,12 @@
+# ai-review-ci contract variables consumed by doctor and workflow installers.
+ai_review_ci_schema_version := "1"
+ai_review_ci_profile := "python"
+ai_review_ci_ref := "main"
+ai_review_ci_release_channel := "main"
+ai_review_ci_workflow_template_version := "1"
+ai_review_ci_local_delegation := "global-justfile"
+ai_review_ci_default_branch := "main"
+
 ZK_VERSION := "v0.15.5"
 ZK_ASSET := "zk-" + ZK_VERSION + "-linux-amd64.tar.gz"
 LOCAL_BIN := env_var("HOME") / ".local/bin"
