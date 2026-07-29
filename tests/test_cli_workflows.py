@@ -2231,6 +2231,7 @@ def test_sync_status_reports_vault_git_state_and_dirty_paths(tmp_path: Path) -> 
     witness.write_text("# Auto Sync Status Proof\n\nsync status witness\n", encoding="utf-8")
     env = agent_memory_env()
     env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg-config")
 
     result = run_agent_memory_subprocess(workspace.repo, "sync", "status", env=env)
 
@@ -2265,6 +2266,7 @@ def test_sync_status_reports_global_vault_from_unbound_directory(tmp_path: Path)
     env = agent_memory_env()
     env["AGENT_MEMORY_VAULT"] = str(vault)
     env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg-config")
 
     result = run_agent_memory_subprocess(loose, "sync", "status", env=env)
 
