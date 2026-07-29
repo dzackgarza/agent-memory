@@ -11,6 +11,7 @@ jobs:
       issues: read
     with:
       tier: test-ci
+      profile: 'python'
       infra_ref: 'main'
   deterministic-diff:
     uses: dzackgarza/ai-review-ci/.github/workflows/_gates.yml@main
