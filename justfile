@@ -30,19 +30,19 @@ setup: install
 test-commit:
     #!/usr/bin/env bash
     set -euo pipefail
-    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-commit
+    just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-commit
 
 # Run the full Python test suite before pushing.
 test-push:
     #!/usr/bin/env bash
     set -euo pipefail
-    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-push
+    just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-push
 
 # Run CI acceptance QC through the central implementation.
 test-ci:
     #!/usr/bin/env bash
     set -euo pipefail
-    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-ci
+    just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-ci
 
 # Full-repo deferred-debt audit (complexity, dead code, duplication). Scheduled, not push-blocking.
 ambient:
