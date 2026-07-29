@@ -637,12 +637,8 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
 def test_maintain_skill_prints_vault_maintenance_entrypoint(tmp_path: Path) -> None:
     result = run_agent_memory(tmp_path, "maintain", "skill", "vault-maintenance")
 
-    assert "name: vault-maintenance" in result.stdout
-    assert "references/check-vault-state.md" in result.stdout
-    assert "references/repair-vault-errors.md" in result.stdout
-    assert "references/commit-vault-work.md" in result.stdout
-    assert "committed at all times" in result.stdout
-    assert "ephemeral error state" in result.stdout
+    packaged = PROJECT_ROOT / "src" / "agent_memory" / "defaults" / "skills" / "vault-maintenance" / "SKILL.md"
+    assert result.stdout == packaged.read_text(encoding="utf-8")
 
 
 def test_maintain_normalize_reconciles_extra_okf_frontmatter_before_iwe_writes(tmp_path: Path) -> None:
