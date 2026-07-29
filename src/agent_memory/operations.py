@@ -901,8 +901,8 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         aggregate_percent = None
     return {
         "scope": scope.value,
-        "plans": plans,
-        "unsupported_plans": unsupported_plans,
+        "plans": json_list(plans),
+        "unsupported_plans": json_list(unsupported_plans),
         "findings": note_findings_json(findings),
         "excluded_scopes": json_list(excluded_scopes),
         "total_todos": aggregate_totals,
@@ -3210,16 +3210,10 @@ def normalize_memories(scope: SearchScope, cwd: Path) -> JsonObject:
     reconciled = [(path, *reconciled_memory_contents(path)) for path in selected_paths]
     for path, metadata, body in reconciled:
         write_memory(path, metadata, body)
-    selected_keys = (
-        None if scope is SearchScope.BOTH else [memory_key(config.vault, path) for path in selected_paths]
-    )
+    selected_keys = None if scope is SearchScope.BOTH else [memory_key(config.vault, path) for path in selected_paths]
     normalized_keys = iwe.normalize(config.vault, selected_keys)
     index_zk_notebook(config.vault)
-    changed_paths = (
-        [config.vault / f"{key}.md" for key in normalized_keys]
-        if scope is SearchScope.BOTH
-        else list(selected_paths)
-    )
+    changed_paths = [config.vault / f"{key}.md" for key in normalized_keys] if scope is SearchScope.BOTH else list(selected_paths)
     commit_vault_changes(config.vault, "Normalize vault Markdown and reconcile OKF frontmatter", paths=changed_paths)
     return {"scope": scope.value, "normalized": json_list(normalized_keys)}
 

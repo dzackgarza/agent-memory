@@ -23,7 +23,7 @@ import yaml
 from agent_memory.cards import load_card_system_config
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
-from agent_memory.models import InspectOutputFormat, MemoryType, ProjectConfig
+from agent_memory.models import MemoryType, ProjectConfig
 from agent_memory.operations import (
     OKF_VERSION,
     DependencyCheck,
@@ -33,7 +33,6 @@ from agent_memory.operations import (
     VaultCommitError,
     basic_doctor,
     check_dependency,
-    inspect_schema,
     merge_probe_payloads,
     outgoing_link_keys,
     read_memory,
@@ -286,7 +285,7 @@ def json_object(value: JsonValue) -> JsonObject:
     return value
 
 
-def json_array(value: JsonValue) -> JsonArray:
+def json_array(value: object) -> JsonArray:
     assert isinstance(value, list)
     return value
 
@@ -659,16 +658,7 @@ def test_maintain_normalize_reconciles_extra_okf_frontmatter_before_iwe_writes(t
     metadata = frontmatter(note_path)
     original_body = note_path.read_text(encoding="utf-8").split("---\n", 2)[2]
     note_path.write_text(
-        "---\n"
-        "title: Normalize legacy frontmatter\n"
-        "tags:\n"
-        "  - project\n"
-        "  - decision\n"
-        "---\n"
-        + original_body
-        + "\n---\n"
-        + yaml.safe_dump(metadata, sort_keys=False)
-        + "---\n",
+        "---\ntitle: Normalize legacy frontmatter\ntags:\n  - project\n  - decision\n---\n" + original_body + "\n---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n",
         encoding="utf-8",
     )
 
@@ -724,9 +714,7 @@ def test_maintain_normalize_project_does_not_rewrite_global_memories(tmp_path: P
     )
     global_path.write_text(global_original, encoding="utf-8")
 
-    result = parse_json_stdout(
-        run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
-    )
+    result = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project"))
 
     assert read_memory(project_path).metadata["scope"] == "project"
     assert result == {
