@@ -1854,7 +1854,18 @@ def write_sync_state(result: JsonObject) -> JsonObject:
         "state_path": str(state_path),
     }
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    rendered = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    # ponytail: atomic replace so an interrupted/concurrent sync cannot leave a truncated
+    # state file that wedges every later doctor/sync run in json.loads.
+    temporary = state_path.with_name(f".{state_path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(rendered)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, state_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return state
 
 
