@@ -11,8 +11,14 @@ ZK_VERSION := "v0.15.5"
 ZK_ASSET := "zk-" + ZK_VERSION + "-linux-amd64.tar.gz"
 LOCAL_BIN := env_var("HOME") / ".local/bin"
 
+# List available recipes.
+default:
+    @just --list
+
+# Install the agent-memory toolchain (agent-memory, ripgrep, zk, probe).
 install: _install-agent-memory _install-ripgrep _install-zk _install-probe _verify-toolchain
 
+# Install the toolchain, then initialize the global memory vault.
 setup: install
     #!/usr/bin/env bash
     set -euo pipefail
@@ -24,19 +30,19 @@ setup: install
 test-commit:
     #!/usr/bin/env bash
     set -euo pipefail
-    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test-commit
+    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-commit
 
 # Run the full Python test suite before pushing.
 test-push:
     #!/usr/bin/env bash
     set -euo pipefail
-    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test-push
+    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-push
 
 # Run CI acceptance QC through the central implementation.
 test-ci:
     #!/usr/bin/env bash
     set -euo pipefail
-    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d "{{ justfile_directory() }}" test-ci
+    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-ci
 
 # Full-repo deferred-debt audit (complexity, dead code, duplication). Scheduled, not push-blocking.
 ambient:
