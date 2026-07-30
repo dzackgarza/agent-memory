@@ -3643,10 +3643,16 @@ def _markdown_link_target(link_token: object) -> str | None:
     return href
 
 
-def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
-    markdown = path.read_text(encoding="utf-8")
+def markdown_link_targets(markdown: str) -> tuple[str, ...]:
+    """Path portion of every markdown link target in document order.
+
+    Text-level, caller-agnostic: fragments are stripped, empty targets dropped, and no
+    judgement is made about whether a target is intra-vault, relative, or external. Callers
+    own that classification. Works on markdown text rather than a file so callers holding
+    emitted bytes (rather than a path) share the same markdown-it walk.
+    """
     tokens = MARKDOWN_PARSER.parse(markdown)
-    keys: list[str] = []
+    targets: list[str] = []
     for token in tokens:
         if token.type != "inline":
             continue
@@ -3659,17 +3665,24 @@ def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
             target = href.split("#", 1)[0]
             if not target:
                 continue
-            # outgoing_link_keys owns intra-vault note-to-note edges only. The markdown-it
-            # walk yields every link (external URLs, autolinks, reference-style, non-.md);
-            # a target that is not a vault-relative .md file is simply not an outgoing vault
-            # edge, so skip it by contract. This is a membership test, not error handling.
-            if not target.endswith(".md"):
-                continue
-            target_path = (path.parent / target).resolve()
-            vault = config.vault.resolve()
-            if not target_path.is_relative_to(vault):
-                continue
-            keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
+            targets.append(target)
+    return tuple(targets)
+
+
+def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
+    keys: list[str] = []
+    for target in markdown_link_targets(path.read_text(encoding="utf-8")):
+        # outgoing_link_keys owns intra-vault note-to-note edges only. The markdown-it
+        # walk yields every link (external URLs, autolinks, reference-style, non-.md);
+        # a target that is not a vault-relative .md file is simply not an outgoing vault
+        # edge, so skip it by contract. This is a membership test, not error handling.
+        if not target.endswith(".md"):
+            continue
+        target_path = (path.parent / target).resolve()
+        vault = config.vault.resolve()
+        if not target_path.is_relative_to(vault):
+            continue
+        keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
     return tuple(keys)
 
 
