@@ -13,18 +13,22 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
+from importlib import resources
 from io import StringIO
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
+from frontmatter import loads as load_frontmatter_text
 
 from agent_memory.cards import load_card_system_config
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
-from agent_memory.models import InspectOutputFormat, MemoryType, ProjectConfig
+from agent_memory.models import MemoryType, ProjectConfig
 from agent_memory.operations import (
+    BUNDLED_SKILL_NAMES,
     OKF_VERSION,
     DependencyCheck,
     DependencyError,
@@ -33,7 +37,7 @@ from agent_memory.operations import (
     VaultCommitError,
     basic_doctor,
     check_dependency,
-    inspect_schema,
+    markdown_link_targets,
     merge_probe_payloads,
     outgoing_link_keys,
     read_memory,
@@ -286,7 +290,7 @@ def json_object(value: JsonValue) -> JsonObject:
     return value
 
 
-def json_array(value: JsonValue) -> JsonArray:
+def json_array(value: object) -> JsonArray:
     assert isinstance(value, list)
     return value
 
@@ -635,15 +639,65 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
     assert "* [References](references/index.md) - Global reference memories." in global_index
 
 
-def test_maintain_skill_prints_vault_maintenance_entrypoint(tmp_path: Path) -> None:
-    result = run_agent_memory(tmp_path, "maintain", "skill", "vault-maintenance")
+def bundled_skill_dir(name: str) -> Path:
+    # The *served* directory: resolved through the same resource loader bundled_skill_text()
+    # reads. Correct oracle only for questions about what shipped alongside the served
+    # document. Never use it as the expected value for transport fidelity -- see
+    # source_tree_skill_document.
+    packaged = Path(str(resources.files("agent_memory.defaults").joinpath("skills", name))).resolve()
+    assert packaged.is_dir(), f"packaged skill directory missing: {packaged}"
+    return packaged
 
-    assert "name: vault-maintenance" in result.stdout
-    assert "references/check-vault-state.md" in result.stdout
-    assert "references/repair-vault-errors.md" in result.stdout
-    assert "references/commit-vault-work.md" in result.stdout
-    assert "committed at all times" in result.stdout
-    assert "ephemeral error state" in result.stdout
+
+def source_tree_skill_document(name: str) -> Path:
+    # The *repo source* document, addressed by path and deliberately not through
+    # resources.files(). Transport fidelity needs an oracle independent of the loader under
+    # test: routing both sides through resources.files() would compare the CLI's lookup
+    # against itself, so shipping a stale or wrong document would stay green. Going through
+    # the source tree also proves the served document is the one this repo authored.
+    return PROJECT_ROOT / "src" / "agent_memory" / "defaults" / "skills" / name / "SKILL.md"
+
+
+def test_bundled_skill_names_is_nonempty() -> None:
+    # Every bundled-skill assertion below is parametrized over BUNDLED_SKILL_NAMES; an empty
+    # advertised list would collect zero cases and pass vacuously.
+    assert BUNDLED_SKILL_NAMES, "the package must advertise at least one bundled skill"
+
+
+@pytest.mark.parametrize("skill_name", BUNDLED_SKILL_NAMES)
+def test_maintain_skill_emits_packaged_bytes_unaltered(tmp_path: Path, skill_name: str) -> None:
+    result = run_agent_memory(tmp_path, "maintain", "skill", skill_name)
+
+    assert result.stdout == source_tree_skill_document(skill_name).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("skill_name", BUNDLED_SKILL_NAMES)
+def test_maintain_skill_document_declares_the_requested_skill_name(tmp_path: Path, skill_name: str) -> None:
+    # The emitted document is a dispatch entrypoint an agent reads and follows: a caller that
+    # asks for skill X must receive a document declaring itself X, or the agent loads the
+    # wrong procedure. Asserted against the bytes the CLI actually emitted.
+    emitted = run_agent_memory(tmp_path, "maintain", "skill", skill_name).stdout
+
+    metadata = load_frontmatter_text(emitted).metadata
+    assert "name" in metadata, f"emitted {skill_name} skill document has no frontmatter name key: {sorted(metadata)}"
+    assert metadata["name"] == skill_name
+
+
+@pytest.mark.parametrize("skill_name", BUNDLED_SKILL_NAMES)
+def test_maintain_skill_document_reference_links_resolve(tmp_path: Path, skill_name: str) -> None:
+    # A dispatch document whose reference links dangle sends the reading agent nowhere. Link
+    # set is discovered from the emitted bytes, so a fourth reference link is covered without
+    # a test edit. Resolved against the served directory, not the source tree: the question is
+    # whether the referenced files are packaged alongside the document the CLI actually served.
+    emitted = run_agent_memory(tmp_path, "maintain", "skill", skill_name).stdout
+    skill_dir = bundled_skill_dir(skill_name)
+
+    relative_targets = tuple(target for target in markdown_link_targets(emitted) if not urlsplit(target).scheme and not target.startswith("/"))
+    assert relative_targets, f"emitted {skill_name} skill document contains no relative reference links"
+    for target in relative_targets:
+        resolved = (skill_dir / target).resolve()
+        assert resolved.is_relative_to(skill_dir), f"{skill_name} reference link {target!r} escapes the packaged skill directory"
+        assert resolved.is_file(), f"{skill_name} reference link {target!r} does not resolve to a packaged file: {resolved}"
 
 
 def test_maintain_normalize_reconciles_extra_okf_frontmatter_before_iwe_writes(tmp_path: Path) -> None:
@@ -659,16 +713,7 @@ def test_maintain_normalize_reconciles_extra_okf_frontmatter_before_iwe_writes(t
     metadata = frontmatter(note_path)
     original_body = note_path.read_text(encoding="utf-8").split("---\n", 2)[2]
     note_path.write_text(
-        "---\n"
-        "title: Normalize legacy frontmatter\n"
-        "tags:\n"
-        "  - project\n"
-        "  - decision\n"
-        "---\n"
-        + original_body
-        + "\n---\n"
-        + yaml.safe_dump(metadata, sort_keys=False)
-        + "---\n",
+        "---\ntitle: Normalize legacy frontmatter\ntags:\n  - project\n  - decision\n---\n" + original_body + "\n---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n",
         encoding="utf-8",
     )
 
@@ -724,9 +769,7 @@ def test_maintain_normalize_project_does_not_rewrite_global_memories(tmp_path: P
     )
     global_path.write_text(global_original, encoding="utf-8")
 
-    result = parse_json_stdout(
-        run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
-    )
+    result = parse_json_stdout(run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project"))
 
     assert read_memory(project_path).metadata["scope"] == "project"
     assert result == {

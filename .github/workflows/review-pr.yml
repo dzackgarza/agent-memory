@@ -1,18 +1,60 @@
 # Repo-owned configuration: edit triggers and `with:` values directly.
 # All review behavior lives upstream in the referenced workflows.
 name: PR Review
-'on':
+on:
   pull_request: {}
-
 jobs:
+  qc-ci:
+    uses: dzackgarza/ai-review-ci/.github/workflows/_qc.yml@main
+    permissions:
+      contents: read
+      issues: read
+    with:
+      tier: test-ci
+      profile: 'python'
+      infra_ref: 'main'
   deterministic-diff:
     uses: dzackgarza/ai-review-ci/.github/workflows/_gates.yml@main
     permissions:
       contents: read
+      actions: read
+      issues: read
+      pull-requests: read
     with:
       gate: deterministic-diff
-      profile: python
-
+      profile: 'python'
+  delegation-conformance:
+    uses: dzackgarza/ai-review-ci/.github/workflows/_gates.yml@main
+    permissions:
+      contents: read
+      actions: read
+      issues: read
+      pull-requests: read
+    with:
+      gate: delegation-conformance
+      profile: 'python'
+  qc-doctor:
+    uses: dzackgarza/ai-review-ci/.github/workflows/_gates.yml@main
+    permissions:
+      contents: read
+      actions: read
+      # Label-alignment check reads live labels via `gh label list`
+      # (GET /repos/{owner}/{repo}/labels), which requires Issues (read).
+      issues: read
+      pull-requests: read
+    with:
+      gate: qc-doctor
+      profile: 'python'
+  pr-description-checklist:
+    uses: dzackgarza/ai-review-ci/.github/workflows/_gates.yml@main
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      issues: read
+    with:
+      gate: pr-description-checklist
+      profile: 'python'
   general:
     uses: dzackgarza/ai-review-ci/.github/workflows/_review.yml@main
     permissions:
@@ -20,10 +62,10 @@ jobs:
       security-events: write
       actions: read
       pull-requests: write
+      issues: write
     with:
       report_type: general
       scope: diff
-
   slop:
     uses: dzackgarza/ai-review-ci/.github/workflows/_review.yml@main
     permissions:
@@ -31,10 +73,10 @@ jobs:
       security-events: write
       actions: read
       pull-requests: write
+      issues: write
     with:
       report_type: slop
       scope: diff
-
   thread-resolution:
     needs:
       - general
@@ -43,6 +85,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
+      issues: read
     with:
       gate: thread-resolution
-      profile: python
+      profile: 'python'

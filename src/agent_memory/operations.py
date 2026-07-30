@@ -901,8 +901,8 @@ def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
         aggregate_percent = None
     return {
         "scope": scope.value,
-        "plans": plans,
-        "unsupported_plans": unsupported_plans,
+        "plans": json_list(plans),
+        "unsupported_plans": json_list(unsupported_plans),
         "findings": note_findings_json(findings),
         "excluded_scopes": json_list(excluded_scopes),
         "total_todos": aggregate_totals,
@@ -3210,16 +3210,10 @@ def normalize_memories(scope: SearchScope, cwd: Path) -> JsonObject:
     reconciled = [(path, *reconciled_memory_contents(path)) for path in selected_paths]
     for path, metadata, body in reconciled:
         write_memory(path, metadata, body)
-    selected_keys = (
-        None if scope is SearchScope.BOTH else [memory_key(config.vault, path) for path in selected_paths]
-    )
+    selected_keys = None if scope is SearchScope.BOTH else [memory_key(config.vault, path) for path in selected_paths]
     normalized_keys = iwe.normalize(config.vault, selected_keys)
     index_zk_notebook(config.vault)
-    changed_paths = (
-        [config.vault / f"{key}.md" for key in normalized_keys]
-        if scope is SearchScope.BOTH
-        else list(selected_paths)
-    )
+    changed_paths = [config.vault / f"{key}.md" for key in normalized_keys] if scope is SearchScope.BOTH else list(selected_paths)
     commit_vault_changes(config.vault, "Normalize vault Markdown and reconcile OKF frontmatter", paths=changed_paths)
     return {"scope": scope.value, "normalized": json_list(normalized_keys)}
 
@@ -3649,10 +3643,16 @@ def _markdown_link_target(link_token: object) -> str | None:
     return href
 
 
-def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
-    markdown = path.read_text(encoding="utf-8")
+def markdown_link_targets(markdown: str) -> tuple[str, ...]:
+    """Path portion of every markdown link target in document order.
+
+    Text-level, caller-agnostic: fragments are stripped, empty targets dropped, and no
+    judgement is made about whether a target is intra-vault, relative, or external. Callers
+    own that classification. Works on markdown text rather than a file so callers holding
+    emitted bytes (rather than a path) share the same markdown-it walk.
+    """
     tokens = MARKDOWN_PARSER.parse(markdown)
-    keys: list[str] = []
+    targets: list[str] = []
     for token in tokens:
         if token.type != "inline":
             continue
@@ -3665,17 +3665,24 @@ def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
             target = href.split("#", 1)[0]
             if not target:
                 continue
-            # outgoing_link_keys owns intra-vault note-to-note edges only. The markdown-it
-            # walk yields every link (external URLs, autolinks, reference-style, non-.md);
-            # a target that is not a vault-relative .md file is simply not an outgoing vault
-            # edge, so skip it by contract. This is a membership test, not error handling.
-            if not target.endswith(".md"):
-                continue
-            target_path = (path.parent / target).resolve()
-            vault = config.vault.resolve()
-            if not target_path.is_relative_to(vault):
-                continue
-            keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
+            targets.append(target)
+    return tuple(targets)
+
+
+def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
+    keys: list[str] = []
+    for target in markdown_link_targets(path.read_text(encoding="utf-8")):
+        # outgoing_link_keys owns intra-vault note-to-note edges only. The markdown-it
+        # walk yields every link (external URLs, autolinks, reference-style, non-.md);
+        # a target that is not a vault-relative .md file is simply not an outgoing vault
+        # edge, so skip it by contract. This is a membership test, not error handling.
+        if not target.endswith(".md"):
+            continue
+        target_path = (path.parent / target).resolve()
+        vault = config.vault.resolve()
+        if not target_path.is_relative_to(vault):
+            continue
+        keys.append(target_path.relative_to(vault).with_suffix("").as_posix())
     return tuple(keys)
 
 
