@@ -1339,11 +1339,7 @@ def _list_cards(card_type: str | None, scope: SearchScope, visibility: ArchiveVi
     if listing_source is CardListingSource.MANAGED_AND_UNMIGRATED:
         records.extend(unmigrated_card_listings(config, scope))
     typed = [record for record in records if card_type is None or record.card_type == card_type]
-    filtered = [
-        record
-        for record in typed
-        if archive_visibility_is_included(ArchiveVisibility.ARCHIVED if record.archived else ArchiveVisibility.ACTIVE, visibility)
-    ]
+    filtered = [record for record in typed if archive_visibility_is_included(ArchiveVisibility.ARCHIVED if record.archived else ArchiveVisibility.ACTIVE, visibility)]
     archived_matches = [record for record in typed if record.archived] if visibility is ArchiveVisibility.ACTIVE else []
     filtered.sort(
         key=lambda record: (

@@ -2241,9 +2241,7 @@ def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> Non
     assert doctor_record["suggested_destination"] == f"projects/{workspace.project_id}/plans"
     assert doctor_record["path"] == str(unmigrated)
 
-    listed = parse_json_stdout(
-        run_agent_memory(workspace.repo, "list", "--type", "plan", "--scope", "both", "--source", "managed-and-unmigrated")
-    )
+    listed = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "plan", "--scope", "both", "--source", "managed-and-unmigrated"))
     records = {json_string(record["title"]): record for record in json_records(listed, "results")}
     assert set(records) == {"Managed Plan", "Stranded Harness Plan"}
     assert records["Managed Plan"]["managed"] is True
