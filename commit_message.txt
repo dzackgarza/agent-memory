@@ -1,6 +1,0 @@
-Preserve non-canonical frontmatter fields during memory transition/update
-
-Fixes #55
-Fixes #56
-
-This PR ensures that operations like `agent-memory update` or standard memory transitions explicitly map over and preserve unknown or custom nested frontmatter fields during update execution. The implementation fixes the data loss behavior outlined in #55 and #56, which are tracked in the urgent ledger #57. It also fixes a minor E741 ambiguous variable linting warning.

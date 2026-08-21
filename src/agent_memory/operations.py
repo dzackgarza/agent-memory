@@ -663,13 +663,10 @@ def memory_transition(
     }
 
     # Reconcile OKF tags to preserve extra non-canonical tags
-    raw_tags = document.metadata.get("tags", [])
-    old_tags = raw_tags if isinstance(raw_tags, list) else []
-    old_scope = str(document.metadata.get("scope", "project"))
-    old_type_str = str(document.metadata.get("type", "decision"))
-    extra_tags = [t for t in old_tags if t not in {old_scope, old_type_str}]
-
-    new_tags_raw = okf_tags(scope, new_type, tuple(str(x) for x in extra_tags))
+    old_tags = document.metadata.get("tags", [])
+    canonical_tags = {scope.value, old_type.value}
+    extra_tags = tuple(str(tag) for tag in old_tags if str(tag) not in canonical_tags) if isinstance(old_tags, list) else ()
+    new_tags_raw = okf_tags(scope, new_type, extra_tags)
     metadata["tags"] = [x for x in new_tags_raw]
     destination_path = memory_directory(config, scope, new_type) / f"{memory_slug(new_title)}.md"
     return MemoryTransition(
