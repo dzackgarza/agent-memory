@@ -20,6 +20,11 @@ class MalformedCardError(ValueError):
     """Raised when a stored card file cannot be read as a card."""
 
 
+# A field assigned this is being removed, not set: None is a value a card field may hold, so
+# it cannot mean "unset". It lives here because operations imports cards, never the reverse.
+UNSET_FIELD = "__agent_memory_unset__"
+
+
 def card_type_for_id(config: CardSystemConfig, card_id: str) -> CardTypeSpec:
     matches = [card_type for card_type in config.card_types if card_id.startswith(f"{card_type.id_prefix}-")]
     if not matches:
@@ -152,7 +157,8 @@ def update_card(
     # revising a card is never delete-and-re-add or a hand edit of the vault file.
     path = find_card_path(plans_root, card_id)
     metadata, stored_body = split_card(path.read_text(encoding="utf-8"), path)
-    validated = models[card_type_for_id(config, card_id).name].model_validate({**metadata, **updates})
+    merged = {key: value for key, value in {**metadata, **updates}.items() if value != UNSET_FIELD}
+    validated = models[card_type_for_id(config, card_id).name].model_validate(merged)
     path.write_text(render_card(validated.model_dump(exclude_unset=True), stored_body if body is None else body), encoding="utf-8")
     return path
 

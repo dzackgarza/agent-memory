@@ -31,7 +31,7 @@ from agent_memory.cards.dag import PLAN_DAG_FILENAME, render_dag
 from agent_memory.cards.factory import build_card_models
 from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
-from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, split_card
+from agent_memory.cards.storage import UNSET_FIELD, card_type_for_id, create_card, find_card_path, split_card
 from agent_memory.cards.storage import update_card as write_card_updates
 from agent_memory.cards.validation import CardLoadFinding, CardRecord, CardScan, reference_field_names, scan_card_records, validate_cards, wikilink_ids
 from agent_memory.models import (
@@ -4279,8 +4279,11 @@ def all_plans_roots(config: ProjectConfig, cards_config: CardSystemConfig) -> li
     return [config.vault / "projects" / record["project_id"] / cards_config.root for record in records]
 
 
+LIST_FIELD_TYPES = ("string_list", "wikilink_list")
+
+
 def coerce_scalar_field(field_type: str, value: str) -> object:
-    assert field_type not in ("string_list", "wikilink_list"), "list fields must be appended, not coerced"
+    assert field_type not in LIST_FIELD_TYPES, "list fields must be appended, not coerced"
     if field_type == "int":
         return int(value)
     if field_type == "number":
@@ -4307,29 +4310,33 @@ def parse_card_fields(
     if spec is None:
         known_types = ", ".join(card_type.name for card_type in cards_config.card_types)
         raise CardFieldError(f"unknown card type {type_name}; known card types: {known_types}")
-    field_types = {field.name: field.type for field in spec.fields}
+    field_specs = {field.name: field for field in spec.fields}
     fields: dict[str, object] = {}
     for assignment in assignments:
         if "=" not in assignment:
             raise CardFieldError(f"field assignment must be key=value: {assignment}")
         key, value = assignment.split("=", 1)
-        if key not in field_types:
+        field = field_specs.get(key)
+        if field is None:
             raise CardFieldError(f"unknown field {key} for card type {type_name}")
-        field_type = field_types[key]
-        if field_type in ("string_list", "wikilink_list"):
-            # `--set tags=` clears the list. Appending "" instead stored [''], which no
-            # update could then remove, so delete-and-re-add was the only way back.
-            if value == "":
-                fields[key] = []
-            else:
-                append_list_field(fields, key, value)
-        else:
-            try:
-                fields[key] = coerce_scalar_field(field_type, value)
-            except ValueError as e:
-                if field_type not in ("int", "number"):
-                    raise
-                raise CardFieldError(f"field {key} expects {field_type} value, got {value}") from e
+        if value == "":
+            # `--set <field>=` means unset: clear a list, drop an optional scalar, refuse a
+            # required one. Without a single rule the empty value fell through to coercion
+            # and wrote `''`, which reads as a value the caller never set and which no later
+            # update could remove.
+            if field.required:
+                raise CardFieldError(f"field {key} is required for card type {type_name}; `--set {key}=` means unset, so give it a value instead")
+            fields[key] = [] if field.type in LIST_FIELD_TYPES else UNSET_FIELD
+            continue
+        if field.type in LIST_FIELD_TYPES:
+            append_list_field(fields, key, value)
+            continue
+        try:
+            fields[key] = coerce_scalar_field(field.type, value)
+        except ValueError as e:
+            if field.type not in ("int", "number"):
+                raise
+            raise CardFieldError(f"field {key} expects {field.type} value, got {value}") from e
     return fields
 
 
@@ -4359,7 +4366,7 @@ def add_card(
         raise MemoryOperationError("queue-item cards are global queue records; use `agent-memory queue add`")
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
-    fields = parse_card_fields(cards_config, type_name, assignments)
+    fields = {key: value for key, value in parse_card_fields(cards_config, type_name, assignments).items() if value is not UNSET_FIELD}
     path = create_card(
         project_plans_root(config, cards_config),
         cards_config,

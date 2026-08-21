@@ -3663,11 +3663,13 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     feature_key = f"projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
     search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"))
     assert feature_key in result_keys(search)
-    note_read = run_agent_memory_subprocess(workspace.repo, "retrieve", feature_key)
-    stderr_card = assert_structured_cli_error(note_read)
-    assert "feature show FEATURE-DEMO" in stderr_card
+    # A card is off-limits to the memory commands: reading one through the note path kept
+    # the body and dropped every schema field, so `retrieve` refuses the key outright.
+    with pytest.raises(MemoryOperationError):
+        run_agent_memory(workspace.repo, "retrieve", feature_key)
     shown = parse_json_stdout(run_agent_memory(workspace.repo, "feature", "show", "FEATURE-DEMO"))
     assert shown["id"] == "FEATURE-DEMO"
+    assert shown["body"] == "# FEATURE-DEMO\n"
     assert json_object(shown["metadata"])["status"] == "in-progress"
 
     # migrate an in-repo card tree (carrying trackerStatus) into the vault
