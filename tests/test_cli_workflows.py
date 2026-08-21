@@ -3727,6 +3727,119 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     assert any(json_string(problem["kind"]) == "reference" for problem in problems)
 
 
+def test_archived_cards_remain_discoverable_without_active_clutter(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    signal = "archive-visibility-signal-4fd8"
+    run_agent_memory(
+        workspace.repo,
+        "feature",
+        "add",
+        "FEATURE-ACTIVE",
+        "--set",
+        "title=Archive visibility active",
+        "--set",
+        "status=in-progress",
+        "--set",
+        f"description={signal}",
+    )
+    run_agent_memory(
+        workspace.repo,
+        "feature",
+        "add",
+        "FEATURE-HISTORY",
+        "--set",
+        "title=Archive visibility history",
+        "--set",
+        "status=complete",
+        "--set",
+        f"description={signal}",
+    )
+    run_agent_memory(workspace.repo, "feature", "update", "FEATURE-HISTORY", "--set", "archived=true")
+
+    active_key = f"projects/{workspace.project_id}/plans/features/FEATURE-ACTIVE/FEATURE-ACTIVE"
+    archived_key = f"projects/{workspace.project_id}/plans/features/FEATURE-HISTORY/FEATURE-HISTORY"
+    shown = parse_json_stdout(run_agent_memory(workspace.repo, "feature", "show", "FEATURE-HISTORY"))
+    shown_metadata = json_object(shown["metadata"])
+    assert shown_metadata["archived"] is True
+    assert shown_metadata["status"] == "complete"
+
+    active_list = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project"))
+    assert result_keys(active_list) == {active_key}
+    assert {json_string(record["key"]) for record in json_records(active_list, "archived_matches")} == {archived_key}
+    archived_list = parse_json_stdout(
+        run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project", "--visibility", "archived")
+    )
+    assert result_keys(archived_list) == {archived_key}
+    all_list = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project", "--visibility", "all"))
+    assert result_keys(all_list) == {active_key, archived_key}
+
+    active_search = search_content(workspace, scope="project", mode="exact", query=signal)
+    assert result_keys(active_search) == {active_key}
+    assert {json_string(record["key"]) for record in json_records(active_search, "archived_matches")} == {archived_key}
+    archived_search = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "search",
+            "content",
+            "--scope",
+            "project",
+            "--mode",
+            "exact",
+            "--visibility",
+            "archived",
+            signal,
+        )
+    )
+    assert result_keys(archived_search) == {archived_key}
+    all_search = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "search",
+            "content",
+            "--scope",
+            "project",
+            "--mode",
+            "exact",
+            "--visibility",
+            "all",
+            signal,
+        )
+    )
+    assert result_keys(all_search) == {active_key, archived_key}
+
+    active_tree = inspect_json(workspace, "tree", "--scope", "project", "--depth", "8", "--visibility", "active")
+    active_tree_keys = set().union(*(inspect_tree_keys(json_object(root)) for root in json_records(active_tree, "roots")))
+    assert active_key in active_tree_keys
+    assert archived_key not in active_tree_keys
+    archived_tree = inspect_json(workspace, "tree", "--scope", "project", "--depth", "8", "--visibility", "archived")
+    archived_tree_keys = set().union(*(inspect_tree_keys(json_object(root)) for root in json_records(archived_tree, "roots")))
+    assert archived_key in archived_tree_keys
+
+    active_dag = parse_json_stdout(run_agent_memory(workspace.repo, "card", "dag"))
+    active_dag_text = Path(json_string(active_dag["path"])).read_text(encoding="utf-8")
+    assert "FEATURE-ACTIVE" in active_dag_text
+    assert "FEATURE-HISTORY" not in active_dag_text
+    archived_dag = parse_json_stdout(run_agent_memory(workspace.repo, "card", "dag", "--visibility", "archived"))
+    archived_dag_path = Path(json_string(archived_dag["path"]))
+    archived_dag_text = archived_dag_path.read_text(encoding="utf-8")
+    assert archived_dag_path.name == "plan-dag-archived.md"
+    assert "FEATURE-HISTORY" in archived_dag_text
+    assert "FEATURE-ACTIVE" not in archived_dag_text
+    all_dag = parse_json_stdout(run_agent_memory(workspace.repo, "card", "dag", "--visibility", "all"))
+    all_dag_text = Path(json_string(all_dag["path"])).read_text(encoding="utf-8")
+    assert "FEATURE-ACTIVE" in all_dag_text
+    assert "FEATURE-HISTORY" in all_dag_text
+
+    run_agent_memory(workspace.repo, "feature", "update", "FEATURE-HISTORY", "--set", "archived=false")
+    restored = parse_json_stdout(run_agent_memory(workspace.repo, "feature", "show", "FEATURE-HISTORY"))
+    restored_metadata = json_object(restored["metadata"])
+    assert restored_metadata["archived"] is False
+    assert restored_metadata["status"] == "complete"
+    restored_list = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project"))
+    assert result_keys(restored_list) == {active_key, archived_key}
+    assert json_records(restored_list, "archived_matches") == []
+
+
 def test_card_dag_contains_only_local_reference_closure(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     other_repo = initialized_git_repo_with_remote(tmp_path, "other-repo", "other-memory")
