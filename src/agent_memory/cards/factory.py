@@ -5,7 +5,7 @@ from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, create_model
 
-from agent_memory.cards.config import CardSystemConfig, FieldSpec, StatusSetSpec
+from agent_memory.cards.config import CardSystemConfig, FieldSpec, StatusSetSpec, card_fields
 
 
 def membership_validator(options: list[str]) -> Callable[[str], str]:
@@ -53,7 +53,9 @@ def _list_field(field: FieldSpec) -> tuple[Any, Any]:
 def _scalar_field(field: FieldSpec) -> tuple[Any, Any]:
     scalar: Any = bool if field.type == "bool" else str
     if field.required:
-        return (scalar, Field())
+        # A required string that accepts "" makes `required: true` mean nothing: an empty
+        # assignment satisfies the field while erasing the value it was required to carry.
+        return (scalar, Field() if field.type == "bool" else Field(min_length=1))
     # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is
     # False; required fields compile to a bare Field() and fail loud if missing.
     # ast-grep-ignore: no-field-default
@@ -94,7 +96,7 @@ def build_card_models(config: CardSystemConfig) -> dict[str, type[BaseModel]]:
     models: dict[str, type[BaseModel]] = {}
     for card_type in config.card_types:
         status_set = config.status_sets[card_type.status_set]
-        definitions: dict[str, Any] = {field.name: field_definition(field, status_set) for field in card_type.fields}
+        definitions: dict[str, Any] = {field.name: field_definition(field, status_set) for field in card_fields(card_type)}
         models[card_type.name] = create_model(
             f"{card_type.name.capitalize()}Card",
             __config__=ConfigDict(extra="forbid"),

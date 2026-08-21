@@ -26,16 +26,18 @@ from markdown_it import MarkdownIt
 from pydantic import BaseModel, ValidationError
 
 from agent_memory import iwe
-from agent_memory.cards.config import CardSystemConfig
-from agent_memory.cards.dag import PLAN_DAG_FILENAME, render_dag
+from agent_memory.cards.config import CardSystemConfig, card_fields
+from agent_memory.cards.dag import PLAN_DAG_FILENAMES, plan_dag_filename, render_dag
 from agent_memory.cards.factory import build_card_models
 from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
-from agent_memory.cards.storage import card_type_for_id, create_card, find_card_path, split_card
+from agent_memory.cards.storage import UNSET_FIELD, card_type_for_id, create_card, find_card_path, split_card
 from agent_memory.cards.storage import update_card as write_card_updates
-from agent_memory.cards.validation import CardRecord, load_card_records, validate_cards
+from agent_memory.cards.validation import CardLoadFinding, CardRecord, CardScan, reference_field_names, scan_card_records, validate_cards, wikilink_ids
 from agent_memory.models import (
+    ArchiveVisibility,
     BaseNoteMetadata,
+    CardListingSource,
     GlobalNoteMetadata,
     InspectExportFormat,
     InspectExportProfile,
@@ -92,11 +94,6 @@ class DeleteBacklinksRepointed:
 type DeleteBacklinkDisposition = DeleteBacklinksBlocked | DeleteBacklinksOrphaned | DeleteBacklinksRepointed
 
 
-class CardListingSource(Enum):
-    MANAGED = "managed"
-    MANAGED_AND_UNMIGRATED = "managed_and_unmigrated"
-
-
 class SyncCommitState(Enum):
     CLEAN = "clean"
     COMMITTED = "committed"
@@ -120,7 +117,7 @@ VAULT_GIT_USER_NAME = "agent-memory"
 VAULT_GIT_USER_EMAIL = "agent-memory@localhost"
 ROOT_INDEX_ENTRIES: tuple[IndexEntry, ...] = (("Global", "global/index.md", "Global memory shared across projects."),)
 PROJECT_AGENT_STATE_DIRECTORIES: tuple[str, ...] = (".agents", ".hermes")
-BUNDLED_SKILL_NAMES: tuple[str, ...] = ("vault-maintenance",)
+BUNDLED_SKILL_NAMES: tuple[str, ...] = ("agent-memory", "vault-maintenance")
 VAULT_MAINTENANCE_SKILL_COMMAND = "agent-memory maintain skill vault-maintenance"
 VAULT_MAINTENANCE_SKILL_HINT = (
     "\nDispatch a dedicated vault-maintenance subagent for this failure. "
@@ -179,6 +176,17 @@ INSPECT_COMMAND_NAMES: tuple[str, ...] = (
 QUEUE_CARD_TYPE = "queue-item"
 QUEUE_CARD_ID_PREFIX = "QUEUE"
 QUEUE_DIRECTORY = "queue"
+# Tag that marks the stub `maintain move` leaves behind so a moved key still resolves.
+PROMOTION_POINTER_TAG = "promotion-pointer"
+# Ranked search runs on Probe, so Probe is a scoring engine, not just a CLI surface. Pinned
+# because an unpinned `@latest` re-resolves per invocation: the ranking could change between
+# two searches in one session with nothing in the vault having moved.
+#
+# Bumping this version is what the payload-shape asserts in probe_results, probe_skipped_files,
+# probe_score, json_child and json_int are holding up. They are asserts on purpose -- a shape
+# change is a broken pin, not user input -- but they assert against THIS version. Re-run a
+# ranked search against a real vault after any bump, and read the failure as "the pin moved".
+PROBE_PACKAGE = "@probelabs/probe@0.6.0-rc331"
 
 
 def index_descriptions(scope: MemoryScope) -> dict[str, str]:
@@ -196,6 +204,11 @@ VAULT_DIRECTORIES: tuple[Path, ...] = (
     Path("templates"),
     Path("_meta"),
 )
+PROBE_DEPENDENCY = DependencyCheck(
+    "@probelabs/probe",
+    ("bunx", "--silent", PROBE_PACKAGE, "--version"),
+    f"run `just setup` from the agent-memory checkout; manual install: run `bunx --silent {PROBE_PACKAGE} --version`.",
+)
 BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
     DependencyCheck(
         "git",
@@ -208,21 +221,18 @@ BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
         "run `just setup` from the agent-memory checkout; manual install: run `cargo install ripgrep`.",
     ),
     DependencyCheck(
-        "npx",
-        ("npx", "--version"),
-        "run `just setup` from the agent-memory checkout; manual install: install Node.js with npm/npx.",
+        "bunx",
+        ("bunx", "--version"),
+        "run `just setup` from the agent-memory checkout; manual install: install bun from https://bun.sh.",
     ),
-    DependencyCheck(
-        "@probelabs/probe",
-        ("npx", "-y", "@probelabs/probe@latest", "--version"),
-        "run `just setup` from the agent-memory checkout; manual install: run `npx -y @probelabs/probe@latest --version`.",
-    ),
+    PROBE_DEPENDENCY,
     DependencyCheck(
         "zk",
         ("zk", "--version"),
         "run `just setup` from the agent-memory checkout; manual install: install zk v0.15.5 to a directory on PATH.",
     ),
 )
+NON_SEARCH_DEPENDENCIES: tuple[DependencyCheck, ...] = tuple(dependency for dependency in BASIC_DEPENDENCIES if dependency is not PROBE_DEPENDENCY)
 
 
 @dataclass(frozen=True)
@@ -240,9 +250,13 @@ class ProjectNotInitializedError(RuntimeError):
         "{default_vault}` once if the global vault does not exist, then run "
         "`agent-memory init project --vault <path-to-global-vault>` from this repository."
     )
+    # A read that only needs project scope has a route that works right now, without any
+    # setup mutation. Name it first: the setup instructions below are the slower remedy.
+    READ_ROUTE = "Rerun with `--scope global` to read the global vault from an unbound directory."
 
-    def __init__(self, default_vault: Path) -> None:
-        super().__init__(self.GUIDANCE.format(default_vault=default_vault))
+    def __init__(self, default_vault: Path, *, route: SearchScope = SearchScope.BOTH) -> None:
+        guidance = self.GUIDANCE.format(default_vault=default_vault)
+        super().__init__(f"{self.READ_ROUTE} {guidance}" if route is SearchScope.PROJECT else guidance)
 
 
 class GlobalVaultNotInitializedError(RuntimeError):
@@ -426,6 +440,7 @@ class ManagedCardListing:
     scope: MemoryScope
     path: Path
     key: str
+    archived: bool
 
 
 @dataclass(frozen=True)
@@ -435,6 +450,7 @@ class UnmigratedCardListing:
     scope: MemoryScope
     path: Path
     suggested_destination: str
+    archived: bool
 
 
 type CardListing = ManagedCardListing | UnmigratedCardListing
@@ -688,19 +704,23 @@ def memory_transition(
     memory_type: MemoryType | None,
     content: str | None,
 ) -> MemoryTransition:
-    source_path = config.vault / f"{key}.md"
+    source_path = memory_path_for_key(config, key)
     document = read_memory(source_path)
     old_title = metadata_string(document.metadata, "title", source_path)
-    scope = MemoryScope(metadata_string(document.metadata, "scope", source_path))
-    old_type = MemoryType(metadata_string(document.metadata, "type", source_path))
+    scope = metadata_memory_scope(document.metadata, source_path)
+    old_type = metadata_memory_type(document.metadata, source_path)
     new_title = title if title is not None else old_title
     new_type = memory_type if memory_type is not None else old_type
     body = updated_memory_body(document.body, new_title, content)
     description = okf_description(content if content is not None else body)
-    metadata = {
-        **document.metadata,
-        **note_metadata(config, scope, new_type, new_title, description),
-    }
+    # An update owns the canonical OKF fields and nothing else. Keys the record already
+    # carries survive because they are merged first; the tags this write does not own --
+    # everything beyond the canonical scope/type pair -- are carried across explicitly,
+    # since note_metadata rebuilds the tag list from scratch.
+    canonical = note_metadata(config, scope, new_type, new_title, description)
+    carried_tags: list[MetadataValue] = list(okf_tags(scope, new_type, unowned_tags(document.metadata, source_path, scope, old_type)))
+    canonical["tags"] = carried_tags
+    metadata = {**document.metadata, **canonical}
     destination_path = memory_directory(config, scope, new_type) / f"{memory_slug(new_title)}.md"
     return MemoryTransition(
         old_key=key,
@@ -719,7 +739,8 @@ def memory_transition(
 
 def memory_slug(title: str) -> str:
     slug = slugify(title)
-    assert slug, "title must produce a nonempty slug"
+    if not slug:
+        raise MemoryOperationError(f"title {title!r} has no letters or digits to build a filename from; give the record a title with word characters")
     return slug
 
 
@@ -751,7 +772,7 @@ def update_memory(
 ) -> JsonObject:
     if title is None and memory_type is None and content is None:
         raise MemoryOperationError("update requires at least one of --title, --type, or --content")
-    config = load_project_config(cwd)
+    config = config_for_key(key, cwd)
     transition = memory_transition(config, key, title, memory_type, content)
     if transition.new_key != transition.old_key:
         iwe.rename(config.vault, transition.old_key, transition.new_key)
@@ -805,7 +826,7 @@ def update_plan_todo(
     if not todo_id.strip():
         raise MemoryOperationError("todo id must not be empty")
 
-    config = load_project_config(cwd)
+    config = config_for_key(key, cwd)
     path = (config.vault / f"{key}.md").resolve()
     if not path.is_relative_to(config.vault.resolve()) or not path.is_file():
         raise MemoryOperationError(f"plan memory not found: {key}")
@@ -845,10 +866,10 @@ def update_plan_todo(
 
 
 def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
-    config = config_for_search_scope(scope, cwd)
+    config, scope = resolve_search_scope(scope, cwd)
     complete_statuses_by_scope: dict[MemoryScope, set[str]] = {}
     excluded_scopes: list[JsonObject] = []
-    for memory_scope in search_scope_memory_scopes(scope, both_order=(MemoryScope.PROJECT, MemoryScope.GLOBAL)):
+    for memory_scope in search_scope_memory_scopes(config, scope, both_order=(MemoryScope.PROJECT, MemoryScope.GLOBAL)):
         schema_project_id = require_project_id(config) if memory_scope is MemoryScope.PROJECT else None
         cards_config = load_card_system_config(config.vault, schema_project_id)
         if not cards_config.workflow_roles:
@@ -987,7 +1008,7 @@ def raw_memory_body(path: Path) -> str:
 
 
 def delete_backlink_disposition_error(key: str, inbound_keys: Sequence[str]) -> str:
-    return f"delete would orphan inbound wikilinks for {key}; inbound={', '.join(inbound_keys)}; rerun with --repoint <key-or-url> or --orphan-ok"
+    return f"delete would orphan inbound wikilinks for {key}; inbound={', '.join(inbound_keys)}; rerun with --repoint <key-or-url> or --backlinks orphan"
 
 
 def delete_memory(key: str, cwd: Path) -> JsonObject:
@@ -1003,11 +1024,11 @@ def delete_memory_repointing_backlinks(key: str, cwd: Path, repoint: str) -> Jso
 
 
 def _delete_memory(key: str, cwd: Path, backlink_disposition: DeleteBacklinkDisposition) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_key(key, cwd)
+    path = memory_path_for_key(config, key)
     inbound_keys = non_index_incoming_link_keys(config, key)
     if inbound_keys and isinstance(backlink_disposition, DeleteBacklinksBlocked):
         raise MemoryOperationError(delete_backlink_disposition_error(key, inbound_keys))
-    path = config.vault / f"{key}.md"
     try:
         document = read_memory(path)
     except MalformedMemoryError:
@@ -1049,46 +1070,57 @@ def _delete_memory(key: str, cwd: Path, backlink_disposition: DeleteBacklinkDisp
     return result
 
 
-def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = config_for_search_scope(scope, cwd)
+def search_memories(scope: SearchScope, query: str, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
+    config, scope = resolve_search_scope(scope, cwd)
     limit = starter_config().search_max_results
     note_scan = scan_note_records(config, scope)
     key_matches = key_search_records_from_notes(note_scan.records, query, limit)
     exact_matches = exact_content_records(config, scope, query)
     fuzzy_matches = fuzzy_content_records(config, scope, query)
-    results = dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[:limit]
-    ranked_matches = search_content_ranked(scope, query, cwd)
+    results, archived_matches = select_search_records(config, dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[:limit], visibility)
+    key_matches, _key_archived = select_search_records(config, key_matches, visibility)
+    exact_matches, _exact_archived = select_search_records(config, exact_matches, visibility)
+    fuzzy_matches, _fuzzy_archived = select_search_records(config, fuzzy_matches, visibility)
+    ranked_matches = search_content_ranked(scope, query, cwd, visibility=visibility)
     ranked_results = ranked_matches["results"]
     assert isinstance(ranked_results, list), "ranked search results must be a JSON list"
     return {
         "query": query,
         "scope": scope.value,
+        "visibility": visibility.value,
         "results": json_list(results),
         "key_matches": json_list(key_matches),
         "exact_content_matches": json_list(exact_matches),
         "fuzzy_content_matches": json_list(fuzzy_matches),
         "ranked_content_matches": ranked_results,
+        "archived_matches": json_list(archived_matches),
         "findings": note_findings_json(note_scan.findings),
     }
 
 
-def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = config_for_search_scope(scope, cwd)
+def search_keys(scope: SearchScope, query: str, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
+    config, scope = resolve_search_scope(scope, cwd)
     note_scan = scan_note_records(config, scope)
+    records, archived_matches = select_search_records(config, key_search_records_from_notes(note_scan.records, query, starter_config().search_max_results), visibility)
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_list(key_search_records_from_notes(note_scan.records, query, starter_config().search_max_results)),
+        "visibility": visibility.value,
+        "results": json_list(records),
+        "archived_matches": json_list(archived_matches),
         "findings": note_findings_json(note_scan.findings),
     }
 
 
-def search_content_exact(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = config_for_search_scope(scope, cwd)
+def search_content_exact(scope: SearchScope, query: str, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
+    config, scope = resolve_search_scope(scope, cwd)
+    records, archived_matches = select_search_records(config, exact_content_records(config, scope, query), visibility)
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_list(exact_content_records(config, scope, query)),
+        "visibility": visibility.value,
+        "results": json_list(records),
+        "archived_matches": json_list(archived_matches),
     }
 
 
@@ -1097,16 +1129,20 @@ def search_metadata(
     memory_type: MemoryType | None,
     tag: str | None,
     created_after: str | None,
+    visibility: ArchiveVisibility,
     cwd: Path,
 ) -> JsonObject:
-    config = config_for_search_scope(scope, cwd)
+    config, scope = resolve_search_scope(scope, cwd)
     limit = starter_config().search_max_results
     created_after_datetime = parse_created_after(created_after)
     note_scan = scan_note_records(config, scope)
-    records = [metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)]
+    matching = [metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)]
+    records, archived_matches = select_search_records(config, matching[:limit], visibility)
     return {
         "scope": scope.value,
-        "results": json_list(records[:limit]),
+        "visibility": visibility.value,
+        "results": json_list(records),
+        "archived_matches": json_list(archived_matches),
         "findings": note_findings_json(note_scan.findings),
     }
 
@@ -1209,6 +1245,39 @@ def dedupe_records_by_key(records: Sequence[JsonObject]) -> list[JsonObject]:
     return deduped
 
 
+def search_record_path(record: JsonObject) -> Path:
+    value = record["path"] if "path" in record else record["file"] if "file" in record else None
+    if not isinstance(value, str):
+        raise MemoryOperationError("search result has no file path")
+    return Path(value)
+
+
+def archived_search_identity(config: ProjectConfig, path: Path, title: str, card_type: str) -> JsonObject:
+    return {
+        "key": memory_key(config.vault, path),
+        "path": str(path),
+        "title": title,
+        "type": card_type,
+        "archived": True,
+    }
+
+
+def select_search_records(config: ProjectConfig, records: Sequence[JsonObject], visibility: ArchiveVisibility) -> tuple[list[JsonObject], list[JsonObject]]:
+    selected: list[JsonObject] = []
+    archived_matches: list[JsonObject] = []
+    for record in records:
+        path = search_record_path(record)
+        fields = card_listing_fields_for_path(config, path)
+        archived = fields is not None and fields[3]
+        record_visibility = ArchiveVisibility.ARCHIVED if archived else ArchiveVisibility.ACTIVE
+        if archive_visibility_is_included(record_visibility, visibility):
+            selected.append(record)
+        if fields is not None and fields[3] and visibility is ArchiveVisibility.ACTIVE:
+            title, card_type, _scope, _archived = fields
+            archived_matches.append(archived_search_identity(config, path, title, card_type))
+    return selected, dedupe_records_by_key(archived_matches)
+
+
 def json_list(values: Sequence[JsonValue]) -> list[JsonValue]:
     # Widen a homogeneous JSON-value sequence to the list[JsonValue] shape required by
     # JsonObject slots. Sequence is covariant, so list[JsonObject] and list[str] inputs
@@ -1216,14 +1285,13 @@ def json_list(values: Sequence[JsonValue]) -> list[JsonValue]:
     return list(values)
 
 
-STRUCTURED_CARD_PREFIX_TYPES = {
-    "FEATURE": "feature",
-    "PLAN": "plan",
-    "PHASE": "phase",
-    "TASK": "task",
-    "SPEC": "spec",
-    "DECISION": "decision",
-}
+@cache
+def card_prefix_types(config: ProjectConfig) -> dict[str, str]:
+    # Which id prefix names which card type, read from the active schema rather than a
+    # hand-kept copy of it: a duplicate map makes every new card type invisible to `list`
+    # until someone remembers to edit it. Cached because listings ask once per vault file.
+    cards_config = load_card_system_config(config.vault, config.project_id)
+    return {card_type.id_prefix: card_type.name for card_type in cards_config.card_types}
 
 
 def card_listing_json(record: CardListing) -> JsonObject:
@@ -1232,27 +1300,47 @@ def card_listing_json(record: CardListing) -> JsonObject:
         "type": record.card_type,
         "scope": record.scope.value,
         "path": str(record.path),
+        "archived": record.archived,
     }
     if isinstance(record, ManagedCardListing):
         return {**payload, "managed": True, "key": record.key, "suggested_destination": None}
     return {**payload, "managed": False, "key": None, "suggested_destination": record.suggested_destination}
 
 
-def list_cards(card_type: str, scope: SearchScope, cwd: Path) -> JsonObject:
-    return _list_cards(card_type, scope, CardListingSource.MANAGED, cwd)
+def list_cards(card_type: str | None, scope: SearchScope, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
+    return _list_cards(card_type, scope, visibility, CardListingSource.MANAGED, cwd)
 
 
-def list_cards_with_unmigrated(card_type: str, scope: SearchScope, cwd: Path) -> JsonObject:
-    return _list_cards(card_type, scope, CardListingSource.MANAGED_AND_UNMIGRATED, cwd)
+def list_cards_with_unmigrated(card_type: str | None, scope: SearchScope, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
+    return _list_cards(card_type, scope, visibility, CardListingSource.MANAGED_AND_UNMIGRATED, cwd)
 
 
-def _list_cards(card_type: str, scope: SearchScope, listing_source: CardListingSource, cwd: Path) -> JsonObject:
-    config = config_for_search_scope(scope, cwd)
+def listable_types(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
+    # Everything a listing can hold: schema-backed card types plus the memory types that
+    # unmigrated records still carry in their frontmatter. A global-scope listing reads the
+    # vault schema only -- it never touches the project, so a malformed project schema must
+    # not decide which types it will accept.
+    project_id = None if scope is SearchScope.GLOBAL else config.project_id
+    cards_config = load_card_system_config(config.vault, project_id)
+    names = {card_type.name for card_type in cards_config.card_types} | {memory_type.value for memory_type in MemoryType}
+    return tuple(sorted(names))
+
+
+def _list_cards(card_type: str | None, scope: SearchScope, visibility: ArchiveVisibility, listing_source: CardListingSource, cwd: Path) -> JsonObject:
+    config, scope = resolve_search_scope(scope, cwd)
+    # No --type lists every type, so absence is valid. A supplied name that no type uses is
+    # not: silently returning an empty list turns a typo into "the vault has none of these".
+    if card_type is not None:
+        known = listable_types(config, scope)
+        if card_type not in known:
+            raise MemoryOperationError(f"unknown type {card_type!r}; listable types: {', '.join(known)}. Omit --type to list every type.")
     records: list[CardListing] = [*managed_card_listings(config, scope)]
     include_unmigrated = listing_source is CardListingSource.MANAGED_AND_UNMIGRATED
     if listing_source is CardListingSource.MANAGED_AND_UNMIGRATED:
         records.extend(unmigrated_card_listings(config, scope))
-    filtered = [record for record in records if record.card_type == card_type]
+    typed = [record for record in records if card_type is None or record.card_type == card_type]
+    filtered = [record for record in typed if archive_visibility_is_included(ArchiveVisibility.ARCHIVED if record.archived else ArchiveVisibility.ACTIVE, visibility)]
+    archived_matches = [record for record in typed if record.archived] if visibility is ArchiveVisibility.ACTIVE else []
     filtered.sort(
         key=lambda record: (
             isinstance(record, ManagedCardListing),
@@ -1264,13 +1352,15 @@ def _list_cards(card_type: str, scope: SearchScope, listing_source: CardListingS
     return {
         "type": card_type,
         "scope": scope.value,
+        "visibility": visibility.value,
         "include_unmigrated": include_unmigrated,
         "results": json_list([card_listing_json(record) for record in filtered]),
+        "archived_matches": json_list([card_listing_json(record) for record in archived_matches]),
     }
 
 
-def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = config_for_search_scope(scope, cwd)
+def search_content_ranked(scope: SearchScope, query: str, cwd: Path, visibility: ArchiveVisibility) -> JsonObject:
+    config, scope = resolve_search_scope(scope, cwd)
     starter = starter_config()
     roots = search_roots(config, scope)
     per_root_tokens = starter.search_max_tokens // len(roots)
@@ -1285,20 +1375,67 @@ def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObje
         )
         for root in roots
     ]
-    return merge_probe_payloads(
+    merged = merge_probe_payloads(
         payloads,
         max_results=starter.search_max_results,
         max_tokens=starter.search_max_tokens,
     )
+    payload = ranked_results_payload(config, merged, starter.search_max_results)
+    raw_results = payload["results"]
+    assert isinstance(raw_results, list), "ranked search results must be a JSON list"
+    records = [record for record in raw_results if isinstance(record, dict)]
+    selected, archived_matches = select_search_records(config, records, visibility)
+    summary = json_child(payload, "summary")
+    return {
+        **payload,
+        "scope": scope.value,
+        "visibility": visibility.value,
+        "results": json_list(selected),
+        "archived_matches": json_list(archived_matches),
+        "summary": {**summary, "count": len(selected)},
+    }
 
 
-def search_content_fuzzy(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
-    config = config_for_search_scope(scope, cwd)
-    records = zk_search_scope(config, scope, query)
+def ranked_results_payload(config: ProjectConfig, payload: JsonObject, limit: int) -> JsonObject:
+    # Three corrections to what Probe hands back, all on the default search path.
+    #
+    # Probe reports files it matched but could not excerpt in `skipped_files`, outside
+    # `results`. Those are matches, and the strongest ones: block extraction gives up on
+    # exactly the large records that mention a topic most. Left in a sidecar array, a search
+    # returns ten weaker hits while an agent concludes the vault has nothing on the topic.
+    #
+    # Probe records name a file and no vault key, unlike every sibling search command, so
+    # `.results[].key` came back null for callers who read it the way the siblings taught.
+    #
+    # A record that scored zero with no excerpt is not a match, and Probe emits it
+    # inconsistently between identical runs. Dropping it makes ranked output reproducible.
+    excerpted = [record for record in probe_results(payload) if is_scored_match(record)]
+    skipped = sorted(probe_skipped_files(payload), key=lambda record: json_int(record, "all"), reverse=True)
+    unexcerpted: list[JsonObject] = [{"file": record["file"], "lines": None, "code": None, "match_count": record["all"]} for record in skipped[:limit]]
+    results: list[JsonValue] = [{**record, "key": memory_key(config.vault, Path(json_string(record, "file")))} for record in (*excerpted, *unexcerpted)]
+    summary = json_child(payload, "summary")
+    return {**payload, "results": json_list(results), "summary": {**summary, "count": len(results)}}
+
+
+def is_scored_match(record: JsonObject) -> bool:
+    return probe_score(record) > 0 or bool(record.get("code"))
+
+
+def json_string(payload: JsonObject, key: str) -> str:
+    value = payload[key]
+    assert isinstance(value, str), f"probe {key} must be a string"
+    return value
+
+
+def search_content_fuzzy(scope: SearchScope, query: str, cwd: Path, visibility: ArchiveVisibility) -> JsonObject:
+    config, scope = resolve_search_scope(scope, cwd)
+    records, archived_matches = select_search_records(config, zk_search_scope(config, scope, query), visibility)
     return {
         "query": query,
         "scope": scope.value,
+        "visibility": visibility.value,
         "results": json_list(records[: starter_config().search_max_results]),
+        "archived_matches": json_list(archived_matches),
     }
 
 
@@ -1354,9 +1491,14 @@ def probe_search_root(
 ) -> JsonObject:
     result = run_checked(
         [
-            "npx",
-            "-y",
-            "@probelabs/probe@latest",
+            "bunx",
+            # Without --silent, a cold cache writes install progress into the stdout this
+            # function parses as JSON, so the first search after a fresh install fails.
+            "--silent",
+            # Do not "simplify" this to a bare `probe`. A different package, @buger/probe,
+            # installs a binary of that name globally, so a bare command name would swap
+            # the ranking engine out from under this search with nothing to show for it.
+            PROBE_PACKAGE,
             "search",
             query,
             str(root),
@@ -1463,46 +1605,47 @@ def json_int(payload: JsonObject, key: str) -> int:
 
 
 def retrieve_memory(key: str, cwd: Path) -> str:
-    config = load_project_config(cwd)
-    try:
-        return iwe.retrieve(config.vault, key)
-    except KeyError as exc:
-        raise AssertionError(
-            "retrieve expects a full vault-relative key. "
-            f"Could not resolve `{key}`. "
-            'Use `agent-memory search --scope both "<term>"` to discover keys, then retrieve a result such as '
-            "`projects/<project-id>/decisions/parser-choice` or "
-            "`projects/<project-id>/plans/features/FEATURE-ID/FEATURE-ID`."
-        ) from exc
+    config = config_for_key(key, cwd)
+    memory_path_for_key(config, key)
+    return iwe.retrieve(config.vault, key)
 
 
 def squash_memory(key: str, depth: int, cwd: Path) -> str:
-    assert depth > 0, f"squash depth must be positive: {depth}"
-    config = load_project_config(cwd)
+    if depth < 1:
+        raise MemoryOperationError(f"squash --depth must be 1 or more, got {depth}")
+    config = config_for_key(key, cwd)
+    memory_path_for_key(config, key)
     return iwe.squash(config.vault, key, depth)
 
 
 def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_key(key, cwd)
     source_path = memory_path_for_key(config, key)
     source_document = read_memory(source_path)
     source_title = metadata_string(source_document.metadata, "title", source_path)
     memory_type = MemoryType(metadata_string(source_document.metadata, "type", source_path))
     scope = MemoryScope(metadata_string(source_document.metadata, "scope", source_path))
-    affected_keys = iwe.extract(config.vault, key, section)
+    try:
+        affected_keys = iwe.extract(config.vault, key, section)
+    except RuntimeError as error:
+        raise MemoryOperationError(f"cannot split {key} at section {section!r}: {error}; `agent-memory inspect outline {key}` lists the headings it has") from error
     extracted_keys: list[str] = []
     for affected_key in affected_keys:
         if affected_key == key:
             continue
         extracted_path = memory_path_for_key(config, affected_key)
         extracted_body = extracted_path.read_text(encoding="utf-8")
-        title = first_heading_title(extracted_body)
+        title = first_heading_title(extracted_path, extracted_body)
         description = f"Extracted from {source_title}."
         write_memory(extracted_path, note_metadata(config, scope, memory_type, title, description), extracted_body)
         append_index_link(extracted_path.parent / "index.md", title, extracted_path.name, description)
         extracted_keys.append(affected_key)
-    assert extracted_keys, "split must create at least one extracted memory"
-    assert len(extracted_keys) == 1, f"split section must create exactly one extracted memory: {extracted_keys}"
+    if len(extracted_keys) != 1:
+        raise MemoryOperationError(
+            f"section {section!r} did not extract exactly one record from {key} "
+            f"(extracted {len(extracted_keys)}); name a heading that appears once, "
+            f"as `agent-memory inspect outline {key}` lists it"
+        )
     rewritten = rewrite_wikilink_files(
         config,
         (wikilink_rewrite(f"{key}#{section}", extracted_keys[0]),),
@@ -1527,11 +1670,14 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
 
 
 def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
+    config = config_for_key(key, cwd)
     reference_path = memory_path_for_key(config, reference)
     reference_document = read_memory(reference_path)
     reference_title = metadata_string(reference_document.metadata, "title", reference_path)
-    affected_keys = iwe.inline(config.vault, key, reference)
+    try:
+        affected_keys = iwe.inline(config.vault, key, reference)
+    except RuntimeError as error:
+        raise MemoryOperationError(f"cannot merge {reference} into {key}: {error}; `agent-memory inspect links {key}` lists the references it has") from error
     rewritten = rewrite_non_index_wikilink_files(
         config,
         (wikilink_rewrite(reference, f"{key}#{reference_title}"),),
@@ -1546,18 +1692,24 @@ def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
 
 
 def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
-    config = load_project_config(cwd)
-    assert destination.startswith("global/"), "move destination must be global"
-    source_path = config.vault / f"{key}.md"
-    assert source_path.is_file(), "memory to move must exist"
+    config = config_for_key(key, cwd)
+    if not destination.startswith("global/"):
+        raise MemoryOperationError(f"move destination must be a global directory such as `global/traps`, got {destination!r}")
+    source_path = memory_path_for_key(config, key)
     destination_key = f"{destination}/{source_path.stem}"
     destination_path = config.vault / f"{destination_key}.md"
-    assert destination_path.parent.is_dir(), "move destination directory must exist"
+    if not destination_path.parent.is_dir():
+        known = ", ".join(sorted(f"global/{directory}" for directory in MEMORY_TYPE_DIRECTORIES.values()))
+        raise MemoryOperationError(f"no such destination directory {destination!r} in {config.vault}; global destinations are: {known}")
 
     source_document = read_memory(source_path)
-    memory_type = MemoryType(metadata_string(source_document.metadata, "type", source_path))
+    memory_type = metadata_memory_type(source_document.metadata, source_path)
     title = metadata_string(source_document.metadata, "title", source_path)
     description = metadata_string(source_document.metadata, "description", source_path)
+    # A promotion pointer is an index artifact of the project note directory it replaces.
+    # A source stranded outside that directory has no index entry to repoint and no project
+    # to attribute the stub to, so the move leaves nothing behind (issue #107).
+    leaves_pointer = source_path.parent == memory_directory(config, MemoryScope.PROJECT, memory_type)
     iwe.rename(config.vault, key, destination_key)
 
     moved_document = read_memory(destination_path)
@@ -1578,20 +1730,20 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
         description,
     )
 
-    pointer_description = f"Promoted to {destination_key}."
-    pointer_metadata = ProjectNoteMetadata(
-        type=memory_type,
-        title=title,
-        description=pointer_description,
-        tags=okf_tags(MemoryScope.PROJECT, memory_type, ("promotion-pointer",)),
-        timestamp=okf_timestamp(),
-        scope=MemoryScope.PROJECT,
-        project_id=require_project_id(config),
-    ).to_yaml_payload()
-    pointer_body = f"# {title}\n\nPromoted to [[{destination_key}]].\n"
-    assert source_path.parent.is_dir(), "project memory parent must be a directory"
-    write_new_memory(source_path, pointer_metadata, pointer_body)
-    replace_index_link(source_path.parent / "index.md", source_path.name, title, source_path.name, pointer_description)
+    if leaves_pointer:
+        pointer_description = f"Promoted to {destination_key}."
+        pointer_metadata = ProjectNoteMetadata(
+            type=memory_type,
+            title=title,
+            description=pointer_description,
+            tags=okf_tags(MemoryScope.PROJECT, memory_type, (PROMOTION_POINTER_TAG,)),
+            timestamp=okf_timestamp(),
+            scope=MemoryScope.PROJECT,
+            project_id=require_project_id(config),
+        ).to_yaml_payload()
+        pointer_body = f"# {title}\n\nPromoted to [[{destination_key}]].\n"
+        write_new_memory(source_path, pointer_metadata, pointer_body)
+        replace_index_link(source_path.parent / "index.md", source_path.name, title, source_path.name, pointer_description)
     index_zk_notebook(config.vault)
     rewritten = rewrite_wikilink_files(config, (wikilink_rewrite(key, destination_key),))
     index_zk_notebook(config.vault)
@@ -1628,11 +1780,14 @@ def check_dependency(dependency: DependencyCheck, cwd: Path) -> JsonObject:
     return {"name": dependency.name, "command": list(dependency.command), "status": "ok"}
 
 
-def basic_doctor(cwd: Path) -> JsonObject:
-    dependencies = [check_dependency(dependency, cwd) for dependency in BASIC_DEPENDENCIES]
+def basic_doctor(
+    cwd: Path,
+    dependencies: Sequence[DependencyCheck] = BASIC_DEPENDENCIES,
+) -> JsonObject:
+    checked = [check_dependency(dependency, cwd) for dependency in dependencies]
     return {
-        "dependencies": json_list(dependencies),
-        "tools": [dependency.name for dependency in BASIC_DEPENDENCIES],
+        "dependencies": json_list(checked),
+        "tools": [dependency.name for dependency in dependencies],
     }
 
 
@@ -1679,8 +1834,9 @@ def unbound_doctor(basic: JsonObject) -> JsonObject:
 
 
 def assert_vault_zk_initialized(vault: Path) -> None:
-    assert (vault / ".zk" / "config.toml").is_file(), "vault must be initialized with zk"
-    assert (vault / ".zk" / "templates" / "default.md").is_file(), "zk default template must exist"
+    for required in (vault / ".zk" / "config.toml", vault / ".zk" / "templates" / "default.md"):
+        if not required.is_file():
+            raise MemoryOperationError(f"{vault} is missing its zk notebook file {required}; rerun `agent-memory maintain init-global --vault {vault}` to restore it")
 
 
 def run_checked(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -1738,19 +1894,20 @@ def git_status_records(repo: Path) -> list[JsonValue]:
 def git_current_branch(repo: Path) -> str:
     result = run_checked(["git", "branch", "--show-current"], cwd=repo)
     branch = result.stdout.strip()
-    assert branch, f"git repository must be on a named branch: {repo}"
+    if not branch:
+        raise MemoryOperationError(f"{repo} has a detached HEAD, so there is no branch to sync; run `git -C {repo} switch <branch>`")
     return branch
 
 
-def git_upstream(repo: Path) -> str:
-    result = run_checked(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd=repo)
-    upstream = result.stdout.strip()
-    assert upstream, f"git repository must have an upstream branch: {repo}"
-    return upstream
+def git_upstream(repo: Path) -> str | None:
+    result = run_checked_optional(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd=repo)
+    return result.stdout.strip() or None if result.returncode == 0 else None
 
 
-def git_ahead_behind(repo: Path) -> tuple[int, int]:
-    result = run_checked(["git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}"], cwd=repo)
+def git_ahead_behind(repo: Path) -> tuple[int, int] | None:
+    result = run_checked_optional(["git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}"], cwd=repo)
+    if result.returncode != 0:
+        return None
     parts = result.stdout.split()
     assert len(parts) == 2, f"unexpected git ahead/behind output: repo={repo}; output={result.stdout!r}"
     ahead, behind = (int(part) for part in parts)
@@ -1779,7 +1936,8 @@ def sync_systemd_paths() -> SyncSystemdPaths:
     if xdg_config_home is None:
         config_home = Path.home() / ".config"
     else:
-        assert xdg_config_home, "XDG_CONFIG_HOME must be non-empty when set; unset it to use ~/.config"
+        if not xdg_config_home:
+            raise MemoryOperationError("XDG_CONFIG_HOME is set to an empty string; point it at a directory or unset it to use ~/.config")
         config_home = Path(xdg_config_home)
     unit_dir = config_home / "systemd" / "user"
     return SyncSystemdPaths(
@@ -1795,7 +1953,8 @@ def sync_state_path() -> Path:
     if xdg_state_home is None:
         state_home = Path.home() / ".local" / "state"
     else:
-        assert xdg_state_home, "XDG_STATE_HOME must be non-empty when set; unset it to use ~/.local/state"
+        if not xdg_state_home:
+            raise MemoryOperationError("XDG_STATE_HOME is set to an empty string; point it at a directory or unset it to use ~/.local/state")
         state_home = Path(xdg_state_home)
     return state_home / "agent-memory" / SYNC_STATE_FILENAME
 
@@ -1977,8 +2136,9 @@ def enable_sync_systemd_timer(cwd: Path) -> JsonObject:
     config, _project_bound = sync_config(cwd)
     assert_vault_zk_initialized(config.vault)
     paths = sync_systemd_paths()
-    assert paths.service.is_file(), f"auto-sync service unit must be installed before enable: {paths.service}"
-    assert paths.timer.is_file(), f"auto-sync timer unit must be installed before enable: {paths.timer}"
+    for unit in (paths.service, paths.timer):
+        if not unit.is_file():
+            raise MemoryOperationError(f"auto-sync unit {unit} is not installed; run `agent-memory sync install` first")
     if paths.timer_wants.is_symlink():
         assert paths.timer_wants.resolve() == paths.timer.resolve(), (
             f"auto-sync timer enablement symlink points at the wrong unit; link={paths.timer_wants}; target={paths.timer_wants.resolve()}; expected={paths.timer}"
@@ -2032,18 +2192,20 @@ def sync_status(cwd: Path) -> JsonObject:
     assert_vault_zk_initialized(config.vault)
     vault = config.vault
     changes = git_status_records(vault)
-    ahead, behind = git_ahead_behind(vault)
+    # A vault with no remote or no upstream is unsynced, not broken: `maintain init-global`
+    # creates exactly that, so status reports the absence instead of raising from git.
+    tracking = git_ahead_behind(vault)
     return {
         "vault": str(vault),
         "initialized": True,
         "project_bound": project_bound,
         "git": {
-            "remote": git_remote(vault),
+            "remote": git_remote_or_empty(vault) or None,
             "branch": git_current_branch(vault),
             "head": git_head(vault),
             "upstream": git_upstream(vault),
-            "ahead": ahead,
-            "behind": behind,
+            "ahead": tracking[0] if tracking is not None else None,
+            "behind": tracking[1] if tracking is not None else None,
             "worktree_clean": not changes,
             "changes": changes,
         },
@@ -2078,7 +2240,11 @@ def sync_vault(cwd: Path) -> JsonObject:
     config, _project_bound = sync_config(cwd)
     vault = config.vault
     branch = git_current_branch(vault)
-    remote = git_remote(vault)
+    remote = git_remote_or_empty(vault)
+    if not remote:
+        raise MemoryOperationError(
+            f"vault {vault} has no origin remote to sync with; run `git -C {vault} remote add origin <url>` once, then `git -C {vault} push -u origin HEAD`"
+        )
     status_before = git_status_entries(vault)
     committed = bool(status_before)
     if committed:
@@ -2129,7 +2295,8 @@ def index_zk_notebook(vault: Path) -> None:
 
 
 def write_new_file(path: Path, content: str) -> None:
-    assert not path.exists(), f"refusing to overwrite {path}"
+    if path.exists():
+        raise MemoryOperationError(f"refusing to overwrite the existing {path}; move it aside and rerun")
     path.write_text(content, encoding="utf-8")
 
 
@@ -2142,10 +2309,16 @@ def install_project_agent_state_link(git_root: Path, project_dir: Path, name: st
     repo_path = git_root / name
     vault_path = project_dir
     if repo_path.is_symlink():
-        assert repo_path.resolve() == vault_path.resolve(), f"refusing to replace foreign symlink {repo_path}"
+        if repo_path.resolve() != vault_path.resolve():
+            raise MemoryOperationError(
+                f"{repo_path} is already a symlink to {repo_path.resolve()}, not to this "
+                f"project's {vault_path}; remove it and rerun `agent-memory init project` "
+                "to bind this repository"
+            )
         return
     if repo_path.exists():
-        assert repo_path.is_dir(), f"refusing to replace non-directory {repo_path}"
+        if not repo_path.is_dir():
+            raise MemoryOperationError(f"{repo_path} is {describe_non_symlink_path(repo_path)} and binding needs that path for a vault symlink; move it aside and rerun")
         migrate_directory_contents(repo_path, vault_path)
         repo_path.rmdir()
     repo_path.symlink_to(vault_path, target_is_directory=True)
@@ -2158,7 +2331,8 @@ def migrate_directory_contents(source: Path, destination: Path) -> None:
             migrate_directory_contents(child, target)
             child.rmdir()
             continue
-        assert not target.exists() and not target.is_symlink(), f"refusing to overwrite migrated path {target}"
+        if target.exists() or target.is_symlink():
+            raise MemoryOperationError(f"the vault already holds {target}, so migrating {child} would overwrite it; reconcile the two by hand and rerun")
         shutil.move(str(child), str(target))
 
 
@@ -2235,7 +2409,10 @@ def write_agents_pointer(project_root: Path, vault: Path, project_id: str) -> No
     existing = agents_path.read_text(encoding="utf-8")
     has_start = AGENTS_SECTION_START in existing
     has_end = AGENTS_SECTION_END in existing
-    assert has_start == has_end, f"malformed agent-memory AGENTS section in {agents_path}"
+    if has_start != has_end:
+        raise MemoryOperationError(
+            f"{agents_path} has only one of the agent-memory section markers {AGENTS_SECTION_START} / {AGENTS_SECTION_END}; restore the missing one or delete both and rerun"
+        )
     if has_start:
         prefix, marked = existing.split(AGENTS_SECTION_START, 1)
         _, suffix = marked.split(AGENTS_SECTION_END, 1)
@@ -2276,7 +2453,8 @@ def directory_index_entries(
 
 
 def okf_index_entry(title: str, target: str, description: str) -> str:
-    assert target.endswith(".md"), "OKF index links must target markdown files"
+    if not target.endswith(".md"):
+        raise MemoryOperationError(f"index links target Markdown records, but {target!r} is not a .md file")
     return f"* [{title}]({target}) - {description}"
 
 
@@ -2286,7 +2464,8 @@ def okf_timestamp() -> str:
 
 def okf_description(content: str) -> str:
     content_lines = content.strip().splitlines()
-    assert content_lines, "note content must provide an OKF description"
+    if not content_lines:
+        raise MemoryOperationError("--content must not be empty: its first line becomes the record's description")
     return content_lines[0]
 
 
@@ -2296,6 +2475,18 @@ def okf_tags(
     extra_tags: Sequence[str],
 ) -> list[str]:
     return [scope.value, memory_type.value, *extra_tags]
+
+
+def unowned_tags(
+    metadata: dict[str, MetadataValue],
+    path: Path,
+    scope: MemoryScope,
+    memory_type: MemoryType,
+) -> tuple[str, ...]:
+    # The tags a rewrite must carry across: everything the canonical scope/type pair does
+    # not account for.
+    canonical = set(okf_tags(scope, memory_type, ()))
+    return tuple(tag for tag in metadata_string_tuple(metadata, "tags", path) if tag not in canonical)
 
 
 @dataclass(frozen=True)
@@ -2384,7 +2575,8 @@ def _parse_index_entries(lines: list[str]) -> list[ParsedIndexEntry]:
 
 
 def append_index_link(index_path: Path, title: str, target: str, description: str) -> None:
-    assert index_path.is_file(), "parent index must exist before linking"
+    if not index_path.is_file():
+        raise MemoryOperationError(f"the vault has no index at {index_path} to link this record into; run `agent-memory doctor` and repair the vault before writing")
     with index_path.open("a", encoding="utf-8") as index_file:
         index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
 
@@ -2503,8 +2695,8 @@ def updated_memory_body(current_body: str, title: str, content: str | None) -> s
     if content is not None:
         return f"# {title}\n\n{content}\n"
     lines = current_body.splitlines(keepends=True)
-    assert lines, "memory body must not be empty"
-    assert lines[0].startswith("# "), "memory body must begin with a level-one title"
+    if not lines or not lines[0].startswith("# "):
+        raise MemoryOperationError("this record's body does not start with a `# ` title, so --title has no heading to rewrite; pass --content to replace the body instead")
     lines[0] = f"# {title}\n"
     return "".join(lines)
 
@@ -2514,13 +2706,6 @@ def git_root_for(cwd: Path) -> Path:
     root = Path(result.stdout.strip())
     assert root.is_dir(), "git root must be a directory"
     return root
-
-
-def git_remote(git_root: Path) -> str:
-    result = run_checked(["git", "remote", "get-url", "origin"], cwd=git_root)
-    remote = result.stdout.strip()
-    assert remote, "git origin remote must be configured"
-    return remote
 
 
 def git_remote_or_empty(git_root: Path) -> str:
@@ -2538,12 +2723,15 @@ def project_id_from_remote(remote: str) -> str:
     stripped = remote.removesuffix(".git")
     is_ssh_remote = stripped.startswith("git@github.com:")
     is_https_remote = stripped.startswith("https://github.com/")
-    assert is_ssh_remote or is_https_remote, f"unsupported remote URL: {remote}"
+    if not (is_ssh_remote or is_https_remote):
+        raise MemoryOperationError(f"cannot derive a project id from remote {remote}: only github.com remotes are recognized; pass --project-id to name the project explicitly")
     repository = stripped.removeprefix("git@github.com:") if is_ssh_remote else stripped.removeprefix("https://github.com/")
     parts = repository.split("/")
-    assert len(parts) == 2, "GitHub remote must have owner and repository"
+    if len(parts) != 2 or not all(parts):
+        raise MemoryOperationError(
+            f"cannot derive a project id from remote {remote}: expected github.com/<owner>/<repository>; pass --project-id to name the project explicitly"
+        )
     owner, repo = parts
-    assert owner and repo, "GitHub remote owner and repository must be nonempty"
     return f"github.com__{owner}__{repo}"
 
 
@@ -2554,7 +2742,8 @@ def project_id_from_git_root(git_root: Path, remote: str) -> str:
 
 
 def validate_project_id(project_id: str) -> str:
-    assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project_id), f"invalid project id: {project_id}"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project_id):
+        raise MemoryOperationError(f"invalid project id {project_id!r}; run `agent-memory doctor` to see the project ids this vault knows")
     return project_id
 
 
@@ -2567,11 +2756,19 @@ def config_from_agent_state_link(git_root: Path) -> ProjectConfig | None:
     if not linked_project_dirs:
         return None
     project_dir = linked_project_dirs[0]
-    assert all(path == project_dir for path in linked_project_dirs), "agent state links must point at one project directory"
-    assert project_dir.parent.name == "projects", "agent state link must point at vault projects directory"
+    if any(path != project_dir for path in linked_project_dirs):
+        targets = ", ".join(sorted(str(path) for path in linked_project_dirs))
+        raise MemoryOperationError(
+            f"{'/'.join(PROJECT_AGENT_STATE_DIRECTORIES)} in {git_root} point at different vault projects ({targets}); repoint them at one project directory"
+        )
+    if project_dir.parent.name != "projects":
+        raise MemoryOperationError(
+            f"the agent-state symlink in {git_root} points at {project_dir}, which is not under a vault `projects` directory; repoint it or rerun `agent-memory init project`"
+        )
     vault = project_dir.parent.parent
     project_id = validate_project_id(project_dir.name)
-    assert (vault / ".agents" / "memories" / "config.toml").is_file(), "agent state link must point inside an initialized vault"
+    if not (vault / ".agents" / "memories" / "config.toml").is_file():
+        raise GlobalVaultNotInitializedError(vault)
     return ProjectConfig(
         vault=normalize_vault_path(vault),
         project_id=project_id,
@@ -2585,21 +2782,42 @@ def find_project_config(cwd: Path) -> ProjectConfig | None:
         git_root = git_root_for(cwd)
     except subprocess.CalledProcessError:
         return None
-    return config_from_agent_state_link(git_root)
+    config = config_from_agent_state_link(git_root)
+    if config is not None:
+        return config
+    # Binding is repository identity, not checkout identity: a linked worktree carries no
+    # agent-state symlink of its own, so it inherits the primary checkout's binding and
+    # every worktree of one repository resolves to one project (issue #101).
+    primary = primary_worktree_root(cwd)
+    if primary is None or primary == git_root:
+        return None
+    return config_from_agent_state_link(primary)
+
+
+def primary_worktree_root(cwd: Path) -> Path | None:
+    # Every worktree of a repository shares one common git directory; the primary checkout
+    # is its parent. git reports that directory relative to cwd in the primary checkout and
+    # absolutely from a linked worktree, so resolve it against cwd either way. A bare
+    # repository has no primary checkout, so there is none to report.
+    result = run_checked(["git", "rev-parse", "--git-common-dir"], cwd=cwd)
+    common_dir = (cwd / result.stdout.strip()).resolve()
+    if common_dir.name != ".git":
+        return None
+    return common_dir.parent
 
 
 def load_project_config(cwd: Path) -> ProjectConfig:
     config = find_project_config(cwd)
     if config is None:
-        raise ProjectNotInitializedError(starter_config().default_vault)
+        raise ProjectNotInitializedError(global_vault_path())
     return config
 
 
 def require_project_id(config: ProjectConfig) -> str:
-    # Project-scoped paths read project_id through here, so a global-only config (whose
-    # project_id is None) fails loud if it ever reaches project code instead of silently
-    # composing a wrong vault path.
-    assert config.project_id is not None, "operation requires a bound project; global-only config has no project_id"
+    # Project-scoped paths read project_id through here, so a config that resolved to no
+    # project fails loud instead of silently composing a wrong vault path.
+    if config.project_id is None:
+        raise ProjectNotInitializedError(config.vault)
     return config.project_id
 
 
@@ -2609,7 +2827,8 @@ def global_vault_path() -> Path:
     # project binding (issue #25).
     override = os.environ.get("AGENT_MEMORY_VAULT")
     if override is not None:
-        assert override, "AGENT_MEMORY_VAULT must not be empty when set"
+        if not override:
+            raise MemoryOperationError(f"AGENT_MEMORY_VAULT is set to an empty string; point it at a vault or unset it to use {starter_config().default_vault}")
         return normalize_vault_path(Path(override))
     return starter_config().default_vault
 
@@ -2653,19 +2872,42 @@ def config_for_memory_scope(scope: MemoryScope, cwd: Path) -> ProjectConfig:
         return config
     if scope is MemoryScope.GLOBAL:
         return global_only_config()
-    raise ProjectNotInitializedError(starter_config().default_vault)
+    raise ProjectNotInitializedError(global_vault_path())
 
 
-def config_for_search_scope(scope: SearchScope, cwd: Path) -> ProjectConfig:
-    # As above: prefer the cwd binding for any scope. An unbound directory can still run a
-    # global-only search against the standalone global vault; project and both need a
-    # binding because both reaches project memory (issue #25).
+def resolve_search_scope(scope: SearchScope, cwd: Path) -> tuple[ProjectConfig, SearchScope]:
+    # The resolution boundary for every scope-addressed read: it answers which vault to
+    # read AND which scope survives, because an unbound directory has no project half to
+    # read. BOTH degrades to GLOBAL there rather than failing, so search, list, and inspect
+    # work from `~`, `/tmp`, and scratchpads. Only an explicit `--scope project` still
+    # fails, and it names the working alternative.
     config = find_project_config(cwd)
     if config is not None:
-        return config
-    if scope is SearchScope.GLOBAL:
-        return global_only_config()
-    raise ProjectNotInitializedError(starter_config().default_vault)
+        return config, scope
+    if scope is SearchScope.PROJECT:
+        raise ProjectNotInitializedError(global_vault_path(), route=SearchScope.PROJECT)
+    global_config = global_only_config()
+    return global_config, available_search_scope(global_config, scope)
+
+
+def config_for_key(key: str, cwd: Path) -> ProjectConfig:
+    # The resolution boundary for every key-addressed read or mutation. Precedence: a
+    # fully-qualified key names its own project, so it is never reinterpreted or re-homed
+    # through the cwd binding (issue #88); a `global/...` key needs no project at all
+    # (issue #108); only an unqualified key falls through to the cwd binding.
+    binding = find_project_config(cwd)
+    vault = binding.vault if binding is not None else global_only_config().vault
+    parts = key.split("/")
+    if parts[0] != "projects":
+        # `global/...`, `harnesses/...`: the key is not project-scoped, so no binding is
+        # required to read or write it. project_id carries the binding only for the paths
+        # that legitimately need one.
+        return ProjectConfig(vault=vault, project_id=binding.project_id if binding is not None else None)
+    if len(parts) < 3:
+        raise MemoryOperationError(
+            f'{key!r} names no record. A project key is `projects/<project-id>/<type>/<slug>`. Run `agent-memory search --scope both "<term>"` to discover keys.'
+        )
+    return ProjectConfig(vault=vault, project_id=validate_project_id(parts[1]))
 
 
 def append_project_record(projects_file: Path, record: ProjectRecord) -> None:
@@ -2682,16 +2924,17 @@ def append_project_record(projects_file: Path, record: ProjectRecord) -> None:
 def load_project_records(projects_file: Path) -> list[ProjectRecord]:
     raw = tomllib.loads(projects_file.read_text(encoding="utf-8"))
     projects = raw["projects"]
-    assert isinstance(projects, list), "project index must contain a projects list"
+    if not isinstance(projects, list):
+        raise MemoryOperationError(f"{projects_file} must hold a `projects` array of tables, each with project_id, root, and remote")
     records: list[ProjectRecord] = []
     for project in projects:
-        assert isinstance(project, dict), "project index entries must be tables"
+        if not isinstance(project, dict):
+            raise MemoryOperationError(f"{projects_file} lists {project!r}, which is not a project table; each entry needs project_id, root, and remote")
         project_id = project["project_id"]
         root = project["root"]
         remote = project["remote"]
-        assert isinstance(project_id, str)
-        assert isinstance(root, str)
-        assert isinstance(remote, str)
+        if not isinstance(project_id, str) or not isinstance(root, str) or not isinstance(remote, str):
+            raise MemoryOperationError(f"{projects_file} entry {project!r} must give project_id, root, and remote as strings")
         records.append({"project_id": project_id, "root": root, "remote": remote})
     return records
 
@@ -2710,13 +2953,22 @@ def scope_root(config: ProjectConfig, scope: MemoryScope) -> Path:
 # (inspect_root_paths) reports global-then-project so that overview/tree roots list the
 # shared global vault first. Parameterizing the order keeps that difference explicit
 # instead of forking the dispatch table four ways.
-def search_scope_memory_scopes(scope: SearchScope, *, both_order: tuple[MemoryScope, MemoryScope]) -> tuple[MemoryScope, ...]:
+def search_scope_memory_scopes(config: ProjectConfig, scope: SearchScope, *, both_order: tuple[MemoryScope, MemoryScope]) -> tuple[MemoryScope, ...]:
     scopes = {
         SearchScope.PROJECT: (MemoryScope.PROJECT,),
         SearchScope.GLOBAL: (MemoryScope.GLOBAL,),
         SearchScope.BOTH: both_order,
     }
-    return scopes[scope]
+    return scopes[available_search_scope(config, scope)]
+
+
+def available_search_scope(config: ProjectConfig, scope: SearchScope) -> SearchScope:
+    # A config that resolved to no project has no project half to read, so BOTH means
+    # GLOBAL there. Every root-listing walk asks here, so a caller that hardcodes BOTH
+    # degrades the same way an unbound `--scope both` does (issue #25).
+    if scope is SearchScope.BOTH and config.project_id is None:
+        return SearchScope.GLOBAL
+    return scope
 
 
 CONTENT_SCOPE_ORDER: tuple[MemoryScope, MemoryScope] = (MemoryScope.PROJECT, MemoryScope.GLOBAL)
@@ -2765,7 +3017,7 @@ def run_ripgrep_search(args: Sequence[str], cwd: Path) -> str:
 
 
 def search_roots(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    return tuple(scope_root(config, memory_scope) for memory_scope in search_scope_memory_scopes(scope, both_order=CONTENT_SCOPE_ORDER))
+    return tuple(scope_root(config, memory_scope) for memory_scope in search_scope_memory_scopes(config, scope, both_order=CONTENT_SCOPE_ORDER))
 
 
 def memory_key(vault: Path, path: Path) -> str:
@@ -2773,11 +3025,16 @@ def memory_key(vault: Path, path: Path) -> str:
 
 
 def memory_files(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    return tuple(path for directory in memory_note_directories(config, scope) for path in sorted(directory.glob("*.md")) if path.name not in ("index.md", PLAN_DAG_FILENAME))
+    return tuple(
+        path
+        for directory in memory_note_directories(config, scope)
+        for path in sorted(directory.glob("*.md"))
+        if path.name != "index.md" and path.name not in PLAN_DAG_FILENAMES
+    )
 
 
 def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    scope_order = search_scope_memory_scopes(scope, both_order=CONTENT_SCOPE_ORDER)
+    scope_order = search_scope_memory_scopes(config, scope, both_order=CONTENT_SCOPE_ORDER)
     return tuple(memory_directory(config, memory_scope, memory_type) for memory_scope in scope_order for memory_type in MemoryType)
 
 
@@ -2796,7 +3053,7 @@ def managed_card_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path,
         paths.update(path for path in directory.glob("*.md") if path.name != "index.md")
     if scope in (SearchScope.PROJECT, SearchScope.BOTH):
         plans_root = memory_directory(config, MemoryScope.PROJECT, MemoryType.PLAN)
-        paths.update(path for path in plans_root.rglob("*.md") if path.name not in ("index.md", PLAN_DAG_FILENAME))
+        paths.update(path for path in plans_root.rglob("*.md") if path.name != "index.md" and path.name not in PLAN_DAG_FILENAMES)
     return tuple(sorted(paths))
 
 
@@ -2822,8 +3079,22 @@ def unmigrated_card_candidate_paths(config: ProjectConfig, scope: SearchScope) -
         for path in root.rglob("*.md"):
             if is_internal_vault_path(path) or is_managed_card_path(config, path) or path.name == "index.md":
                 continue
+            if is_promotion_pointer_path(path):
+                continue
             candidates.add(path)
     return tuple(sorted(candidates))
+
+
+def is_promotion_pointer_path(path: Path) -> bool:
+    # A promotion pointer is `maintain move` output, not a stranded card: reporting it as
+    # unmigrated makes the sanctioned migration route produce a finding that never clears,
+    # with a project-scoped destination that is wrong for a pointer (issue #107).
+    try:
+        document = read_memory(path)
+    except MalformedMemoryError:
+        return False
+    tags = document.metadata.get("tags")
+    return isinstance(tags, list) and PROMOTION_POINTER_TAG in tags
 
 
 def is_internal_vault_path(path: Path) -> bool:
@@ -2839,18 +3110,39 @@ def is_managed_card_path(config: ProjectConfig, path: Path) -> bool:
     return False
 
 
-def card_listing_fields_for_path(config: ProjectConfig, path: Path) -> tuple[str, str, MemoryScope] | None:
+def metadata_is_archived(metadata: Mapping[str, MetadataValue], path: Path) -> bool:
+    value = metadata["archived"] if "archived" in metadata else False
+    if not isinstance(value, bool):
+        raise MalformedMemoryError(path, "frontmatter archived must be true or false")
+    return value
+
+
+def card_record_is_archived(record: CardRecord) -> bool:
+    value = record.metadata["archived"] if "archived" in record.metadata else False
+    if not isinstance(value, bool):
+        raise MalformedMemoryError(record.path, "frontmatter archived must be true or false")
+    return value
+
+
+def archive_visibility_is_included(record_visibility: ArchiveVisibility, visibility: ArchiveVisibility) -> bool:
+    if visibility is ArchiveVisibility.ALL:
+        return True
+    return record_visibility is visibility
+
+
+def card_listing_fields_for_path(config: ProjectConfig, path: Path) -> tuple[str, str, MemoryScope, bool] | None:
     try:
         document = read_memory(path)
     except MalformedMemoryError:
         return None
-    card_type = card_type_from_metadata(document.metadata)
+    card_type = card_type_from_metadata(config, document.metadata)
     if card_type is None:
         return None
     return (
         card_title_from_metadata(path, document.metadata),
         card_type,
         card_scope_for_path(config, path, document.metadata),
+        metadata_is_archived(document.metadata, path),
     )
 
 
@@ -2858,13 +3150,14 @@ def managed_card_listing_for_path(config: ProjectConfig, path: Path) -> ManagedC
     fields = card_listing_fields_for_path(config, path)
     if fields is None:
         return None
-    title, card_type, scope = fields
+    title, card_type, scope, archived = fields
     return ManagedCardListing(
         title=title,
         card_type=card_type,
         scope=scope,
         path=path,
         key=memory_key(config.vault, path),
+        archived=archived,
     )
 
 
@@ -2872,24 +3165,24 @@ def unmigrated_card_listing_for_path(config: ProjectConfig, path: Path) -> Unmig
     fields = card_listing_fields_for_path(config, path)
     if fields is None:
         return None
-    title, card_type, scope = fields
+    title, card_type, scope, archived = fields
     return UnmigratedCardListing(
         title=title,
         card_type=card_type,
         scope=scope,
         path=path,
         suggested_destination=suggested_card_destination(config, scope, card_type),
+        archived=archived,
     )
 
 
-def card_type_from_metadata(metadata: Mapping[str, MetadataValue]) -> str | None:
+def card_type_from_metadata(config: ProjectConfig, metadata: Mapping[str, MetadataValue]) -> str | None:
     type_value = metadata.get("type")
     if isinstance(type_value, str):
         return type_value
     id_value = metadata.get("id")
     if isinstance(id_value, str):
-        prefix = id_value.split("-", 1)[0]
-        return STRUCTURED_CARD_PREFIX_TYPES.get(prefix)
+        return card_prefix_types(config).get(id_value.split("-", 1)[0])
     return None
 
 
@@ -3026,13 +3319,15 @@ def parse_created_after(value: str | None) -> datetime | None:
     if value is None:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    assert parsed.tzinfo is not None, "created-after must include timezone information"
+    if parsed.tzinfo is None:
+        raise MemoryOperationError(f"--created-after {value!r} needs a timezone; write it as 2026-01-31T00:00:00Z")
     return parsed
 
 
 def parse_memory_timestamp(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    assert parsed.tzinfo is not None, "memory timestamp must include timezone information"
+    if parsed.tzinfo is None:
+        raise MemoryOperationError(f"timestamp {value!r} needs a timezone; write it as 2026-01-31T00:00:00Z")
     return parsed
 
 
@@ -3205,7 +3500,7 @@ def reconciled_memory_contents(path: Path) -> tuple[dict[str, MetadataValue], st
 
 
 def normalize_memories(scope: SearchScope, cwd: Path) -> JsonObject:
-    config = config_for_search_scope(scope, cwd)
+    config, scope = resolve_search_scope(scope, cwd)
     selected_paths = memory_files(config, scope)
     reconciled = [(path, *reconciled_memory_contents(path)) for path in selected_paths]
     for path, metadata, body in reconciled:
@@ -3248,14 +3543,14 @@ def inspect_overview(
     cwd: Path,
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect overview currently emits JSON"
-    config = load_project_config(cwd)
+    config, scope = resolve_search_scope(scope, cwd)
     note_scan = scan_note_records(config, scope)
     notes = note_scan.records
     index_scan = scan_index_records(config, scope)
     indexes = index_scan.records
     return {
         "vault": str(config.vault),
-        "project_id": require_project_id(config),
+        "project_id": config.project_id,
         "scope": scope.value,
         "roots": json_list(inspect_root_keys(config, scope)),
         "totals": {
@@ -3312,7 +3607,7 @@ def inspect_schema(*, output_format: InspectOutputFormat, cwd: Path) -> JsonObje
                     "container": card_type.container,
                     "own_dir": card_type.own_dir,
                     "required_fields": json_list([field.name for field in card_type.fields if field.required]),
-                    "field_count": len(card_type.fields),
+                    "field_count": len(card_fields(card_type)),
                 }
                 for card_type in cards_config.card_types
             ],
@@ -3330,7 +3625,7 @@ def inspect_paths(
     cwd: Path,
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect paths currently emits JSON"
-    config = load_project_config(cwd)
+    config, scope = resolve_search_scope(scope, cwd)
     root_records = inspect_root_records(config, scope)
     index_scan = scan_index_records(config, scope)
     index_records = index_scan.records
@@ -3366,8 +3661,9 @@ def inspect_tree(
     cwd: Path,
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect tree currently emits JSON"
-    assert depth >= 0, "inspect tree depth must be nonnegative"
-    config = load_project_config(cwd)
+    if depth < 0:
+        raise MemoryOperationError(f"inspect tree --depth must be 0 or more, got {depth}")
+    config, scope = resolve_search_scope(scope, cwd)
     roots = [inspect_tree_node(config, key, depth) for key in inspect_root_keys(config, scope)]
     return {"scope": scope.value, "depth": depth, "roots": json_list(roots)}
 
@@ -3381,8 +3677,9 @@ def inspect_links(
     cwd: Path,
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect links currently emits JSON"
-    assert depth >= 0, "inspect links depth must be nonnegative"
-    config = load_project_config(cwd)
+    if depth < 0:
+        raise MemoryOperationError(f"inspect links --depth must be 0 or more, got {depth}")
+    config = config_for_key(key, cwd)
     path = memory_path_for_key(config, key)
     records = link_records_for_direction(config, path, depth, direction)
     return {
@@ -3399,8 +3696,8 @@ def inspect_broken_links(
     output_format: InspectOutputFormat,
     cwd: Path,
 ) -> JsonObject:
-    assert output_format is InspectOutputFormat.JSON, "inspect links --broken currently emits JSON"
-    config = load_project_config(cwd)
+    assert output_format is InspectOutputFormat.JSON, "broken-link inspection currently emits JSON"
+    config, scope = resolve_search_scope(scope, cwd)
     records = broken_wikilink_records(config, scope)
     return {
         "scope": scope.value,
@@ -3415,7 +3712,7 @@ def inspect_outline(
     cwd: Path,
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect outline currently emits JSON"
-    config = load_project_config(cwd)
+    config = config_for_key(key, cwd)
     path = memory_path_for_key(config, key)
     document = read_memory(path)
     return {
@@ -3433,7 +3730,7 @@ def inspect_stats(
     cwd: Path,
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect stats currently emits JSON"
-    config = load_project_config(cwd)
+    config, scope = resolve_search_scope(scope, cwd)
     note_scan = scan_note_records(config, scope)
     notes = note_scan.records
     counts_by_group = {
@@ -3453,7 +3750,7 @@ def inspect_recent(
 ) -> JsonObject:
     assert output_format is InspectOutputFormat.JSON, "inspect recent currently emits JSON"
     since_datetime = parse_memory_timestamp(since)
-    config = load_project_config(cwd)
+    config, scope = resolve_search_scope(scope, cwd)
     note_scan = scan_note_records(config, scope)
     records = [record for record in note_scan.records if record.timestamp.is_after(since_datetime)]
     records.sort(key=lambda record: record.timestamp.sort_key(), reverse=True)
@@ -3468,7 +3765,7 @@ def inspect_export(
     cwd: Path,
 ) -> JsonObject:
     assert output_format is InspectExportFormat.GRAPH_JSON, "inspect export currently emits graph-json"
-    config = load_project_config(cwd)
+    config, scope = resolve_search_scope(scope, cwd)
     scan = scan_inspect_export_records(config, scope)
     records_by_key = {record.key: record for record in scan.records}
     nodes = [inspect_export_node(config, record.key, record.path, record.document, profile) for record in sorted(records_by_key.values(), key=lambda record: record.key)]
@@ -3507,13 +3804,13 @@ def inspect_export_document(config: ProjectConfig, path: Path) -> MemoryDocument
 
 
 def is_direct_memory_note_path(config: ProjectConfig, path: Path) -> bool:
-    if path.name in ("index.md", PLAN_DAG_FILENAME):
+    if path.name == "index.md" or path.name in PLAN_DAG_FILENAMES:
         return False
     return any(path.parent == directory for directory in memory_note_directories(config, SearchScope.BOTH))
 
 
 def inspect_root_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    return tuple(scope_root(config, memory_scope) for memory_scope in search_scope_memory_scopes(scope, both_order=INSPECT_SCOPE_ORDER))
+    return tuple(scope_root(config, memory_scope) for memory_scope in search_scope_memory_scopes(config, scope, both_order=INSPECT_SCOPE_ORDER))
 
 
 def inspect_root_keys(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
@@ -3558,7 +3855,7 @@ def scan_index_records(config: ProjectConfig, scope: SearchScope) -> IndexScan:
             {
                 "key": memory_key(config.vault, path),
                 "path": str(path),
-                "title": first_heading_title(document.body),
+                "title": first_heading_title(path, document.body),
                 "scope": inspect_scope_for_path(config, path),
             }
         )
@@ -3590,11 +3887,36 @@ def inspect_scope_for_path(config: ProjectConfig, path: Path) -> str:
 
 def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
     path = config.vault / f"{key}.md"
-    assert path.is_file(), f"memory key does not exist: {key}"
+    if not path.is_file():
+        raise MemoryOperationError(
+            f"no record at key {key!r} in {config.vault}. "
+            "Keys are vault-relative, such as `projects/<project-id>/decisions/parser-choice` or "
+            "`projects/<project-id>/plans/features/FEATURE-ID/FEATURE-ID`. "
+            'Run `agent-memory search --scope both "<term>"` to discover keys.'
+        )
+    card_command = card_command_for_path(config, path)
+    if card_command is not None:
+        raise MemoryOperationError(
+            f"{key} is a schema-backed card, not a memory note, so the memory commands cannot read or write it. "
+            f"Show it with `agent-memory {card_command} show {path.stem}` and change it with "
+            f"`agent-memory {card_command} update {path.stem} --set <field>=<value>`."
+        )
     return path
 
 
-def first_heading_title(markdown: str) -> str:
+def card_command_for_path(config: ProjectConfig, path: Path) -> str | None:
+    # Where a record lives decides its kind, never the current directory: cards live in
+    # per-card subdirectories of the project's card tree, while memory notes sit directly
+    # in their type's directory. Returns the generated command that owns the card.
+    if config.project_id is None:
+        return None
+    cards_root = memory_directory(config, MemoryScope.PROJECT, MemoryType.PLAN)
+    if not path.is_relative_to(cards_root) or path.parent == cards_root:
+        return None
+    return card_prefix_types(config).get(path.stem.split("-", 1)[0])
+
+
+def first_heading_title(path: Path, markdown: str) -> str:
     tokens = MARKDOWN_PARSER.parse(markdown)
     for index, token in enumerate(tokens):
         if token.type != "heading_open" or token.tag != "h1":
@@ -3603,9 +3925,10 @@ def first_heading_title(markdown: str) -> str:
         body = tokens[index + 1]
         assert body.type == "inline", "markdown heading body must be inline"
         title = body.content.strip()
-        assert title, "heading title must be nonempty"
+        if not title:
+            raise MalformedMemoryError(path, "body begins with an empty `# ` heading, so the record has no title")
         return title
-    assert False, "markdown document must contain a top-level heading"
+    raise MalformedMemoryError(path, "body has no `# ` title heading")
 
 
 def markdown_headings(markdown: str) -> tuple[JsonObject, ...]:
@@ -3688,8 +4011,10 @@ def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
 
 def wikilink_key(raw_target: str) -> str:
     key = raw_target.split("|", 1)[0].split("#", 1)[0].strip()
-    assert key, f"wikilink target must not be empty: {raw_target!r}"
-    assert not key.startswith(("http://", "https://")), f"wikilink target must be a vault key, not a URL: {raw_target!r}"
+    if not key:
+        raise MemoryOperationError(f"wikilink {raw_target!r} names no target; a wikilink is [[projects/<project-id>/<type>/<slug>]]")
+    if key.startswith(("http://", "https://")):
+        raise MemoryOperationError(f"wikilink {raw_target!r} is a URL; wikilinks address vault keys, so write a URL as a Markdown link instead")
     return key
 
 
@@ -3698,7 +4023,8 @@ def wikilink_fragment(raw_target: str) -> str | None:
     if "#" not in target:
         return None
     fragment = " ".join(target.split("#", 1)[1].split())
-    assert fragment, f"wikilink fragment must not be empty: {raw_target!r}"
+    if not fragment:
+        raise MemoryOperationError(f"wikilink {raw_target!r} ends in `#` with no heading after it; drop the `#` or name a heading")
     return fragment
 
 
@@ -3749,7 +4075,8 @@ def wikilink_rewrite(from_target: str, to_target: str) -> WikilinkRewrite:
 def wikilink_target_path(config: ProjectConfig, key: str) -> Path:
     target_path = (config.vault / f"{key}.md").resolve()
     vault = config.vault.resolve()
-    assert target_path.is_relative_to(vault), f"wikilink target leaves memory vault: {key}"
+    if not target_path.is_relative_to(vault):
+        raise MemoryOperationError(f"wikilink target {key!r} climbs out of the vault to {target_path}; wikilinks address keys inside {vault}")
     return target_path
 
 
@@ -3845,13 +4172,17 @@ def rewritten_record_parent_index_paths(records: Sequence[JsonObject]) -> list[P
 def wikilink_rewrite_map(map_path: Path) -> tuple[WikilinkRewrite, ...]:
     decoded = tomllib.loads(map_path.read_text(encoding="utf-8"))
     rewrites = decoded["rewrites"]
-    assert isinstance(rewrites, dict), f"wikilink rewrite map must contain a [rewrites] table: {map_path}"
+    if not isinstance(rewrites, dict):
+        raise MemoryOperationError(f"{map_path} has no [rewrites] table: a rewrite map is a [rewrites] table mapping each old key to its new key")
     records: list[WikilinkRewrite] = []
     for from_target, to_target in rewrites.items():
-        assert isinstance(from_target, str), f"wikilink rewrite source must be a string: {map_path}"
-        assert isinstance(to_target, str), f"wikilink rewrite destination must be a string: {map_path}; source={from_target}"
+        if not isinstance(to_target, str):
+            raise MemoryOperationError(
+                f"{map_path} maps {from_target!r} to {to_target!r}, which is not a key: a rewrite map is a [rewrites] table mapping each old key to its new key"
+            )
         records.append(wikilink_rewrite(from_target, to_target))
-    assert records, f"wikilink rewrite map must contain at least one rewrite: {map_path}"
+    if not records:
+        raise MemoryOperationError(f"{map_path} lists no rewrites: a rewrite map is a [rewrites] table mapping each old key to its new key")
     return tuple(records)
 
 
@@ -3864,14 +4195,16 @@ def rewrite_wikilinks(
 ) -> JsonObject:
     config = load_project_config(cwd)
     if map_path is None:
-        assert from_target is not None and to_target is not None, "links rewrite requires --from and --to unless --map is supplied"
+        if from_target is None or to_target is None:
+            raise MemoryOperationError("links rewrite needs both --from and --to, or a --map file listing the rewrites")
         rewrite = wikilink_rewrite(from_target, to_target)
         return {
             "from": rewrite.from_key,
             "to": rewrite.to_target,
             "rewritten": json_list(rewrite_wikilink_files(config, (rewrite,))),
         }
-    assert from_target is None and to_target is None, "links rewrite --map cannot be combined with --from or --to"
+    if from_target is not None or to_target is not None:
+        raise MemoryOperationError("links rewrite takes --map or --from/--to, not both; the map file already names every rewrite")
     rewrites = wikilink_rewrite_map(map_path)
     return {
         "map": str(map_path),
@@ -3922,7 +4255,7 @@ def inspect_tree_node(config: ProjectConfig, key: str, depth: int) -> JsonObject
 def inspect_title_for_document(document: MemoryDocument, path: Path) -> str:
     if "title" in document.metadata:
         return metadata_string(document.metadata, "title", path)
-    return first_heading_title(document.body)
+    return first_heading_title(path, document.body)
 
 
 def link_records_for_direction(
@@ -4065,8 +4398,11 @@ def all_plans_roots(config: ProjectConfig, cards_config: CardSystemConfig) -> li
     return [config.vault / "projects" / record["project_id"] / cards_config.root for record in records]
 
 
+LIST_FIELD_TYPES = ("string_list", "wikilink_list")
+
+
 def coerce_scalar_field(field_type: str, value: str) -> object:
-    assert field_type not in ("string_list", "wikilink_list"), "list fields must be appended, not coerced"
+    assert field_type not in LIST_FIELD_TYPES, "list fields must be appended, not coerced"
     if field_type == "int":
         return int(value)
     if field_type == "number":
@@ -4088,37 +4424,38 @@ def parse_card_fields(
     cards_config: CardSystemConfig,
     type_name: str,
     assignments: Sequence[str],
-    empty_set: Sequence[str] | None = None,
 ) -> dict[str, object]:
     spec = next((card_type for card_type in cards_config.card_types if card_type.name == type_name), None)
     if spec is None:
         known_types = ", ".join(card_type.name for card_type in cards_config.card_types)
         raise CardFieldError(f"unknown card type {type_name}; known card types: {known_types}")
-    field_types = {field.name: field.type for field in spec.fields}
+    field_specs = {field.name: field for field in card_fields(spec)}
     fields: dict[str, object] = {}
     for assignment in assignments:
         if "=" not in assignment:
             raise CardFieldError(f"field assignment must be key=value: {assignment}")
         key, value = assignment.split("=", 1)
-        if key not in field_types:
+        field = field_specs.get(key)
+        if field is None:
             raise CardFieldError(f"unknown field {key} for card type {type_name}")
-        field_type = field_types[key]
-        if field_type in ("string_list", "wikilink_list"):
+        if value == "":
+            # `--set <field>=` means unset: clear a list, drop an optional scalar, refuse a
+            # required one. Without a single rule the empty value fell through to coercion
+            # and wrote `''`, which reads as a value the caller never set and which no later
+            # update could remove.
+            if field.required:
+                raise CardFieldError(f"field {key} is required for card type {type_name}; `--set {key}=` means unset, so give it a value instead")
+            fields[key] = [] if field.type in LIST_FIELD_TYPES else UNSET_FIELD
+            continue
+        if field.type in LIST_FIELD_TYPES:
             append_list_field(fields, key, value)
-        else:
-            try:
-                fields[key] = coerce_scalar_field(field_type, value)
-            except ValueError as e:
-                if field_type not in ("int", "number"):
-                    raise
-                raise CardFieldError(f"field {key} expects {field_type} value, got {value}") from e
-
-    if empty_set is not None:
-        for key in empty_set:
-            if key not in field_types:
-                raise CardFieldError(f"unknown field {key} for card type {type_name}")
-            fields[key] = []
-
+            continue
+        try:
+            fields[key] = coerce_scalar_field(field.type, value)
+        except ValueError as e:
+            if field.type not in ("int", "number"):
+                raise
+            raise CardFieldError(f"field {key} expects {field.type} value, got {value}") from e
     return fields
 
 
@@ -4143,13 +4480,12 @@ def add_card(
     assignments: Sequence[str],
     body: str,
     cwd: Path,
-    empty_set: Sequence[str] | None = None,
 ) -> JsonObject:
     if type_name == QUEUE_CARD_TYPE:
         raise MemoryOperationError("queue-item cards are global queue records; use `agent-memory queue add`")
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
-    fields = parse_card_fields(cards_config, type_name, assignments, empty_set=empty_set)
+    fields = {key: value for key, value in parse_card_fields(cards_config, type_name, assignments).items() if value is not UNSET_FIELD}
     path = create_card(
         project_plans_root(config, cards_config),
         cards_config,
@@ -4272,17 +4608,20 @@ def queue_item_json(record: CardRecord) -> JsonObject:
 def list_queue_items(cwd: Path) -> JsonObject:
     config = config_for_memory_scope(MemoryScope.GLOBAL, cwd)
     cards_config, models = load_global_queue_card_system(config)
-    records = load_card_records([global_queue_root(config)], cards_config, models)
-    queue_records = [queue_item_json(record) for _card_id, record in sorted(records.items()) if record.type_name == QUEUE_CARD_TYPE]
-    return {"items": json_list(queue_records)}
+    scan = scan_card_records([global_queue_root(config)], cards_config, models)
+    queue_records = [queue_item_json(record) for _card_id, record in sorted(scan.records.items()) if record.type_name == QUEUE_CARD_TYPE]
+    return {"items": json_list(queue_records), "findings": json_list([card_load_finding_json(config, finding) for finding in scan.findings])}
 
 
-def update_card_record(card_id: str, assignments: Sequence[str], cwd: Path) -> JsonObject:
+def update_card_record(card_id: str, assignments: Sequence[str], cwd: Path, body: str | None = None) -> JsonObject:
+    # body is None when the caller passed neither --body nor --body-file, which leaves the
+    # stored Markdown alone; add_card takes the same argument as a required string because
+    # a new card has no stored body to keep.
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
     type_name = card_type_for_id(cards_config, card_id).name
     updates = parse_card_fields(cards_config, type_name, assignments)
-    path = write_card_updates(project_plans_root(config, cards_config), cards_config, models, card_id, updates)
+    path = write_card_updates(project_plans_root(config, cards_config), cards_config, models, card_id, updates, body=body)
     commit_vault_changes(config.vault, f"Update card: {card_id}", paths=[path])
     return {"id": card_id, "path": str(path)}
 
@@ -4302,7 +4641,7 @@ def show_card(card_id: str, cwd: Path) -> JsonObject:
     cards_config, models = load_card_system(config)
     card_type = card_type_for_id(cards_config, card_id)
     path = find_card_path(project_plans_root(config, cards_config), card_id)
-    metadata, body = split_card(path.read_text(encoding="utf-8"))
+    metadata, body = split_card(path.read_text(encoding="utf-8"), path)
     validated = models[card_type.name].model_validate(metadata)
     return {
         "id": card_id,
@@ -4313,24 +4652,88 @@ def show_card(card_id: str, cwd: Path) -> JsonObject:
     }
 
 
+def card_project_id(config: ProjectConfig, path: Path) -> str:
+    # The project that owns a card file, read from its vault path. Cards live under
+    # <vault>/projects/<project_id>/...; anything else is vault-level, not project-owned.
+    relative = path.relative_to(config.vault).parts
+    if relative[0] == "projects" and len(relative) > 1:
+        return relative[1]
+    return relative[0]
+
+
+def local_card_closure(records: Mapping[str, CardRecord], cards_config: CardSystemConfig, local_root: Path) -> set[str]:
+    # The card ids a local operation actually depends on: the touched project's own cards
+    # plus everything they reference, transitively. A defect inside this set is causally
+    # connected to local work; a defect outside it is another project's debt (issue #102).
+    reference_fields = reference_field_names(cards_config)
+    closure: set[str] = set()
+    pending = [card_id for card_id, record in records.items() if record.path.is_relative_to(local_root)]
+    while pending:
+        card_id = pending.pop()
+        if card_id in closure:
+            continue
+        closure.add(card_id)
+        record = records.get(card_id)
+        if record is None:
+            continue
+        for field_name in reference_fields[record.type_name]:
+            pending.extend(wikilink_ids(record.metadata.get(field_name) or []))
+    return closure
+
+
+def card_scan_for_project(config: ProjectConfig, cards_config: CardSystemConfig, models: Mapping[str, type[BaseModel]]) -> tuple[CardScan, set[str], Path]:
+    scan = scan_card_records(all_plans_roots(config, cards_config), cards_config, dict(models))
+    local_root = project_plans_root(config, cards_config)
+    return scan, local_card_closure(scan.records, cards_config, local_root), local_root
+
+
+def card_load_finding_json(config: ProjectConfig, finding: CardLoadFinding) -> JsonObject:
+    return {"kind": "unreadable", "card": finding.path.stem, "project": card_project_id(config, finding.path), "path": str(finding.path), "detail": finding.detail}
+
+
 def validate_card_records(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
-    records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
-    problems = validate_cards(records, cards_config)
-    return {"problems": json_list([{"kind": problem.kind, "card": problem.card_id, "detail": problem.detail} for problem in problems])}
+    scan, closure, local_root = card_scan_for_project(config, cards_config, models)
+    problems: list[JsonValue] = []
+    unrelated: list[JsonValue] = []
+    for finding in scan.findings:
+        record = card_load_finding_json(config, finding)
+        blocking = finding.path.is_relative_to(local_root) or finding.path.stem in closure
+        (problems if blocking else unrelated).append(record)
+    for problem in validate_cards(scan.records, cards_config):
+        record = {"kind": problem.kind, "card": problem.card_id, "detail": problem.detail}
+        if problem.card_id in closure:
+            problems.append(record)
+        else:
+            owner = scan.records.get(problem.card_id)
+            unrelated.append({**record, "project": card_project_id(config, owner.path) if owner is not None else None})
+    return {
+        "project_id": require_project_id(config),
+        "problems": json_list(problems),
+        "unrelated_vault_debt": json_list(unrelated),
+    }
 
 
-def write_card_dag(cwd: Path) -> JsonObject:
+def write_card_dag(visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
-    records = load_card_records(all_plans_roots(config, cards_config), cards_config, models)
-    plans_root = project_plans_root(config, cards_config)
+    scan, closure, plans_root = card_scan_for_project(config, cards_config, models)
+    closure_records = {card_id: scan.records[card_id] for card_id in sorted(closure) if card_id in scan.records}
+    records = {
+        card_id: record
+        for card_id, record in closure_records.items()
+        if archive_visibility_is_included(
+            ArchiveVisibility.ARCHIVED if card_record_is_archived(record) else ArchiveVisibility.ACTIVE,
+            visibility,
+        )
+    }
+    findings = [card_load_finding_json(config, finding) for finding in scan.findings if finding.path.is_relative_to(plans_root) or finding.path.stem in closure]
     plans_root.mkdir(parents=True, exist_ok=True)
-    path = plans_root / PLAN_DAG_FILENAME
+    path = plans_root / plan_dag_filename(visibility)
     path.write_text(render_dag(records), encoding="utf-8")
     commit_vault_changes(config.vault, "Update plan DAG", paths=[path])
-    return {"path": str(path)}
+    return {"path": str(path), "visibility": visibility.value, "findings": json_list(findings)}
 
 
 def migrate_cards(source: Path, cwd: Path) -> JsonObject:

@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 from agent_memory.cards.validation import CardRecord, wikilink_ids
+from agent_memory.models import ArchiveVisibility
 
 # Filename of the generated plan dependency/containment DAG. It is a rendered artifact,
 # not a card or a memory note, so enumerators that read frontmatter must skip it.
 PLAN_DAG_FILENAME = "plan-dag.md"
+PLAN_DAG_FILENAMES = frozenset((PLAN_DAG_FILENAME, "plan-dag-archived.md", "plan-dag-all.md"))
+
+
+def plan_dag_filename(visibility: ArchiveVisibility) -> str:
+    return {
+        ArchiveVisibility.ACTIVE: PLAN_DAG_FILENAME,
+        ArchiveVisibility.ARCHIVED: "plan-dag-archived.md",
+        ArchiveVisibility.ALL: "plan-dag-all.md",
+    }[visibility]
 
 
 def mermaid_block(title: str, nodes: list[str], edges: list[str]) -> str:

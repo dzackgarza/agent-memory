@@ -7,6 +7,7 @@ from pydantic import BaseModel, ValidationError
 
 from agent_memory.cards import CardSystemConfig, build_card_models, load_card_system_config
 from agent_memory.cards.storage import (
+    CardLookupError,
     CardPlacementError,
     create_card,
     delete_card,
@@ -92,10 +93,25 @@ def test_created_card_roundtrips_through_validated_model(tmp_path: Path) -> None
     assert task["parents"] == ["[[PHASE-DEMO]]"]
 
 
+def test_parent_id_sets_the_containment_link(tmp_path: Path) -> None:
+    # --parent is one concept: it places the card and is the parent the graph records, so a
+    # caller never has to restate it as --set parents. An explicit parents value still wins.
+    root = tmp_path / "plans"
+    config, models = make_models()
+    feature_fields = {"title": "F", "status": "in-progress", "description": "d"}
+    create_card(root, config, models, type_name="feature", card_id="FEATURE-P", parent_id=None, fields=feature_fields, body="# F\n")
+    plan_fields = {"title": "P", "status": "in-progress", "description": "d", "successCriteria": ["c"], "tasks": ["[[TASK-P]]"]}
+    create_card(root, config, models, type_name="plan", card_id="PLAN-P", parent_id="FEATURE-P", fields=plan_fields, body="# P\n")
+    create_card(root, config, models, type_name="plan", card_id="PLAN-Q", parent_id="FEATURE-P", fields={**plan_fields, "parents": ["[[FEATURE-OTHER]]"]}, body="# Q\n")
+
+    assert read_card(root, config, models, "PLAN-P").model_dump()["parents"] == ["[[FEATURE-P]]"]
+    assert read_card(root, config, models, "PLAN-Q").model_dump()["parents"] == ["[[FEATURE-OTHER]]"]
+
+
 def test_create_child_with_missing_parent_fails(tmp_path: Path) -> None:
     root = tmp_path / "plans"
     config, models = make_models()
-    with pytest.raises(AssertionError):
+    with pytest.raises(CardPlacementError):
         create_card(
             root,
             config,
@@ -174,5 +190,5 @@ def test_delete_card_removes_file(tmp_path: Path) -> None:
     root = tmp_path / "plans"
     create_feature_plan_phase_task(root)
     delete_card(root, "TASK-DEMO")
-    with pytest.raises(AssertionError):
+    with pytest.raises(CardLookupError):
         find_card_path(root, "TASK-DEMO")
