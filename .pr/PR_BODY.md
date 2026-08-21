@@ -25,6 +25,8 @@ It resolves the key, vault, project, record type, validator, and supported comma
 
   - [x] `--set FIELD=` clears lists, removes optional fields, and rejects required fields.
 
+  - [x] `archived` retires a card without changing its workflow status or stored lineage.
+
 - [x] Make reads usable from normal working directories.
 
   - [x] Unbound `--scope both` reads global records.
@@ -33,6 +35,8 @@ It resolves the key, vault, project, record type, validator, and supported comma
 
   - [x] Read-command defaults match the observed invocation corpus.
 
+  - [x] Active list and search results expose matching archived identities without active clutter.
+
 - [x] Keep validation local and complete.
 
   - [x] Malformed cards become findings instead of scan aborts.
@@ -40,6 +44,8 @@ It resolves the key, vault, project, record type, validator, and supported comma
   - [x] Validation reports local reference-closure problems separately.
 
   - [x] Each generated DAG contains the local transitive reference closure only.
+
+  - [x] Active, archived, and complete DAG views write separate generated files.
 
 - [x] Complete the schema-generated command surface.
 
@@ -79,6 +85,6 @@ The packaged skill is the stable capability contract.
 
 ## Proof
 
-The regression suite covers card body replacement, field removal, cross-project key resolution, unbound reads, malformed-card findings, local DAG closure, ranked-output stability, command failure output, and packaged skill delivery.
+The regression suite covers card body replacement, field removal, archive visibility and restoration, cross-project key resolution, unbound reads, malformed-card findings, local DAG closure, ranked-output stability, command failure output, and packaged skill delivery.
 
 The push gate and required GitHub checks own the final repository-wide proof.

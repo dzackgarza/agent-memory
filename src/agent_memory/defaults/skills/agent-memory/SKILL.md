@@ -87,14 +87,14 @@ Run `init project` once per repository.
 | Command | Required | Optional (default) |
 | --- | --- | --- |
 | `add` | `--scope`, `--type`, `--title`, `--content` | — |
-| `search QUERY` | `QUERY` | `--scope` (both) |
-| `search keys QUERY` | `QUERY` | `--scope` (both) |
-| `search content QUERY` | `QUERY` | `--mode` (ranked), `--scope` (both) |
-| `search metadata` | — | `--scope` (both), `--type`, `--tag`, `--created-after` |
+| `search QUERY` | `QUERY` | `--scope` (both), `--visibility` (active) |
+| `search keys QUERY` | `QUERY` | `--scope` (both), `--visibility` (active) |
+| `search content QUERY` | `QUERY` | `--mode` (ranked), `--scope` (both), `--visibility` (active) |
+| `search metadata` | — | `--scope` (both), `--type`, `--tag`, `--created-after`, `--visibility` (active) |
 | `retrieve KEY` | `KEY` — a memory note, never a card | — |
 | `update KEY` | `KEY` | `--title`, `--type`, `--content` |
 | `delete KEY` | `KEY` | `--repoint`, `--orphan-ok` (False) |
-| `list` | — | `--type` (every type), `--scope` (both), `--unmigrated` (False) |
+| `list` | — | `--type` (every type), `--scope` (both), `--unmigrated` (False), `--visibility` (active) |
 
 - `--type` on `add`, `update`, and `search metadata`: `decision`, `trap`, `advice`, `context`, `reference`, `plan`. `add --type plan` is rejected; plans are cards.
 
@@ -135,11 +135,19 @@ Each type has a generated command group with the same four subcommands.
 | `card show ID` / `card delete ID` | `ID` | — |
 | `card migrate FROM` | `FROM` — in-repo directory to ingest | — |
 | `card validate` | — | — |
-| `card dag` | — | — |
+| `card dag` | — | `--visibility` (active) |
 | `plan progress` | — | `--scope` (both) |
 
 `--set` repeats to append to a list field; `--set FIELD=` empties one.
 There is no separate option for either.
+
+Every card type has an optional Boolean `archived` field.
+Archive with `--set archived=true` and restore with `--set archived=false`; the workflow `status` stays unchanged.
+`--visibility` accepts `active`, `archived`, or `all` on list, search, and card DAG commands.
+Active list and search results omit archived cards and return their identities in `archived_matches`.
+`<type> show ID` always returns an archived card with its stored fields and links.
+The card DAG writes `plan-dag.md`, `plan-dag-archived.md`, or `plan-dag-all.md` for the selected visibility.
+`inspect tree` and `inspect recent` cover memory-note indexes and timestamps; use list, search, show, or card DAG for cards.
 
 The generated groups come from the active vault card schema.
 The packaged default schema provides `feature`, `plan`, `phase`, `task`, `spec`, `decision`, and `papercut`. The `plan` group also carries `migrate`, `validate`, and `dag`, identical to their `card` equivalents.

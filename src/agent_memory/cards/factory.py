@@ -5,7 +5,7 @@ from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, create_model
 
-from agent_memory.cards.config import CardSystemConfig, FieldSpec, StatusSetSpec
+from agent_memory.cards.config import CardSystemConfig, FieldSpec, StatusSetSpec, card_fields
 
 
 def membership_validator(options: list[str]) -> Callable[[str], str]:
@@ -96,7 +96,7 @@ def build_card_models(config: CardSystemConfig) -> dict[str, type[BaseModel]]:
     models: dict[str, type[BaseModel]] = {}
     for card_type in config.card_types:
         status_set = config.status_sets[card_type.status_set]
-        definitions: dict[str, Any] = {field.name: field_definition(field, status_set) for field in card_type.fields}
+        definitions: dict[str, Any] = {field.name: field_definition(field, status_set) for field in card_fields(card_type)}
         models[card_type.name] = create_model(
             f"{card_type.name.capitalize()}Card",
             __config__=ConfigDict(extra="forbid"),

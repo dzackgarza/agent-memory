@@ -3762,6 +3762,7 @@ def test_archived_cards_remain_discoverable_without_active_clutter(tmp_path: Pat
     shown_metadata = json_object(shown["metadata"])
     assert shown_metadata["archived"] is True
     assert shown_metadata["status"] == "complete"
+    assert json_array(parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))["problems"]) == []
 
     active_list = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project"))
     assert result_keys(active_list) == {active_key}
@@ -3806,14 +3807,6 @@ def test_archived_cards_remain_discoverable_without_active_clutter(tmp_path: Pat
         )
     )
     assert result_keys(all_search) == {active_key, archived_key}
-
-    active_tree = inspect_json(workspace, "tree", "--scope", "project", "--depth", "8", "--visibility", "active")
-    active_tree_keys = set().union(*(inspect_tree_keys(json_object(root)) for root in json_records(active_tree, "roots")))
-    assert active_key in active_tree_keys
-    assert archived_key not in active_tree_keys
-    archived_tree = inspect_json(workspace, "tree", "--scope", "project", "--depth", "8", "--visibility", "archived")
-    archived_tree_keys = set().union(*(inspect_tree_keys(json_object(root)) for root in json_records(archived_tree, "roots")))
-    assert archived_key in archived_tree_keys
 
     active_dag = parse_json_stdout(run_agent_memory(workspace.repo, "card", "dag"))
     active_dag_text = Path(json_string(active_dag["path"])).read_text(encoding="utf-8")

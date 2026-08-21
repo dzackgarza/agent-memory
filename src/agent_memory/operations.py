@@ -26,8 +26,8 @@ from markdown_it import MarkdownIt
 from pydantic import BaseModel, ValidationError
 
 from agent_memory import iwe
-from agent_memory.cards.config import CardSystemConfig
-from agent_memory.cards.dag import PLAN_DAG_FILENAME, render_dag
+from agent_memory.cards.config import CardSystemConfig, card_fields
+from agent_memory.cards.dag import PLAN_DAG_FILENAMES, plan_dag_filename, render_dag
 from agent_memory.cards.factory import build_card_models
 from agent_memory.cards.loader import load_card_system_config
 from agent_memory.cards.migration import migrate_plans
@@ -35,6 +35,7 @@ from agent_memory.cards.storage import UNSET_FIELD, card_type_for_id, create_car
 from agent_memory.cards.storage import update_card as write_card_updates
 from agent_memory.cards.validation import CardLoadFinding, CardRecord, CardScan, reference_field_names, scan_card_records, validate_cards, wikilink_ids
 from agent_memory.models import (
+    ArchiveVisibility,
     BaseNoteMetadata,
     GlobalNoteMetadata,
     InspectExportFormat,
@@ -443,6 +444,7 @@ class ManagedCardListing:
     scope: MemoryScope
     path: Path
     key: str
+    archived: bool
 
 
 @dataclass(frozen=True)
@@ -452,6 +454,7 @@ class UnmigratedCardListing:
     scope: MemoryScope
     path: Path
     suggested_destination: str
+    archived: bool
 
 
 type CardListing = ManagedCardListing | UnmigratedCardListing
@@ -1071,46 +1074,57 @@ def _delete_memory(key: str, cwd: Path, backlink_disposition: DeleteBacklinkDisp
     return result
 
 
-def search_memories(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
+def search_memories(scope: SearchScope, query: str, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
     config, scope = resolve_search_scope(scope, cwd)
     limit = starter_config().search_max_results
     note_scan = scan_note_records(config, scope)
     key_matches = key_search_records_from_notes(note_scan.records, query, limit)
     exact_matches = exact_content_records(config, scope, query)
     fuzzy_matches = fuzzy_content_records(config, scope, query)
-    results = dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[:limit]
-    ranked_matches = search_content_ranked(scope, query, cwd)
+    results, archived_matches = select_search_records(config, dedupe_records_by_key([*key_matches, *exact_matches, *fuzzy_matches])[:limit], visibility)
+    key_matches, _key_archived = select_search_records(config, key_matches, visibility)
+    exact_matches, _exact_archived = select_search_records(config, exact_matches, visibility)
+    fuzzy_matches, _fuzzy_archived = select_search_records(config, fuzzy_matches, visibility)
+    ranked_matches = search_content_ranked(scope, query, cwd, visibility=visibility)
     ranked_results = ranked_matches["results"]
     assert isinstance(ranked_results, list), "ranked search results must be a JSON list"
     return {
         "query": query,
         "scope": scope.value,
+        "visibility": visibility.value,
         "results": json_list(results),
         "key_matches": json_list(key_matches),
         "exact_content_matches": json_list(exact_matches),
         "fuzzy_content_matches": json_list(fuzzy_matches),
         "ranked_content_matches": ranked_results,
+        "archived_matches": json_list(archived_matches),
         "findings": note_findings_json(note_scan.findings),
     }
 
 
-def search_keys(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
+def search_keys(scope: SearchScope, query: str, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
     config, scope = resolve_search_scope(scope, cwd)
     note_scan = scan_note_records(config, scope)
+    records, archived_matches = select_search_records(config, key_search_records_from_notes(note_scan.records, query, starter_config().search_max_results), visibility)
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_list(key_search_records_from_notes(note_scan.records, query, starter_config().search_max_results)),
+        "visibility": visibility.value,
+        "results": json_list(records),
+        "archived_matches": json_list(archived_matches),
         "findings": note_findings_json(note_scan.findings),
     }
 
 
-def search_content_exact(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
+def search_content_exact(scope: SearchScope, query: str, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
     config, scope = resolve_search_scope(scope, cwd)
+    records, archived_matches = select_search_records(config, exact_content_records(config, scope, query), visibility)
     return {
         "query": query,
         "scope": scope.value,
-        "results": json_list(exact_content_records(config, scope, query)),
+        "visibility": visibility.value,
+        "results": json_list(records),
+        "archived_matches": json_list(archived_matches),
     }
 
 
@@ -1119,16 +1133,20 @@ def search_metadata(
     memory_type: MemoryType | None,
     tag: str | None,
     created_after: str | None,
+    visibility: ArchiveVisibility,
     cwd: Path,
 ) -> JsonObject:
     config, scope = resolve_search_scope(scope, cwd)
     limit = starter_config().search_max_results
     created_after_datetime = parse_created_after(created_after)
     note_scan = scan_note_records(config, scope)
-    records = [metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)]
+    matching = [metadata_search_record_json(record) for record in note_scan.records if note_record_matches_metadata(record, memory_type, tag, created_after_datetime)]
+    records, archived_matches = select_search_records(config, matching[:limit], visibility)
     return {
         "scope": scope.value,
-        "results": json_list(records[:limit]),
+        "visibility": visibility.value,
+        "results": json_list(records),
+        "archived_matches": json_list(archived_matches),
         "findings": note_findings_json(note_scan.findings),
     }
 
@@ -1231,6 +1249,38 @@ def dedupe_records_by_key(records: Sequence[JsonObject]) -> list[JsonObject]:
     return deduped
 
 
+def search_record_path(record: JsonObject) -> Path:
+    value = record.get("path", record.get("file"))
+    if not isinstance(value, str):
+        raise MemoryOperationError("search result has no file path")
+    return Path(value)
+
+
+def archived_search_identity(config: ProjectConfig, path: Path, title: str, card_type: str) -> JsonObject:
+    return {
+        "key": memory_key(config.vault, path),
+        "path": str(path),
+        "title": title,
+        "type": card_type,
+        "archived": True,
+    }
+
+
+def select_search_records(config: ProjectConfig, records: Sequence[JsonObject], visibility: ArchiveVisibility) -> tuple[list[JsonObject], list[JsonObject]]:
+    selected: list[JsonObject] = []
+    archived_matches: list[JsonObject] = []
+    for record in records:
+        path = search_record_path(record)
+        fields = card_listing_fields_for_path(config, path)
+        archived = fields is not None and fields[3]
+        if archived_record_is_visible(archived, visibility):
+            selected.append(record)
+        if fields is not None and fields[3] and visibility is ArchiveVisibility.ACTIVE:
+            title, card_type, _scope, _archived = fields
+            archived_matches.append(archived_search_identity(config, path, title, card_type))
+    return selected, dedupe_records_by_key(archived_matches)
+
+
 def json_list(values: Sequence[JsonValue]) -> list[JsonValue]:
     # Widen a homogeneous JSON-value sequence to the list[JsonValue] shape required by
     # JsonObject slots. Sequence is covariant, so list[JsonObject] and list[str] inputs
@@ -1253,18 +1303,19 @@ def card_listing_json(record: CardListing) -> JsonObject:
         "type": record.card_type,
         "scope": record.scope.value,
         "path": str(record.path),
+        "archived": record.archived,
     }
     if isinstance(record, ManagedCardListing):
         return {**payload, "managed": True, "key": record.key, "suggested_destination": None}
     return {**payload, "managed": False, "key": None, "suggested_destination": record.suggested_destination}
 
 
-def list_cards(card_type: str | None, scope: SearchScope, cwd: Path) -> JsonObject:
-    return _list_cards(card_type, scope, CardListingSource.MANAGED, cwd)
+def list_cards(card_type: str | None, scope: SearchScope, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
+    return _list_cards(card_type, scope, visibility, CardListingSource.MANAGED, cwd)
 
 
-def list_cards_with_unmigrated(card_type: str | None, scope: SearchScope, cwd: Path) -> JsonObject:
-    return _list_cards(card_type, scope, CardListingSource.MANAGED_AND_UNMIGRATED, cwd)
+def list_cards_with_unmigrated(card_type: str | None, scope: SearchScope, visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
+    return _list_cards(card_type, scope, visibility, CardListingSource.MANAGED_AND_UNMIGRATED, cwd)
 
 
 def listable_types(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
@@ -1278,7 +1329,7 @@ def listable_types(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]
     return tuple(sorted(names))
 
 
-def _list_cards(card_type: str | None, scope: SearchScope, listing_source: CardListingSource, cwd: Path) -> JsonObject:
+def _list_cards(card_type: str | None, scope: SearchScope, visibility: ArchiveVisibility, listing_source: CardListingSource, cwd: Path) -> JsonObject:
     config, scope = resolve_search_scope(scope, cwd)
     # No --type lists every type, so absence is valid. A supplied name that no type uses is
     # not: silently returning an empty list turns a typo into "the vault has none of these".
@@ -1290,7 +1341,9 @@ def _list_cards(card_type: str | None, scope: SearchScope, listing_source: CardL
     include_unmigrated = listing_source is CardListingSource.MANAGED_AND_UNMIGRATED
     if listing_source is CardListingSource.MANAGED_AND_UNMIGRATED:
         records.extend(unmigrated_card_listings(config, scope))
-    filtered = [record for record in records if card_type is None or record.card_type == card_type]
+    typed = [record for record in records if card_type is None or record.card_type == card_type]
+    filtered = [record for record in typed if archived_record_is_visible(record.archived, visibility)]
+    archived_matches = [record for record in typed if record.archived] if visibility is ArchiveVisibility.ACTIVE else []
     filtered.sort(
         key=lambda record: (
             isinstance(record, ManagedCardListing),
@@ -1302,12 +1355,14 @@ def _list_cards(card_type: str | None, scope: SearchScope, listing_source: CardL
     return {
         "type": card_type,
         "scope": scope.value,
+        "visibility": visibility.value,
         "include_unmigrated": include_unmigrated,
         "results": json_list([card_listing_json(record) for record in filtered]),
+        "archived_matches": json_list([card_listing_json(record) for record in archived_matches]),
     }
 
 
-def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
+def search_content_ranked(scope: SearchScope, query: str, cwd: Path, visibility: ArchiveVisibility) -> JsonObject:
     config, scope = resolve_search_scope(scope, cwd)
     starter = starter_config()
     roots = search_roots(config, scope)
@@ -1328,7 +1383,20 @@ def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObje
         max_results=starter.search_max_results,
         max_tokens=starter.search_max_tokens,
     )
-    return ranked_results_payload(config, merged, starter.search_max_results)
+    payload = ranked_results_payload(config, merged, starter.search_max_results)
+    raw_results = payload["results"]
+    assert isinstance(raw_results, list), "ranked search results must be a JSON list"
+    records = [record for record in raw_results if isinstance(record, dict)]
+    selected, archived_matches = select_search_records(config, records, visibility)
+    summary = json_child(payload, "summary")
+    return {
+        **payload,
+        "scope": scope.value,
+        "visibility": visibility.value,
+        "results": json_list(selected),
+        "archived_matches": json_list(archived_matches),
+        "summary": {**summary, "count": len(selected)},
+    }
 
 
 def ranked_results_payload(config: ProjectConfig, payload: JsonObject, limit: int) -> JsonObject:
@@ -1362,13 +1430,15 @@ def json_string(payload: JsonObject, key: str) -> str:
     return value
 
 
-def search_content_fuzzy(scope: SearchScope, query: str, cwd: Path) -> JsonObject:
+def search_content_fuzzy(scope: SearchScope, query: str, cwd: Path, visibility: ArchiveVisibility) -> JsonObject:
     config, scope = resolve_search_scope(scope, cwd)
-    records = zk_search_scope(config, scope, query)
+    records, archived_matches = select_search_records(config, zk_search_scope(config, scope, query), visibility)
     return {
         "query": query,
         "scope": scope.value,
+        "visibility": visibility.value,
         "results": json_list(records[: starter_config().search_max_results]),
+        "archived_matches": json_list(archived_matches),
     }
 
 
@@ -2958,7 +3028,7 @@ def memory_key(vault: Path, path: Path) -> str:
 
 
 def memory_files(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    return tuple(path for directory in memory_note_directories(config, scope) for path in sorted(directory.glob("*.md")) if path.name not in ("index.md", PLAN_DAG_FILENAME))
+    return tuple(path for directory in memory_note_directories(config, scope) for path in sorted(directory.glob("*.md")) if path.name != "index.md" and path.name not in PLAN_DAG_FILENAMES)
 
 
 def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
@@ -2981,7 +3051,7 @@ def managed_card_paths(config: ProjectConfig, scope: SearchScope) -> tuple[Path,
         paths.update(path for path in directory.glob("*.md") if path.name != "index.md")
     if scope in (SearchScope.PROJECT, SearchScope.BOTH):
         plans_root = memory_directory(config, MemoryScope.PROJECT, MemoryType.PLAN)
-        paths.update(path for path in plans_root.rglob("*.md") if path.name not in ("index.md", PLAN_DAG_FILENAME))
+        paths.update(path for path in plans_root.rglob("*.md") if path.name != "index.md" and path.name not in PLAN_DAG_FILENAMES)
     return tuple(sorted(paths))
 
 
@@ -3038,7 +3108,20 @@ def is_managed_card_path(config: ProjectConfig, path: Path) -> bool:
     return False
 
 
-def card_listing_fields_for_path(config: ProjectConfig, path: Path) -> tuple[str, str, MemoryScope] | None:
+def metadata_is_archived(metadata: Mapping[str, MetadataValue], path: Path) -> bool:
+    value = metadata.get("archived", False)
+    if not isinstance(value, bool):
+        raise MalformedMemoryError(path, "frontmatter archived must be true or false")
+    return value
+
+
+def archived_record_is_visible(archived: bool, visibility: ArchiveVisibility) -> bool:
+    if visibility is ArchiveVisibility.ALL:
+        return True
+    return archived is (visibility is ArchiveVisibility.ARCHIVED)
+
+
+def card_listing_fields_for_path(config: ProjectConfig, path: Path) -> tuple[str, str, MemoryScope, bool] | None:
     try:
         document = read_memory(path)
     except MalformedMemoryError:
@@ -3050,6 +3133,7 @@ def card_listing_fields_for_path(config: ProjectConfig, path: Path) -> tuple[str
         card_title_from_metadata(path, document.metadata),
         card_type,
         card_scope_for_path(config, path, document.metadata),
+        metadata_is_archived(document.metadata, path),
     )
 
 
@@ -3057,13 +3141,14 @@ def managed_card_listing_for_path(config: ProjectConfig, path: Path) -> ManagedC
     fields = card_listing_fields_for_path(config, path)
     if fields is None:
         return None
-    title, card_type, scope = fields
+    title, card_type, scope, archived = fields
     return ManagedCardListing(
         title=title,
         card_type=card_type,
         scope=scope,
         path=path,
         key=memory_key(config.vault, path),
+        archived=archived,
     )
 
 
@@ -3071,13 +3156,14 @@ def unmigrated_card_listing_for_path(config: ProjectConfig, path: Path) -> Unmig
     fields = card_listing_fields_for_path(config, path)
     if fields is None:
         return None
-    title, card_type, scope = fields
+    title, card_type, scope, archived = fields
     return UnmigratedCardListing(
         title=title,
         card_type=card_type,
         scope=scope,
         path=path,
         suggested_destination=suggested_card_destination(config, scope, card_type),
+        archived=archived,
     )
 
 
@@ -3512,7 +3598,7 @@ def inspect_schema(*, output_format: InspectOutputFormat, cwd: Path) -> JsonObje
                     "container": card_type.container,
                     "own_dir": card_type.own_dir,
                     "required_fields": json_list([field.name for field in card_type.fields if field.required]),
-                    "field_count": len(card_type.fields),
+                    "field_count": len(card_fields(card_type)),
                 }
                 for card_type in cards_config.card_types
             ],
@@ -3709,7 +3795,7 @@ def inspect_export_document(config: ProjectConfig, path: Path) -> MemoryDocument
 
 
 def is_direct_memory_note_path(config: ProjectConfig, path: Path) -> bool:
-    if path.name in ("index.md", PLAN_DAG_FILENAME):
+    if path.name == "index.md" or path.name in PLAN_DAG_FILENAMES:
         return False
     return any(path.parent == directory for directory in memory_note_directories(config, SearchScope.BOTH))
 
@@ -4334,7 +4420,7 @@ def parse_card_fields(
     if spec is None:
         known_types = ", ".join(card_type.name for card_type in cards_config.card_types)
         raise CardFieldError(f"unknown card type {type_name}; known card types: {known_types}")
-    field_specs = {field.name: field for field in spec.fields}
+    field_specs = {field.name: field for field in card_fields(spec)}
     fields: dict[str, object] = {}
     for assignment in assignments:
         if "=" not in assignment:
@@ -4620,17 +4706,18 @@ def validate_card_records(cwd: Path) -> JsonObject:
     }
 
 
-def write_card_dag(cwd: Path) -> JsonObject:
+def write_card_dag(visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
     scan, closure, plans_root = card_scan_for_project(config, cards_config, models)
-    records = {card_id: scan.records[card_id] for card_id in sorted(closure) if card_id in scan.records}
+    closure_records = {card_id: scan.records[card_id] for card_id in sorted(closure) if card_id in scan.records}
+    records = {card_id: record for card_id, record in closure_records.items() if archived_record_is_visible(record.metadata.get("archived", False) is True, visibility)}
     findings = [card_load_finding_json(config, finding) for finding in scan.findings if finding.path.is_relative_to(plans_root) or finding.path.stem in closure]
     plans_root.mkdir(parents=True, exist_ok=True)
-    path = plans_root / PLAN_DAG_FILENAME
+    path = plans_root / plan_dag_filename(visibility)
     path.write_text(render_dag(records), encoding="utf-8")
     commit_vault_changes(config.vault, "Update plan DAG", paths=[path])
-    return {"path": str(path), "findings": json_list(findings)}
+    return {"path": str(path), "visibility": visibility.value, "findings": json_list(findings)}
 
 
 def migrate_cards(source: Path, cwd: Path) -> JsonObject:

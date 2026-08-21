@@ -20,6 +20,12 @@ class SearchScope(StrEnum):
     BOTH = "both"
 
 
+class ArchiveVisibility(StrEnum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+    ALL = "all"
+
+
 class ContentSearchMode(StrEnum):
     EXACT = "exact"
     FUZZY = "fuzzy"

@@ -5,7 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from agent_memory.cards.config import CardSystemConfig
-from agent_memory.cards.dag import PLAN_DAG_FILENAME
+from agent_memory.cards.dag import PLAN_DAG_FILENAMES
 from agent_memory.cards.storage import CardLookupError, CardPlacementError, card_type_for_id, render_card, split_card
 
 
@@ -22,7 +22,7 @@ def migrate_plans(
         raise CardLookupError(f"no card tree at {source_plans_root}; point --from at an in-repo directory of card Markdown files, such as .agents/plans")
     migrated: list[Path] = []
     for source in sorted(source_plans_root.rglob("*.md")):
-        if source.name == PLAN_DAG_FILENAME:
+        if source.name in PLAN_DAG_FILENAMES:
             continue
         metadata, body = split_card(source.read_text(encoding="utf-8"), source)
         tracker = metadata.pop("trackerStatus", None)

@@ -61,6 +61,16 @@ class CardTypeSpec(BaseModel):
     ordered_children: dict[str, str] = Field(default_factory=dict)
 
 
+ARCHIVED_FIELD = FieldSpec(name="archived", type="bool", default=False)
+
+
+def card_fields(card_type: CardTypeSpec) -> tuple[FieldSpec, ...]:
+    declared = tuple(card_type.fields)
+    if any(field.name == ARCHIVED_FIELD.name for field in declared):
+        return declared
+    return (*declared, ARCHIVED_FIELD)
+
+
 def _validate_workflow_roles(statuses: list[str], workflow_roles: dict[str, list[str]]) -> None:
     required_roles = {"started", "complete", "unstarted"}
     if workflow_roles and set(workflow_roles) != required_roles:
@@ -111,6 +121,9 @@ def _validate_fields(fields: list[FieldSpec], context: str) -> None:
 
 def _validate_card_fields(card_type: CardTypeSpec) -> None:
     _validate_fields(card_type.fields, card_type.name)
+    archived = next((field for field in card_type.fields if field.name == ARCHIVED_FIELD.name), None)
+    if archived is not None and archived != ARCHIVED_FIELD:
+        raise ValueError(f"card type {card_type.name} must declare archived as an optional bool with default false")
 
 
 def _validate_card_ordering(card_type: CardTypeSpec, by_name: dict[str, CardTypeSpec]) -> None:

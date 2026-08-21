@@ -16,6 +16,7 @@ from agent_memory.cards.config import CardSystemConfig, CardTypeSpec, FieldSpec
 from agent_memory.cards.loader import CardConfigError
 from agent_memory.cards.storage import CardLookupError, CardPlacementError, MalformedCardError
 from agent_memory.models import (
+    ArchiveVisibility,
     ContentSearchMode,
     InspectExportFormat,
     InspectExportProfile,
@@ -309,9 +310,10 @@ def search_default(
     query: Annotated[str, Parameter(help="Query text.")],
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
+    visibility: Annotated[ArchiveVisibility, Parameter(help="Card visibility: active, archived, or all.")] = ArchiveVisibility.ACTIVE,
 ) -> None:
     """Return a curated report combining key, exact content, fuzzy, and ranked search."""
-    emit(search_memories(scope=scope, query=query, cwd=Path.cwd()))
+    emit(search_memories(scope=scope, query=query, visibility=visibility, cwd=Path.cwd()))
 
 
 def search_content_command(
@@ -322,16 +324,17 @@ def search_content_command(
         ContentSearchMode,
         Parameter(help="Content search mode: exact, fuzzy, or ranked."),
     ] = ContentSearchMode.RANKED,
+    visibility: Annotated[ArchiveVisibility, Parameter(help="Card visibility: active, archived, or all.")] = ArchiveVisibility.ACTIVE,
 ) -> None:
     """Search memory body text with the selected content mode."""
     if mode is ContentSearchMode.EXACT:
-        emit(search_content_exact(scope=scope, query=query, cwd=Path.cwd()))
+        emit(search_content_exact(scope=scope, query=query, visibility=visibility, cwd=Path.cwd()))
         return
     if mode is ContentSearchMode.FUZZY:
-        emit(search_content_fuzzy(scope=scope, query=query, cwd=Path.cwd()))
+        emit(search_content_fuzzy(scope=scope, query=query, visibility=visibility, cwd=Path.cwd()))
         return
     assert mode is ContentSearchMode.RANKED, f"unsupported content search mode: {mode}"
-    emit(search_content_ranked(scope=scope, query=query, cwd=Path.cwd()))
+    emit(search_content_ranked(scope=scope, query=query, visibility=visibility, cwd=Path.cwd()))
 
 
 def search_metadata_command(
@@ -343,6 +346,7 @@ def search_metadata_command(
         str | None,
         Parameter(help="Filter by ISO timestamp, for example 2026-06-13T00:00:00+00:00."),
     ] = None,
+    visibility: Annotated[ArchiveVisibility, Parameter(help="Card visibility: active, archived, or all.")] = ArchiveVisibility.ACTIVE,
 ) -> None:
     """Search memory frontmatter fields."""
     emit(
@@ -351,6 +355,7 @@ def search_metadata_command(
             memory_type=memory_type,
             tag=tag,
             created_after=created_after,
+            visibility=visibility,
             cwd=Path.cwd(),
         )
     )
@@ -360,9 +365,10 @@ def search_keys_command(
     query: Annotated[str, Parameter(help="Query text for memory keys and titles.")],
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to search: project, global, or both. Defaults to both.")] = SearchScope.BOTH,
+    visibility: Annotated[ArchiveVisibility, Parameter(help="Card visibility: active, archived, or all.")] = ArchiveVisibility.ACTIVE,
 ) -> None:
     """Search memory keys and titles."""
-    emit(search_keys(scope=scope, query=query, cwd=Path.cwd()))
+    emit(search_keys(scope=scope, query=query, visibility=visibility, cwd=Path.cwd()))
 
 
 def inspect_overview_command(
@@ -570,12 +576,13 @@ def list_command(
     ] = None,
     scope: Annotated[SearchScope, Parameter(help="Scope to list: project, global, or both.")] = SearchScope.BOTH,
     unmigrated: Annotated[bool, Parameter(help="Include records stranded outside managed global/project folders.")] = False,
+    visibility: Annotated[ArchiveVisibility, Parameter(help="Card visibility: active, archived, or all.")] = ArchiveVisibility.ACTIVE,
 ) -> None:
     """List managed cards/memories and optionally stranded harness-local records."""
     if unmigrated:
-        emit(list_cards_with_unmigrated(card_type=type_, scope=scope, cwd=Path.cwd()))
+        emit(list_cards_with_unmigrated(card_type=type_, scope=scope, visibility=visibility, cwd=Path.cwd()))
         return
-    emit(list_cards(card_type=type_, scope=scope, cwd=Path.cwd()))
+    emit(list_cards(card_type=type_, scope=scope, visibility=visibility, cwd=Path.cwd()))
 
 
 def read_card_body(body: str | None, body_file: Path | None) -> str | None:
@@ -660,9 +667,12 @@ def card_validate_command() -> None:
     emit(validate_card_records(cwd=Path.cwd()))
 
 
-def card_dag_command() -> None:
+def card_dag_command(
+    *,
+    visibility: Annotated[ArchiveVisibility, Parameter(help="Card visibility: active, archived, or all.")] = ArchiveVisibility.ACTIVE,
+) -> None:
     """Render the dependency and containment DAG to plan-dag.md."""
-    emit(write_card_dag(cwd=Path.cwd()))
+    emit(write_card_dag(visibility=visibility, cwd=Path.cwd()))
 
 
 def card_migrate_command(
