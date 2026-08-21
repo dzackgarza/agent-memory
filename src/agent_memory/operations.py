@@ -3028,7 +3028,12 @@ def memory_key(vault: Path, path: Path) -> str:
 
 
 def memory_files(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
-    return tuple(path for directory in memory_note_directories(config, scope) for path in sorted(directory.glob("*.md")) if path.name != "index.md" and path.name not in PLAN_DAG_FILENAMES)
+    return tuple(
+        path
+        for directory in memory_note_directories(config, scope)
+        for path in sorted(directory.glob("*.md"))
+        if path.name != "index.md" and path.name not in PLAN_DAG_FILENAMES
+    )
 
 
 def memory_note_directories(config: ProjectConfig, scope: SearchScope) -> tuple[Path, ...]:
