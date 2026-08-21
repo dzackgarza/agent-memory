@@ -4312,7 +4312,7 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     )
     with pytest.raises(ValidationError) as excinfo:
         run_agent_memory(workspace.repo, *invalid_enum_arguments)
-    assert [(error["loc"], error["type"]) for error in excinfo.value.errors()] == [(('status',), "literal_error")]
+    assert [(error["loc"], error["type"]) for error in excinfo.value.errors()] == [(("status",), "literal_error")]
     assert_cli_failure(run_agent_memory_subprocess(workspace.repo, *invalid_enum_arguments))
 
     # Scenario 3: malformed --set input does not escape as Cyclopts AssertionError
