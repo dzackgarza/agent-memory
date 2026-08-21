@@ -4,10 +4,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agent_memory.cards.config import CardSystemConfig, CardTypeSpec
-from agent_memory.cards.storage import card_file_path, card_type_for_id, split_card
+from agent_memory.cards.storage import CardLookupError, CardPlacementError, MalformedCardError, card_file_path, card_type_for_id, split_card
 
 
 @dataclass(frozen=True)
@@ -24,11 +24,26 @@ class Problem:
     detail: str
 
 
+@dataclass(frozen=True)
+class CardLoadFinding:
+    # A card file that could not be loaded, named by path so callers can attribute it to a
+    # project without re-reading the file.
+    path: Path
+    detail: str
+
+
+@dataclass(frozen=True)
+class CardScan:
+    records: dict[str, CardRecord]
+    findings: tuple[CardLoadFinding, ...]
+
+
 def wikilink_ids(value: object) -> list[str]:
     items = value if isinstance(value, list) else [value]
     ids: list[str] = []
     for item in items:
-        assert isinstance(item, str), "wikilink value must be a string"
+        if not isinstance(item, str):
+            raise MalformedCardError(f"link field holds {item!r}, which is not a card reference; write each entry as [[CARD-ID]]")
         text = item.strip()
         if text.startswith("[[") and text.endswith("]]"):
             text = text[2:-2]
@@ -36,14 +51,35 @@ def wikilink_ids(value: object) -> list[str]:
     return ids
 
 
-def load_card_records(
+def validation_detail(error: ValidationError) -> str:
+    return "; ".join(f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}" for item in error.errors())
+
+
+def read_card_record(path: Path, config: CardSystemConfig, models: dict[str, type[BaseModel]]) -> CardRecord | CardLoadFinding:
+    try:
+        metadata, _body = split_card(path.read_text(encoding="utf-8"), path)
+        if metadata.get("id") != path.stem:
+            raise MalformedCardError(f"card declares id {metadata.get('id')!r} but its filename says {path.stem}; set the id field to {path.stem} or rename the file")
+        card_type = card_type_for_id(config, path.stem)
+        models[card_type.name].model_validate(metadata)
+    except ValidationError as error:
+        return CardLoadFinding(path, validation_detail(error))
+    except (MalformedCardError, CardLookupError, OSError, UnicodeDecodeError) as error:
+        return CardLoadFinding(path, str(error))
+    return CardRecord(type_name=card_type.name, path=path, metadata=metadata)
+
+
+def scan_card_records(
     plans_roots: Sequence[Path],
     config: CardSystemConfig,
     models: dict[str, type[BaseModel]],
-) -> dict[str, CardRecord]:
+) -> CardScan:
     # Load every card across all given project plan roots into one id-keyed map; building
-    # the index vault-wide is what lets cross-project [[ID]] references resolve.
+    # the index vault-wide is what lets cross-project [[ID]] references resolve. An unreadable
+    # card becomes a finding against its own path and the walk continues, so one bad card
+    # anywhere in the vault cannot make the scan unusable for every other project.
     records: dict[str, CardRecord] = {}
+    findings: list[CardLoadFinding] = []
     prefixes = tuple(f"{card_type.id_prefix}-" for card_type in config.card_types)
     for root in plans_roots:
         if not root.exists():
@@ -51,14 +87,22 @@ def load_card_records(
         for path in sorted(root.rglob("*.md")):
             if not path.stem.startswith(prefixes):
                 continue  # skip non-card files such as the generated plan-dag.md
-            metadata, _body = split_card(path.read_text(encoding="utf-8"))
-            card_id = path.stem
-            assert metadata.get("id") == card_id, f"card id must match filename: {path}"
-            assert card_id not in records, f"duplicate card id across vault: {card_id}"
-            card_type = card_type_for_id(config, card_id)
-            models[card_type.name].model_validate(metadata)
-            records[card_id] = CardRecord(type_name=card_type.name, path=path, metadata=metadata)
-    return records
+            loaded = read_card_record(path, config, models)
+            if isinstance(loaded, CardLoadFinding):
+                findings.append(loaded)
+            elif path.stem in records:
+                findings.append(CardLoadFinding(path, f"duplicate card id {path.stem}, already loaded from {records[path.stem].path}; rename one so every id names one card"))
+            else:
+                records[path.stem] = loaded
+    return CardScan(records, tuple(findings))
+
+
+def load_card_records(
+    plans_roots: Sequence[Path],
+    config: CardSystemConfig,
+    models: dict[str, type[BaseModel]],
+) -> dict[str, CardRecord]:
+    return scan_card_records(plans_roots, config, models).records
 
 
 def dependency_cycles(graph: dict[str, list[str]]) -> list[Problem]:
@@ -135,9 +179,19 @@ def children_by_parent(records: dict[str, CardRecord]) -> dict[str, list[str]]:
     return children
 
 
-def card_status(record: CardRecord) -> str:
+def default_statuses(config: CardSystemConfig) -> dict[str, str]:
+    return {card_type.name: config.status_sets[card_type.status_set].default for card_type in config.card_types}
+
+
+def card_status(record: CardRecord, default: str) -> str:
+    # An absent status is not a defect: the field is optional for most types and the compiled
+    # model supplies the status set's default, so hierarchy checks must read the same value.
     status = record.metadata.get("status")
-    assert isinstance(status, str) and status, f"card status must be a non-empty string: {record.path}"
+    if status is None:
+        return default
+    if not isinstance(status, str) or not status:
+        update = f"agent-memory {record.type_name} update {record.path.stem} --set status=<status>"
+        raise MalformedCardError(f"card {record.path} holds a status that is not a status name; set one with `{update}`")
     return status
 
 
@@ -204,12 +258,17 @@ def status_hierarchy_problems(records: dict[str, CardRecord], config: CardSystem
     roles = status_roles(config)
     if roles is None:
         return []
+    defaults = default_statuses(config)
     problems: list[Problem] = []
     for parent_id, child_ids in children_by_parent(records).items():
         if not child_ids:
             continue  # a card with no children imposes no hierarchy constraint
-        parent_status = card_status(records[parent_id])
-        statuses = {child_id: card_status(records[child_id]) for child_id in child_ids}
+        try:
+            parent_status = card_status(records[parent_id], defaults[records[parent_id].type_name])
+            statuses = {child_id: card_status(records[child_id], defaults[records[child_id].type_name]) for child_id in child_ids}
+        except MalformedCardError as error:
+            problems.append(Problem("status-hierarchy", parent_id, str(error)))
+            continue  # one unreadable card costs its own group, not the rest of the vault
         problems.extend(_unstarted_parent_problems(parent_id, parent_status, statuses, roles))
         problems.extend(_started_parent_problems(parent_id, parent_status, statuses, roles))
         problems.extend(_complete_parent_problems(parent_id, parent_status, statuses, roles))
@@ -295,9 +354,11 @@ def plans_root_for(card_id: str, record: CardRecord, records: dict[str, CardReco
     card_type = by_type[record.type_name]
     parts = record.path.parts
     if card_type.container and card_type.container != config.root:
-        assert card_type.container in parts, f"root card not under its configured container {card_type.container}: {record.path}"
+        if card_type.container not in parts:
+            raise CardPlacementError(f"root {record.type_name} card {record.path} is not under its {card_type.container}/ container; move it there to keep the tree navigable")
         return Path(*parts[: parts.index(card_type.container)])
-    assert config.root in parts, f"root card not under configured root {config.root}: {record.path}"
+    if config.root not in parts:
+        raise CardPlacementError(f"root {record.type_name} card {record.path} is not under the {config.root}/ card root; move it there so the card tree stays navigable")
     return Path(*parts[: parts.index(config.root) + 1])
 
 
@@ -307,7 +368,14 @@ def _filesystem_problem(card_id: str, record: CardRecord, card_type: CardTypeSpe
     if not is_root and len(parents) != 1:
         return None  # malformed parent count is reported by the containment check
     parent_id = None if is_root else parents[0]
-    expected = card_file_path(plans_root_for(card_id, record, records, config), card_type, card_id, parent_id).resolve()
+    try:
+        expected = card_file_path(plans_root_for(card_id, record, records, config), card_type, card_id, parent_id).resolve()
+    except CardPlacementError as error:
+        return Problem("filesystem-hierarchy", card_id, str(error))
+    except RecursionError:
+        # ponytail: a parents cycle makes the root walk non-terminating. The cycle itself is
+        # reported precisely by the tags check; here it only has to not abort the scan.
+        return Problem("filesystem-hierarchy", card_id, f"parents links form a cycle, so {card_id} has no reachable root; drop one parents entry")
     if record.path.resolve() == expected:
         return None
     return Problem("filesystem-hierarchy", card_id, f"expected path {expected}, found {record.path.resolve()}")
@@ -325,7 +393,8 @@ def ancestor_chain(card_id: str, records: dict[str, CardRecord], active: frozens
     # Ordered ancestor ids (nearest-root first) reachable through parents links, mirroring
     # the source ancestor_chain. Cycles are impossible here because validate_cards reports
     # dependency cycles separately and parents form a tree, but guard against revisits.
-    assert card_id not in active, f"cycle detected through {card_id}"
+    if card_id in active:
+        raise MalformedCardError(f"parents links form a cycle through {card_id}; drop one parents entry so containment forms a tree")
     chain: list[str] = []
     for parent_id in parent_ids(records[card_id]):
         if parent_id not in records:
@@ -340,16 +409,24 @@ def ancestor_chain(card_id: str, records: dict[str, CardRecord], active: frozens
 
 def tags_from_ancestry_problems(records: dict[str, CardRecord], config: CardSystemConfig) -> list[Problem]:
     # Port of the derive-tags logic: a card's tags must equal the chain of its ancestor ids
-    # whose type opts into tagged ancestry.
+    # whose type opts into tagged ancestry. A type that is itself a tagged ancestor roots its
+    # own subtree, so at the root of that subtree its own id is the tag its descendants
+    # inherit; an absent or empty tags list stays valid for any card with no tagged ancestor.
     tagged_types = {card_type.name for card_type in config.card_types if card_type.tagged_ancestor}
     problems: list[Problem] = []
     for card_id in sorted(records):
-        derived = [ancestor_id for ancestor_id in ancestor_chain(card_id, records, frozenset()) if records[ancestor_id].type_name in tagged_types]
-        tags = records[card_id].metadata.get("tags")
+        record = records[card_id]
+        try:
+            chain = ancestor_chain(card_id, records, frozenset())
+        except MalformedCardError as error:
+            problems.append(Problem("tags-from-ancestry", card_id, str(error)))
+            continue  # an unwalkable ancestry costs this card, not the rest of the vault
+        derived = [ancestor_id for ancestor_id in chain if records[ancestor_id].type_name in tagged_types]
+        tags = record.metadata.get("tags")
         if derived:
             if tags != derived:
                 problems.append(Problem("tags-from-ancestry", card_id, f"tags must equal ancestor chain {derived}, found {tags}"))
-        elif tags is not None:
+        elif tags and tags != ([card_id] if record.type_name in tagged_types else []):
             problems.append(Problem("tags-from-ancestry", card_id, f"card has no tagged ancestors but declares tags {tags}"))
     return problems
 

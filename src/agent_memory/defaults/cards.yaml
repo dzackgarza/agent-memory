@@ -112,7 +112,6 @@ card_types:
         required: true
       - name: parents
         type: wikilink_list
-        required: true
       - name: dependsOn
         type: wikilink_list
       - name: blocks
@@ -161,8 +160,6 @@ card_types:
         type: wikilink_list
       - name: tasks
         type: wikilink_list
-        required: true
-        min_items: 1
     container: plans
     own_dir: true
     tagged_ancestor: true
@@ -486,6 +483,42 @@ card_types:
     own_dir: false
 # Status lifecycle roles ported from ~/ai/planning/status-catalog.yaml. complete statuses
 # are also started statuses.
+  - name: papercut
+    id_prefix: PC
+    status_set: queue
+    parents: []
+    fields:
+      - name: id
+        type: string
+        required: true
+      - name: title
+        type: string
+        required: true
+      - name: status
+        type: status
+      - name: category
+        type: select
+        options:
+          - tool-failure
+          - broken-env
+          - stale-docs
+          - bad-organization
+          - surprising-behavior
+          - missing-feature
+          - workflow-friction
+          - other
+      - name: scope
+        type: string
+      - name: agent
+        type: user
+      - name: timestamp
+        type: string
+      - name: description
+        type: text
+      - name: resolution
+        type: text
+    container: papercuts
+    own_dir: false
 workflow_roles:
   started:
     - in-progress

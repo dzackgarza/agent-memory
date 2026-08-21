@@ -12,7 +12,7 @@ import cyclopts
 from cyclopts import App, Parameter
 from pydantic import ValidationError
 
-from agent_memory.cards.config import CardSystemConfig, CardTypeSpec
+from agent_memory.cards.config import CardSystemConfig, CardTypeSpec, FieldSpec
 from agent_memory.cards.loader import CardConfigError
 from agent_memory.cards.storage import CardLookupError, CardPlacementError
 from agent_memory.models import (
@@ -116,6 +116,11 @@ sync_app = app.command(App(name="sync", help="Synchronize the configured memory 
 links_app = app.command(App(name="links", help="Inspect and rewrite vault links."))
 todo_app = app.command(App(name="todo", help="Mutate structured todos on vault plan records."))
 queue_app = app.command(App(name="queue", help="Append and list global agent work queue items."))
+
+
+# Shared by every add command. It cannot name this card type's parent, because the option is
+# declared once for all of them; each command's description names its own rule.
+PARENT_OPTION_HELP = "Parent card id; it sets both the location and the parents link. Root types take none, every other type requires one - the description above names which."
 
 
 class CliUsageError(RuntimeError):
@@ -311,7 +316,7 @@ def search_content_command(
     mode: Annotated[
         ContentSearchMode,
         Parameter(help="Content search mode: exact, fuzzy, or ranked."),
-    ],
+    ] = ContentSearchMode.RANKED,
 ) -> None:
     """Search memory body text with the selected content mode."""
     if mode is ContentSearchMode.EXACT:
@@ -358,7 +363,7 @@ def search_keys_command(
 def inspect_overview_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
 ) -> None:
     """Summarize scoped vault roots, notes, indexes, and memory categories."""
     emit(inspect_overview(scope=scope, output_format=output_format, cwd=Path.cwd()))
@@ -366,7 +371,7 @@ def inspect_overview_command(
 
 def inspect_schema_command(
     *,
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
 ) -> None:
     """Print the user-facing command and metadata schema."""
     emit(inspect_schema(output_format=output_format, cwd=Path.cwd()))
@@ -375,8 +380,8 @@ def inspect_schema_command(
 def inspect_paths_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
-    kind: Annotated[InspectPathKind, Parameter(help="Path class: roots, indexes, notes, or all.")],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    kind: Annotated[InspectPathKind, Parameter(help="Path class: roots, indexes, notes, or all.")] = InspectPathKind.ALL,
+    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
 ) -> None:
     """List vault paths for roots, indexes, notes, or all scoped Markdown files."""
     emit(inspect_paths(scope=scope, kind=kind, output_format=output_format, cwd=Path.cwd()))
@@ -389,7 +394,7 @@ def inspect_tree_command(
         int,
         Parameter(help="Number of Markdown-link levels to traverse from each scoped root."),
     ],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
 ) -> None:
     """Traverse the memory graph from the scoped root indexes."""
     emit(inspect_tree(scope=scope, depth=depth, output_format=output_format, cwd=Path.cwd()))
@@ -453,7 +458,7 @@ def links_rewrite_command(
 def inspect_outline_command(
     key: Annotated[str, Parameter(help="Memory key to outline.")],
     *,
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
 ) -> None:
     """Extract Markdown headings for a memory key."""
     emit(inspect_outline(key=key, output_format=output_format, cwd=Path.cwd()))
@@ -463,7 +468,7 @@ def inspect_stats_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to inspect: project, global, or both.")],
     group: Annotated[InspectStatsGroup, Parameter(name="by", help="Grouping: type, scope, or day.")],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
 ) -> None:
     """Count memories by type, scope, or day."""
     emit(inspect_stats(scope=scope, group=group, output_format=output_format, cwd=Path.cwd()))
@@ -476,7 +481,7 @@ def inspect_recent_command(
         str,
         Parameter(help="ISO timestamp lower bound, for example 2026-06-13T00:00:00+00:00."),
     ],
-    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")],
+    output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
 ) -> None:
     """List memories created after a timestamp."""
     emit(inspect_recent(scope=scope, since=since, output_format=output_format, cwd=Path.cwd()))
@@ -489,7 +494,7 @@ def inspect_export_command(
         InspectExportProfile,
         Parameter(help="Export profile: map, context, or archive."),
     ],
-    output_format: Annotated[InspectExportFormat, Parameter(name="format", help="Output format: graph-json.")],
+    output_format: Annotated[InspectExportFormat, Parameter(name="format", help="Output format: graph-json.")] = InspectExportFormat.GRAPH_JSON,
 ) -> None:
     """Export the scoped memory graph for external analysis."""
     emit(inspect_export(scope=scope, profile=profile, output_format=output_format, cwd=Path.cwd()))
@@ -564,22 +569,29 @@ def list_command(
     emit(list_cards(card_type=type_, scope=scope, cwd=Path.cwd()))
 
 
-def resolve_card_body(card_id: str, body: str | None, body_file: Path | None) -> str:
+def read_card_body(body: str | None, body_file: Path | None) -> str | None:
+    # None means the caller passed neither option. update leaves the stored body alone;
+    # add substitutes a heading, since a new card has no stored body to keep.
     if body is not None and body_file is not None:
         raise CliUsageError("Cannot specify both --body and --body-file")
-    if body_file is not None:
-        try:
-            return body_file.read_text(encoding="utf-8")
-        except OSError as e:
-            raise CliUsageError(f"Cannot read --body-file {body_file}: {e.strerror}") from e
-    return body if body is not None else f"# {card_id}\n"
+    if body_file is None:
+        return body
+    try:
+        return body_file.read_text(encoding="utf-8")
+    except OSError as e:
+        raise CliUsageError(f"Cannot read --body-file {body_file}: {e.strerror}") from e
+
+
+def resolve_card_body(card_id: str, body: str | None, body_file: Path | None) -> str:
+    resolved = read_card_body(body, body_file)
+    return f"# {card_id}\n" if resolved is None else resolved
 
 
 def card_add_command(
     type_name: Annotated[str, Parameter(name="type", help="Card type from the active card schema.")],
     card_id: Annotated[str, Parameter(name="id", help="Card id; prefix must match the declared card type.")],
     *,
-    parent: Annotated[str | None, Parameter(help="Parent card id for non-root cards.")] = None,
+    parent: Annotated[str | None, Parameter(help=PARENT_OPTION_HELP)] = None,
     set_: Annotated[
         list[str] | None,
         Parameter(
@@ -619,9 +631,11 @@ def card_update_command(
             allow_leading_hyphen=True,
         ),
     ] = None,
+    body: Annotated[str | None, Parameter(help="Replacement Markdown body for the card.")] = None,
+    body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing the replacement markdown body.")] = None,
 ) -> None:
     """Update fields on an existing schema-defined card."""
-    emit(update_card_record(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
+    emit(update_card_record(card_id=card_id, assignments=set_ or [], body=read_card_body(body, body_file), cwd=Path.cwd()))
 
 
 def card_delete_command(card_id: Annotated[str, Parameter(name="id", help="Card id to delete.")]) -> None:
@@ -655,7 +669,7 @@ def generated_card_add_command(card_type: CardTypeSpec) -> Callable[..., None]:
     def add_for_type(
         card_id: Annotated[str, Parameter(name="id", help="Card id; prefix must match this generated card command.")],
         *,
-        parent: Annotated[str | None, Parameter(help="Parent card id for non-root cards.")] = None,
+        parent: Annotated[str | None, Parameter(help=PARENT_OPTION_HELP)] = None,
         set_: Annotated[
             list[str] | None,
             Parameter(
@@ -698,8 +712,10 @@ def generated_card_update_command(card_type: CardTypeSpec) -> Callable[..., None
                 allow_leading_hyphen=True,
             ),
         ] = None,
+        body: Annotated[str | None, Parameter(help="Replacement Markdown body for the card.")] = None,
+        body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing the replacement markdown body.")] = None,
     ) -> None:
-        emit(update_card_record(card_id=card_id, assignments=set_ or [], cwd=Path.cwd()))
+        emit(update_card_record(card_id=card_id, assignments=set_ or [], body=read_card_body(body, body_file), cwd=Path.cwd()))
 
     update_for_type.__name__ = f"{card_type.name}_update_command"
     return update_for_type
@@ -855,12 +871,27 @@ def register_generated_card_type_commands(config: CardSystemConfig) -> None:
             type_app.command(plan_progress_command, name="progress")
 
 
-def field_help(config: CardSystemConfig, card_type_name: str, field_name: str, field_type: str) -> str:
-    if field_type == "status":
+def field_help(config: CardSystemConfig, card_type_name: str, field: FieldSpec) -> str:
+    detail: str = field.type
+    if field.type == "status":
         card_type = next(ct for ct in config.card_types if ct.name == card_type_name)
-        options = config.status_sets[card_type.status_set].options
-        return f"{field_name} ({field_type}; allowed: {', '.join(options)})"
-    return f"{field_name} ({field_type})"
+        detail = f"{field.type}; allowed: {', '.join(config.status_sets[card_type.status_set].options)}"
+    if field.min_items:
+        detail = f"{detail}; at least {field.min_items}"
+    return f"{field.name} ({detail})"
+
+
+def set_required_fields(config: CardSystemConfig, card_type: CardTypeSpec) -> list[str]:
+    # The id comes from the positional ID argument and parents comes from --parent, so
+    # neither belongs on the --set line the caller has to type.
+    supplied_elsewhere = {"id", "parents"} if card_type.parents else {"id"}
+    return [field_help(config, card_type.name, field) for field in card_type.fields if field.required and field.name not in supplied_elsewhere]
+
+
+def parent_help_line(card_type: CardTypeSpec) -> str:
+    if not card_type.parents:
+        return f"Parent: none - {card_type.name} is a root card type, so --parent is not used."
+    return f"Parent: --parent is required and must name a {' or '.join(card_type.parents)} card; it sets the parents link as well as the location."
 
 
 def card_add_help_text(config: CardSystemConfig) -> str:
@@ -872,9 +903,12 @@ def card_add_help_text(config: CardSystemConfig) -> str:
     for card_type in config.card_types:
         doc.append(f"  - {card_type.name} (prefix: {card_type.id_prefix}-)")
     doc.append("")
+    doc.append(f"Root card types, created without --parent: {', '.join(card_type.name for card_type in config.card_types if not card_type.parents)}")
+    doc.append("Every other type requires --parent, which sets both the location and the parents link.")
+    doc.append("")
     doc.append("Required fields per card type:")
     for card_type in config.card_types:
-        required_fields = [field_help(config, card_type.name, field.name, field.type) for field in card_type.fields if field.required]
+        required_fields = [field_help(config, card_type.name, field) for field in card_type.fields if field.required]
         doc.append(f"  - {card_type.name}: {', '.join(required_fields)}")
     return "\n".join(doc)
 
@@ -885,11 +919,11 @@ def card_type_add_help_text(config: CardSystemConfig, card_type: CardTypeSpec) -
         "",
         f"ID prefix: {card_type.id_prefix}-",
         f"Container: {card_type.container or '<parent>'}",
+        parent_help_line(card_type),
         "",
         "Required --set fields:",
     ]
-    required_fields = [field_help(config, card_type.name, field.name, field.type) for field in card_type.fields if field.required and field.name != "id"]
-    doc.append(f"  {', '.join(required_fields)}")
+    doc.append(f"  {', '.join(set_required_fields(config, card_type))}")
     return "\n".join(doc)
 
 

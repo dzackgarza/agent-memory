@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from agent_memory.cards import CardSystemConfig, build_card_models, load_card_system_config
 from agent_memory.cards.storage import create_card, update_card
-from agent_memory.cards.validation import load_card_records, validate_cards, wikilink_ids
+from agent_memory.cards.validation import load_card_records, scan_card_records, validate_cards, wikilink_ids
 
 
 def models_and_config() -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
@@ -139,6 +139,70 @@ def test_clean_multi_project_tree_has_no_problems(tmp_path: Path) -> None:
     seed_feature_chain(root1, "ONE", config, models)
     seed_feature_chain(root2, "TWO", config, models)
     assert validate_cards(load_card_records([root1, root2], config, models), config) == []
+
+
+def test_scan_reports_unreadable_cards_and_keeps_scanning(tmp_path: Path) -> None:
+    # Each way a card file can defeat loading must cost that one file, not the whole scan:
+    # a project whose cards are all valid still loads while another project holds broken ones.
+    config, models = models_and_config()
+    root1 = tmp_path / "p1" / "plans"
+    root2 = tmp_path / "p2" / "plans"
+    seed_feature_chain(root1, "ONE", config, models)
+    seed_feature_chain(root2, "TWO", config, models)
+    (root2 / "FEATURE-BADYAML.md").write_text("---\ntitle: `unquoted backtick\n---\n# bad\n", encoding="utf-8")
+    (root2 / "FEATURE-BADID.md").write_text("---\nid: FEATURE-OTHER\ntitle: t\n---\n# bad\n", encoding="utf-8")
+    (root2 / "FEATURE-BADSTATUS.md").write_text("---\nid: FEATURE-BADSTATUS\ntitle: t\nstatus: unstarted-legacy\n---\n# bad\n", encoding="utf-8")
+
+    scan = scan_card_records([root1, root2], config, models)
+
+    assert set(scan.records) == {f"{kind}-{suffix}" for suffix in ("ONE", "TWO") for kind in ("FEATURE", "PLAN", "PHASE", "TASK")}
+    assert {finding.path.stem for finding in scan.findings} == {"FEATURE-BADYAML", "FEATURE-BADID", "FEATURE-BADSTATUS"}
+    assert all(finding.detail and "\n" not in finding.detail for finding in scan.findings)
+    assert validate_cards(scan.records, config) == []
+
+
+def test_scan_reports_duplicate_ids_without_dropping_the_first(tmp_path: Path) -> None:
+    config, models = models_and_config()
+    root1 = tmp_path / "p1" / "plans"
+    root2 = tmp_path / "p2" / "plans"
+    seed_feature_chain(root1, "ONE", config, models)
+    seed_feature_chain(root2, "ONE", config, models)
+
+    scan = scan_card_records([root1, root2], config, models)
+
+    assert scan.records["FEATURE-ONE"].path.is_relative_to(root1)
+    assert {finding.path.stem for finding in scan.findings} == {"FEATURE-ONE", "PLAN-ONE", "PHASE-ONE", "TASK-ONE"}
+
+
+def test_parent_without_declared_status_validates_against_the_schema_default(tmp_path: Path) -> None:
+    # `feature add` does not require status, so the ordinary two-command sequence leaves a
+    # parent whose status is absent. The compiled model reads that as the status set's
+    # default, and validation must read it the same way instead of calling the card broken.
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    create_card(root, config, models, type_name="feature", card_id="FEATURE-A", parent_id=None, fields={"title": "A"}, body="# A\n")
+    plan_fields = {"title": "P", "status": "approved-and-unstarted", "description": "d", "successCriteria": ["c"], "tasks": ["[[TASK-A]]"], "tags": ["FEATURE-A"]}
+    create_card(root, config, models, type_name="plan", card_id="PLAN-A", parent_id="FEATURE-A", fields=plan_fields, body="# P\n")
+
+    problems = validate_cards(load_card_records([root], config, models), config)
+
+    assert [problem for problem in problems if problem.kind == "status-hierarchy"] == []
+
+
+def test_parents_cycle_is_reported_not_raised(tmp_path: Path) -> None:
+    # A cycle makes ancestry unwalkable for the cards in it; every other card must still be
+    # validated, so the cycle arrives as problems rather than as an exception.
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    seed_feature_chain(root, "OK", config, models)
+    for suffix, other in (("X", "FEATURE-Y"), ("Y", "FEATURE-X")):
+        create_card(root, config, models, type_name="feature", card_id=f"FEATURE-{suffix}", parent_id=None, fields={"title": "F", "status": "in-progress"}, body="# F\n")
+        update_card(root, config, models, f"FEATURE-{suffix}", {"parents": [f"[[{other}]]"]})
+
+    problems = validate_cards(load_card_records([root], config, models), config)
+
+    assert {problem.card_id for problem in problems if "cycle" in problem.detail} == {"FEATURE-X", "FEATURE-Y"}
+    assert [problem for problem in problems if problem.card_id.endswith("-OK")] == []
 
 
 def test_wikilink_ids_passes_through_unbracketed() -> None:

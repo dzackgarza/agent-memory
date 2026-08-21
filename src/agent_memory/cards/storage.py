@@ -13,7 +13,11 @@ class CardPlacementError(ValueError):
 
 
 class CardLookupError(ValueError):
-    """Raised when a card id does not match any configured card type's id prefix."""
+    """Raised when a card id does not resolve to exactly one card of a configured type."""
+
+
+class MalformedCardError(ValueError):
+    """Raised when a stored card file cannot be read as a card."""
 
 
 def card_type_for_id(config: CardSystemConfig, card_id: str) -> CardTypeSpec:
@@ -24,10 +28,25 @@ def card_type_for_id(config: CardSystemConfig, card_id: str) -> CardTypeSpec:
     return max(matches, key=lambda card_type: len(card_type.id_prefix))
 
 
+def searched_project(plans_root: Path) -> str:
+    # Name the project whose card tree was searched, so a miss says where it looked. Vault
+    # card trees live at <vault>/projects/<project_id>/<root>; any other root names itself.
+    parts = plans_root.parts
+    if "projects" in parts and parts.index("projects") + 1 < len(parts):
+        return parts[parts.index("projects") + 1]
+    return str(plans_root)
+
+
 def find_card_path(plans_root: Path, card_id: str) -> Path:
-    assert plans_root.is_dir(), f"plans root does not exist: {plans_root}"
+    project = searched_project(plans_root)
+    if not plans_root.is_dir():
+        raise CardLookupError(f"project {project} has no cards yet ({plans_root} does not exist); create its first card with `agent-memory <type> add <ID>` from that project")
     matches = sorted(plans_root.rglob(f"{card_id}.md"))
-    assert len(matches) == 1, f"expected exactly one card file for {card_id}, found {len(matches)}"
+    if not matches:
+        raise CardLookupError(f"no card {card_id} in project {project}; run this command from the repository bound to the project that owns {card_id}")
+    if len(matches) > 1:
+        found = ", ".join(str(match) for match in matches)
+        raise CardLookupError(f"card id {card_id} is ambiguous in project {project}: {found}; delete or rename all but one")
     return matches[0]
 
 
@@ -41,7 +60,14 @@ def card_file_path(plans_root: Path, card_type: CardTypeSpec, card_id: str, pare
         else:
             base = parent_dir
     else:
-        parent_dir = find_card_path(plans_root, parent_id).parent
+        # A parent always lives in the same project as its child, so a lookup miss here is a
+        # placement problem, not an invitation to run the command from another project.
+        try:
+            parent_dir = find_card_path(plans_root, parent_id).parent
+        except CardLookupError as error:
+            allowed = " or ".join(card_type.parents) or "root"
+            project = searched_project(plans_root)
+            raise CardPlacementError(f"parent {parent_id} is not a card in project {project}; add it first, or pass --parent an existing {allowed} card id") from error
         base = parent_dir / card_type.container if card_type.container else parent_dir
     if card_type.own_dir:
         return base / card_id / f"{card_id}.md"
@@ -52,12 +78,22 @@ def render_card(metadata: dict[str, object], body: str) -> str:
     return f"---\n{yaml.safe_dump(metadata, sort_keys=False, allow_unicode=True)}---\n{body}"
 
 
-def split_card(text: str) -> tuple[dict[str, object], str]:
+def split_card(text: str, source: Path | None = None) -> tuple[dict[str, object], str]:
+    # source is only used to name the offending file in the error; callers that read a card
+    # from disk pass it so a hand-edited vault file reports its own path.
+    where = f" {source}" if source is not None else ""
     lines = text.splitlines(keepends=True)
-    assert lines and lines[0].strip() == "---", "card must start with frontmatter"
-    closing = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    metadata = yaml.safe_load("".join(lines[1:closing]))
-    assert isinstance(metadata, dict), "card frontmatter must be a mapping"
+    if not lines or lines[0].strip() != "---":
+        raise MalformedCardError(f"card{where} does not open with a --- frontmatter line; restore the --- delimited YAML block above the body")
+    closing = next((index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
+    if closing is None:
+        raise MalformedCardError(f"card{where} frontmatter is never closed; add the --- line that ends the YAML block above the body")
+    try:
+        metadata = yaml.safe_load("".join(lines[1:closing]))
+    except yaml.YAMLError as error:
+        raise MalformedCardError(f"card{where} frontmatter is not valid YAML ({error.__class__.__name__}); repair the --- delimited block above the body") from error
+    if not isinstance(metadata, dict):
+        raise MalformedCardError(f"card{where} frontmatter is a {type(metadata).__name__}, not a mapping; write it as field: value lines")
     return metadata, "".join(lines[closing + 1 :])
 
 
@@ -73,11 +109,20 @@ def create_card(
     body: str,
 ) -> Path:
     card_type = next((candidate for candidate in config.card_types if candidate.name == type_name), None)
-    assert card_type is not None, f"unknown card type: {type_name}"
-    assert card_id.startswith(f"{card_type.id_prefix}-"), f"id {card_id} must start with {card_type.id_prefix}-"
+    if card_type is None:
+        known = ", ".join(candidate.name for candidate in config.card_types)
+        raise CardLookupError(f"unknown card type {type_name}; known card types: {known}")
+    if not card_id.startswith(f"{card_type.id_prefix}-"):
+        raise CardLookupError(f"card id {card_id} does not match card type {type_name}; give it an id starting with {card_type.id_prefix}-")
+    # One parent, one meaning: --parent both places the card and is the containment edge the
+    # graph records. An explicit parents assignment wins, so a card whose graph parent differs
+    # from its container is still expressible.
+    if parent_id is not None and "parents" not in fields and any(field.name == "parents" for field in card_type.fields):
+        fields = {**fields, "parents": [f"[[{parent_id}]]"]}
     validated = models[type_name].model_validate({**fields, "id": card_id})
     path = card_file_path(plans_root, card_type, card_id, parent_id)
-    assert not path.exists(), f"card already exists: {path}"
+    if path.exists():
+        raise CardPlacementError(f"card {card_id} already exists at {path}; change it with `agent-memory {type_name} update {card_id}` or delete it first")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_card(validated.model_dump(exclude_unset=True), body), encoding="utf-8")
     return path
@@ -89,7 +134,8 @@ def read_card(
     models: dict[str, type[BaseModel]],
     card_id: str,
 ) -> BaseModel:
-    metadata, _body = split_card(find_card_path(plans_root, card_id).read_text(encoding="utf-8"))
+    path = find_card_path(plans_root, card_id)
+    metadata, _body = split_card(path.read_text(encoding="utf-8"), path)
     return models[card_type_for_id(config, card_id).name].model_validate(metadata)
 
 
@@ -99,11 +145,15 @@ def update_card(
     models: dict[str, type[BaseModel]],
     card_id: str,
     updates: dict[str, object],
+    *,
+    body: str | None = None,
 ) -> Path:
+    # A supplied body replaces the stored Markdown in the same write as the field updates, so
+    # revising a card is never delete-and-re-add or a hand edit of the vault file.
     path = find_card_path(plans_root, card_id)
-    metadata, body = split_card(path.read_text(encoding="utf-8"))
+    metadata, stored_body = split_card(path.read_text(encoding="utf-8"), path)
     validated = models[card_type_for_id(config, card_id).name].model_validate({**metadata, **updates})
-    path.write_text(render_card(validated.model_dump(exclude_unset=True), body), encoding="utf-8")
+    path.write_text(render_card(validated.model_dump(exclude_unset=True), stored_body if body is None else body), encoding="utf-8")
     return path
 
 
