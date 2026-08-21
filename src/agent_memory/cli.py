@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from agent_memory.cards.config import CardSystemConfig, CardTypeSpec, FieldSpec
 from agent_memory.cards.loader import CardConfigError
-from agent_memory.cards.storage import CardLookupError, CardPlacementError
+from agent_memory.cards.storage import CardLookupError, CardPlacementError, MalformedCardError
 from agent_memory.models import (
     ContentSearchMode,
     InspectExportFormat,
@@ -558,7 +558,10 @@ def doctor_command() -> None:
 
 def list_command(
     *,
-    type_: Annotated[str, Parameter(name="type", help="Card or memory type to list, e.g. plan, decision, feature, task.")],
+    type_: Annotated[
+        str | None,
+        Parameter(name="type", help="Card or memory type to list, e.g. plan, decision, feature, task. Omit to list every type."),
+    ] = None,
     scope: Annotated[SearchScope, Parameter(help="Scope to list: project, global, or both.")] = SearchScope.BOTH,
     unmigrated: Annotated[bool, Parameter(help="Include records stranded outside managed global/project folders.")] = False,
 ) -> None:
@@ -601,7 +604,6 @@ def card_add_command(
             allow_leading_hyphen=True,
         ),
     ] = None,
-    empty_set: Annotated[list[str] | None, Parameter(name="empty-set", help="Fields to initialize as empty lists.")] = None,
     body: Annotated[str | None, Parameter(help="Markdown body for the card.")] = None,
     body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing markdown body for the card.")] = None,
 ) -> None:
@@ -612,7 +614,6 @@ def card_add_command(
             card_id=card_id,
             parent_id=parent,
             assignments=set_ or [],
-            empty_set=empty_set,
             body=resolve_card_body(card_id, body, body_file),
             cwd=Path.cwd(),
         )
@@ -679,7 +680,6 @@ def generated_card_add_command(card_type: CardTypeSpec) -> Callable[..., None]:
                 allow_leading_hyphen=True,
             ),
         ] = None,
-        empty_set: Annotated[list[str] | None, Parameter(name="empty-set", help="Fields to initialize as empty lists.")] = None,
         body: Annotated[str | None, Parameter(help="Markdown body for the card.")] = None,
         body_file: Annotated[Path | None, Parameter(name="body-file", help="Path to a file containing markdown body for the card.")] = None,
     ) -> None:
@@ -689,7 +689,6 @@ def generated_card_add_command(card_type: CardTypeSpec) -> Callable[..., None]:
                 card_id=card_id,
                 parent_id=parent,
                 assignments=set_ or [],
-                empty_set=empty_set,
                 body=resolve_card_body(card_id, body, body_file),
                 cwd=Path.cwd(),
             )
@@ -992,6 +991,7 @@ def main() -> None:
         CardPlacementError,
         CardFieldError,
         CliUsageError,
+        MalformedCardError,
         MalformedMemoryError,
         MemoryOperationError,
         VaultCommitError,

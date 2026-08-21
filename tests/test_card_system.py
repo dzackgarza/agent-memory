@@ -261,11 +261,26 @@ def test_shipped_plan_model_requires_success_criteria() -> None:
     missing = {key: value for key, value in base.items() if key != "successCriteria"}
     with pytest.raises(ValidationError):
         models["plan"].model_validate(missing)
-    missing_tasks = {key: value for key, value in base.items() if key != "tasks"}
-    with pytest.raises(ValidationError):
-        models["plan"].model_validate(missing_tasks)
-    with pytest.raises(ValidationError):
-        models["plan"].model_validate({**base, "tasks": []})
+
+
+def test_shipped_plan_model_accepts_a_plan_with_no_parent_and_no_tasks() -> None:
+    # The real shape of 122 existing cards: a workstream plan with no task cards, and no
+    # containment parent. Both fields must survive validation as empty lists rather than be
+    # demanded or dropped, so re-requiring either one goes red here.
+    models = load_card_models()
+    workstream = {
+        "id": "PLAN-WORKSTREAM",
+        "title": "Workstream with no task cards",
+        "status": "approved-and-unstarted",
+        "description": "Runs as prose, not as task cards.",
+        "successCriteria": ["The workstream reports out."],
+    }
+    dumped = models["plan"].model_validate(workstream).model_dump()
+    assert dumped["parents"] == []
+    assert dumped["tasks"] == []
+    assert dumped["title"] == workstream["title"]
+    assert models["plan"].model_validate({**workstream, "tasks": []}).model_dump()["tasks"] == []
+    assert models["plan"].model_validate({**workstream, "tasks": ["[[TASK-ONE]]"]}).model_dump()["tasks"] == ["[[TASK-ONE]]"]
 
 
 def test_shipped_task_model_enforces_complexity_range() -> None:

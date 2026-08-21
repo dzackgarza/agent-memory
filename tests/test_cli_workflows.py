@@ -24,12 +24,15 @@ import yaml
 from frontmatter import loads as load_frontmatter_text
 
 from agent_memory.cards import load_card_system_config
+from agent_memory.cards.storage import CardLookupError
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
 from agent_memory.models import MemoryType, ProjectConfig
 from agent_memory.operations import (
     BUNDLED_SKILL_NAMES,
     OKF_VERSION,
+    PROBE_PACKAGE,
+    QUEUE_CARD_TYPE,
     DependencyCheck,
     DependencyError,
     MemoryOperationError,
@@ -37,6 +40,7 @@ from agent_memory.operations import (
     VaultCommitError,
     basic_doctor,
     check_dependency,
+    is_scored_match,
     markdown_link_targets,
     merge_probe_payloads,
     outgoing_link_keys,
@@ -2170,12 +2174,12 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
             "issues": [],
         },
     ]
-    assert doctor["tools"] == ["git", "rg", "npx", "@probelabs/probe", "zk"]
+    assert doctor["tools"] == ["git", "rg", "bunx", "@probelabs/probe", "zk"]
     assert doctor["dependencies"] == [
         {"name": "git", "command": ["git", "--version"], "status": "ok"},
         {"name": "rg", "command": ["rg", "--version"], "status": "ok"},
-        {"name": "npx", "command": ["npx", "--version"], "status": "ok"},
-        {"name": "@probelabs/probe", "command": ["npx", "-y", "@probelabs/probe@latest", "--version"], "status": "ok"},
+        {"name": "bunx", "command": ["bunx", "--version"], "status": "ok"},
+        {"name": "@probelabs/probe", "command": ["bunx", "--silent", PROBE_PACKAGE, "--version"], "status": "ok"},
         {"name": "zk", "command": ["zk", "--version"], "status": "ok"},
     ]
 
@@ -3605,6 +3609,26 @@ def test_merge_probe_payloads_rejects_null_skipped_files() -> None:
         merge_probe_payloads([payload_null_skips], max_results=5, max_tokens=500)
 
 
+def test_is_scored_match_drops_the_phantom_and_keeps_zero_scored_excerpts() -> None:
+    # The captured specimen: this exact record appeared in some ranked runs and not others,
+    # over a byte-identical vault and an identical query, which is what made ranked output
+    # irreproducible. It scored zero and carried no excerpt, so it matched nothing a reader
+    # could see. The second case is what stops the filter from being a blunt `score > 0`:
+    # a zero-scored record that does carry an excerpt is real content and must survive.
+    phantom: JsonObject = {
+        "file": "/vault/projects/example/decisions/index.md",
+        "block_total_matches": 0,
+        "block_unique_terms": 0,
+        "bm25_score": None,
+        "code": "",
+        "score": 0.0,
+        "node_type": "list_item",
+        "matched_keywords": ["parser"],
+    }
+    assert is_scored_match(phantom) is False
+    assert is_scored_match({**phantom, "code": "- [Parser notes](parser-notes.md) - how the parser resolves keys"}) is True
+
+
 def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     add_cli_plan_tree(
@@ -4240,7 +4264,6 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     assert "status" in help_result.stdout
     assert "parents" in help_result.stdout
     assert "successCriteria" in help_result.stdout
-    assert "tasks" in help_result.stdout
     assert "needs-human-input" in help_result.stdout or "blocked" in help_result.stdout
 
     # Scenario 2: bad enum validation produces clean field-level error without traceback
@@ -4259,8 +4282,6 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         "successCriteria=Ships",
         "--set",
         "tasks=[[TASK-1]]",
-        "--empty-set",
-        "parents",
     )
     assert invalid_enum.returncode != 0
     assert "Validation failed" in invalid_enum.stderr
@@ -4275,8 +4296,6 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         "plan",
         "add",
         "PLAN-2",
-        "--empty-set",
-        "parents",
         "--set",
         "title=Plan 2",
         "--set",
@@ -4480,11 +4499,365 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     assert unsupported_mode in stderr3
     assert {"exact", "fuzzy", "ranked"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr3)))
 
-    # Scenario 4: list is a registered command and requires an explicit type
-    r4 = run_agent_memory_subprocess(workspace.repo, "list")
+    # Scenario 4: omitting --type lists every type, but a type no listing can hold is
+    # rejected by name. An unknown value must not read as "the vault has none of these".
+    every_type = parse_json_stdout(run_agent_memory_module(workspace.repo, "list"))
+    assert every_type["type"] is None
+    r4 = run_agent_memory_subprocess(workspace.repo, "list", "--type", "descision")
     stderr4 = assert_structured_cli_error(r4)
-    assert "--type" in stderr4
+    assert "descision" in stderr4
+    assert {"decision", "plan", "feature"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr4)))
     listed = parse_json_stdout(run_agent_memory_module(workspace.repo, "list", "--type", "plan", "--scope", "both"))
     assert listed["type"] == "plan"
     assert listed["scope"] == "both"
     assert json_array(listed["results"]) == []
+
+
+# --- record-model wave one (#99): regressions at the CLI boundary ----------------------
+
+
+def stored_card_parts(path: Path) -> tuple[str, str]:
+    # Raw split of a stored card, deliberately not routed through cards.storage.split_card:
+    # the frontmatter claim below is about the bytes on disk, so re-rendering them through
+    # the writer's own YAML dump would compare the writer against itself.
+    opening, delimiter, rest = path.read_text(encoding="utf-8").partition("---\n")
+    assert opening == "" and delimiter == "---\n", f"card {path} does not open with a frontmatter delimiter"
+    block, closing, body = rest.partition("---\n")
+    assert closing == "---\n", f"card {path} never closes its frontmatter block"
+    return block, body
+
+
+def project_card_path(workspace: CliWorkspace, *parts: str) -> Path:
+    return workspace.vault.joinpath("projects", workspace.project_id, "plans", *parts)
+
+
+def documented_card_prefixes(document: str) -> dict[str, str]:
+    # The card-type table the emitted skill document states as its command surface, read
+    # back as data so it can be compared against the schema the CLI itself advertises.
+    return dict(re.findall(r"^\| `([a-z-]+)` \| `([A-Z]+)-` \|", document, flags=re.MULTILINE))
+
+
+def test_card_update_replaces_the_body_and_leaves_frontmatter_byte_identical(tmp_path: Path) -> None:
+    # Revising a card's prose was delete-and-re-add or a hand edit of the vault file, because
+    # update reached frontmatter fields only. Byte identity is the load-bearing half: a body
+    # write that re-renders the frontmatter reorders or retypes fields nobody asked to change.
+    workspace = initialized_workspace(tmp_path)
+    run_agent_memory(
+        workspace.repo,
+        "feature",
+        "add",
+        "FEATURE-BODY",
+        "--set",
+        "title=Body rewrite",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "priority=high",
+        "--set",
+        "description=first draft",
+    )
+    card_path = project_card_path(workspace, "features", "FEATURE-BODY", "FEATURE-BODY.md")
+    frontmatter_before, body_before = stored_card_parts(card_path)
+    assert body_before == "# FEATURE-BODY\n"
+
+    replacement = "# Body rewrite\n\nThe second draft, written through the CLI.\n"
+    body_file = tmp_path / "replacement-body.md"
+    body_file.write_text(replacement, encoding="utf-8")
+    run_agent_memory(workspace.repo, "feature", "update", "FEATURE-BODY", "--body-file", str(body_file))
+
+    frontmatter_after, body_after = stored_card_parts(card_path)
+    assert body_after == replacement
+    assert frontmatter_after == frontmatter_before
+
+
+def test_show_card_owned_by_another_project_raises_a_typed_lookup_error(tmp_path: Path) -> None:
+    # One vault holds every project's cards, so an id from a sibling project is an ordinary
+    # miss a caller has to handle, not a broken invariant. It arrived as a bare assertion and
+    # a traceback; the recovery route is the caller's decision, so the failure must be typed.
+    vault = tmp_path / "vault"
+    run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
+    project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "cards-project-a")
+    project_b = initialized_git_repo_with_remote(tmp_path, "project-b", "cards-project-b")
+    run_agent_memory(project_a.path, "init", "project", "--vault", str(vault))
+    run_agent_memory(project_b.path, "init", "project", "--vault", str(vault))
+    add_cli_plan_tree(
+        CliWorkspace(repo=project_b.path, vault=vault, project_id=project_b.project_id),
+        feature_id="FEATURE-B-OWNED",
+        plan_id="PLAN-B-OWNED",
+        phase_id="PHASE-B-OWNED",
+        task_id="TASK-B-OWNED",
+        feature_title="Owned by B",
+        plan_title="Plan owned by B",
+        description_signal="cross-project-card-6d2e",
+    )
+    # Project A owns cards of its own, so the miss is "not this project's card" rather than
+    # "this project has no card tree yet"; both used to raise the same bare assertion.
+    run_agent_memory(project_a.path, "feature", "add", "FEATURE-A-OWNED", "--set", "title=Owned by A")
+
+    with pytest.raises(CardLookupError):
+        run_agent_memory(project_a.path, "plan", "show", "PLAN-B-OWNED")
+
+    # The id is real: the lookup failed over ownership, not over a card that exists nowhere.
+    assert parse_json_stdout(run_agent_memory(project_b.path, "plan", "show", "PLAN-B-OWNED"))["id"] == "PLAN-B-OWNED"
+
+
+def test_plan_add_parent_places_the_card_and_writes_the_parents_link(tmp_path: Path) -> None:
+    # --parent carried placement only, so the containment edge had to be restated as
+    # `--set parents`, and a caller who gave only --parent failed schema validation on the
+    # field the option already knew. One option, one meaning: location and link together.
+    workspace = initialized_workspace(tmp_path)
+    run_agent_memory(workspace.repo, "feature", "add", "FEATURE-PARENT", "--set", "title=Parent feature")
+    run_agent_memory(
+        workspace.repo,
+        "plan",
+        "add",
+        "PLAN-CHILD",
+        "--parent",
+        "FEATURE-PARENT",
+        "--set",
+        "title=Child plan",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "description=child of the parent feature",
+        "--set",
+        "successCriteria=the parents link is written",
+    )
+
+    plan_path = project_card_path(workspace, "features", "FEATURE-PARENT", "plans", "PLAN-CHILD", "PLAN-CHILD.md")
+    assert frontmatter(plan_path) == {
+        "id": "PLAN-CHILD",
+        "parents": ["[[FEATURE-PARENT]]"],
+        "title": "Child plan",
+        "status": "in-progress",
+        "description": "child of the parent feature",
+        "successCriteria": ["the parents link is written"],
+    }
+
+
+def test_root_card_tagged_with_its_own_id_validates_clean(tmp_path: Path) -> None:
+    # A tagged-ancestor type roots its own subtree, so at that root the tag its descendants
+    # inherit is the root's own id. Declaring it was reported as tags without a tagged
+    # ancestor, which made the rule unsatisfiable: the root could not carry the tag its
+    # children were required to carry.
+    workspace = initialized_workspace(tmp_path)
+    add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-SELFTAG",
+        plan_id="PLAN-INHERITS",
+        phase_id="PHASE-INHERITS",
+        task_id="TASK-INHERITS",
+        feature_title="Self tagged root",
+        plan_title="Inheriting plan",
+        description_signal="self-tag-signal-4b7d",
+    )
+    # The descendants already carry FEATURE-SELFTAG as their inherited ancestor tag; the root
+    # now declares the same tag it hands down.
+    run_agent_memory(workspace.repo, "feature", "update", "FEATURE-SELFTAG", "--set", "tags=FEATURE-SELFTAG")
+
+    clean = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
+    assert json_array(clean["problems"]) == []
+
+    # The rule still binds: a root carrying a tag that is not its own id has no tagged
+    # ancestor to justify it, so exactly that card is reported and the self-tagged root is not.
+    run_agent_memory(
+        workspace.repo,
+        "feature",
+        "add",
+        "FEATURE-FOREIGNTAG",
+        "--set",
+        "title=Foreign tag root",
+        "--set",
+        "tags=FEATURE-SELFTAG",
+    )
+    flagged = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
+    assert {(json_string(problem["kind"]), json_string(problem["card"])) for problem in json_records(flagged, "problems")} == {("tags-from-ancestry", "FEATURE-FOREIGNTAG")}
+
+
+def probe_result_scores(payload: JsonObject) -> dict[Path, JsonValue]:
+    # File -> relevance score. Scoring is what ranked mode does and the other two modes do
+    # not: exact returns line matches and fuzzy returns keys, neither of which ranks anything.
+    records = json_records(payload, "results")
+    assert all("bm25_score" in record for record in records), "ranked results carry a relevance score; this payload came from another search mode"
+    return {Path(json_string(record["file"])).resolve(): record["bm25_score"] for record in records}
+
+
+def test_search_content_without_mode_runs_the_ranked_search(tmp_path: Path) -> None:
+    # `search content` rejected a call that named no mode. Ranked is the mode a caller then
+    # retried with. Judged on one run rather than against a second ranked run: probe varies
+    # its excerpt window and its block set between identical calls, but a scored answer over
+    # the scoped corpus is something only the ranked mode ever produces.
+    workspace = initialized_workspace(tmp_path)
+    project_note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Default Mode Probe",
+        content="default-mode-token-7f31 ranked default evidence",
+    )
+    global_note = add_cli_memory(
+        workspace,
+        scope="global",
+        memory_type="advice",
+        title="Default Mode Global Probe",
+        content="default-mode-token-7f31 out-of-scope evidence",
+    )
+
+    defaulted = parse_json_stdout(run_agent_memory(workspace.repo, "search", "content", "--scope", "project", "default-mode-token-7f31"))
+
+    scored_files = probe_result_scores(defaulted)
+    assert Path(str(project_note["path"])).resolve() in scored_files
+    assert Path(str(global_note["path"])).resolve() not in scored_files
+
+
+def test_inspect_paths_without_kind_lists_every_path_class(tmp_path: Path) -> None:
+    # `inspect paths` rejected a call that named no path class. All is the class that answers
+    # "where does this vault keep things", so the defaulted answer must span roots, indexes,
+    # and notes rather than any single one of them.
+    workspace = initialized_workspace(tmp_path)
+    note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Default Kind Probe",
+        content="Path kind default evidence.",
+    )
+    note_key = project_memory_key(workspace, "decisions", "default-kind-probe")
+    assert note["key"] == note_key
+
+    defaulted = inspect_json(workspace, "paths", "--scope", "project", "--format", "json")
+
+    assert defaulted["kind"] == "all"
+    assert {
+        f"projects/{workspace.project_id}/index",
+        f"projects/{workspace.project_id}/decisions/index",
+        note_key,
+    } <= {json_string(json_object(record)["key"]) for record in json_array(defaulted["paths"])}
+
+
+INSPECT_FORMAT_OPTIONAL_INVOCATIONS: tuple[tuple[str, ...], ...] = (
+    ("overview", "--scope", "project"),
+    ("schema",),
+    ("paths", "--scope", "project", "--kind", "all"),
+    ("tree", "--scope", "project", "--depth", "1"),
+    ("outline", "{key}"),
+    ("stats", "--scope", "project", "--by", "type"),
+    ("recent", "--scope", "project", "--since", "2000-01-01T00:00:00Z"),
+    ("export", "--scope", "project", "--profile", "map"),
+)
+
+
+def test_inspect_commands_answer_without_the_format_option(tmp_path: Path) -> None:
+    # Each of these eight commands emits exactly one format and rejected the call that did
+    # not name it. The answer they give under an explicit --format is proved by the inspect
+    # tests above, so serving that same answer with the option omitted is the whole claim.
+    workspace = initialized_workspace(tmp_path)
+    note = add_cli_memory(
+        workspace,
+        scope="project",
+        memory_type="decision",
+        title="Format Default Probe",
+        content="Format default evidence.",
+    )
+    note_key = json_string(note["key"])
+
+    for invocation in INSPECT_FORMAT_OPTIONAL_INVOCATIONS:
+        arguments = tuple(argument.format(key=note_key) for argument in invocation)
+        explicit_format = "graph-json" if arguments[0] == "export" else "json"
+        assert inspect_json(workspace, *arguments) == inspect_json(workspace, *arguments, "--format", explicit_format), (
+            f"inspect {arguments[0]} answers differently with --format omitted"
+        )
+
+
+def test_list_rejects_a_type_that_no_schema_declares(tmp_path: Path) -> None:
+    # The other half of making --type optional: absence now means every type, so a name
+    # nothing declares can no longer be answered with an empty list and a zero exit, which
+    # read as "the vault holds none of these" for what was only a typo.
+    workspace = initialized_workspace(tmp_path)
+    run_agent_memory(workspace.repo, "feature", "add", "FEATURE-LISTED", "--set", "title=Listed feature")
+    add_cli_memory(workspace, scope="project", memory_type="decision", title="Listed Decision", content="A listed decision record.")
+
+    listed = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project"))
+    assert {json_string(record["path"]) for record in json_records(listed, "results")} == {str(project_card_path(workspace, "features", "FEATURE-LISTED", "FEATURE-LISTED.md"))}
+
+    # Absence is the valid way to ask for everything: the answer spans types, so a default
+    # implemented as one chosen type -- or as the literal "" or "all" -- fails here.
+    every_type = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--scope", "project"))
+    assert {json_string(record["type"]) for record in json_records(every_type, "results")} == {"feature", "decision"}
+
+    with pytest.raises(MemoryOperationError):
+        run_agent_memory(workspace.repo, "list", "--type", "feautre", "--scope", "project")
+
+
+def test_set_with_an_empty_value_clears_a_list_field(tmp_path: Path) -> None:
+    # The capability that replaced --empty-set, and the only way back from a populated list:
+    # repeating --set appends, so without this an unwanted entry could be removed only by
+    # deleting the card and adding it again. An appended "" is not a cleared list.
+    workspace = initialized_workspace(tmp_path)
+    run_agent_memory(
+        workspace.repo,
+        "feature",
+        "add",
+        "FEATURE-CLEARED",
+        "--set",
+        "title=Cleared tags",
+        "--set",
+        "tags=keep-me",
+        "--set",
+        "tags=drop-me",
+    )
+    card_path = project_card_path(workspace, "features", "FEATURE-CLEARED", "FEATURE-CLEARED.md")
+    assert frontmatter(card_path)["tags"] == ["keep-me", "drop-me"]
+
+    run_agent_memory(workspace.repo, "feature", "update", "FEATURE-CLEARED", "--set", "tags=")
+
+    assert frontmatter(card_path)["tags"] == []
+
+
+def test_papercut_files_and_triages_through_the_generated_card_lifecycle(tmp_path: Path) -> None:
+    # A papercut is filed mid-task with whatever the agent has, which is a title, and triaged
+    # later. It rides the generated card lifecycle every other type uses: no bespoke command,
+    # no bespoke storage, and the filed card leaves the vault valid at both steps.
+    workspace = initialized_workspace(tmp_path)
+    run_agent_memory(workspace.repo, "papercut", "add", "PC-STALE-SKILL", "--set", "title=maintain skill served a stale document")
+
+    papercut_path = project_card_path(workspace, "papercuts", "PC-STALE-SKILL.md")
+    assert frontmatter(papercut_path) == {"id": "PC-STALE-SKILL", "title": "maintain skill served a stale document"}
+    assert json_array(parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))["problems"]) == []
+
+    run_agent_memory(
+        workspace.repo,
+        "papercut",
+        "update",
+        "PC-STALE-SKILL",
+        "--set",
+        "status=in-progress",
+        "--set",
+        "category=stale-docs",
+    )
+
+    assert frontmatter(papercut_path) == {
+        "id": "PC-STALE-SKILL",
+        "title": "maintain skill served a stale document",
+        "status": "in-progress",
+        "category": "stale-docs",
+    }
+    assert json_array(parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))["problems"]) == []
+
+
+def test_maintain_skill_serves_the_agent_memory_document_from_outside_the_checkout(tmp_path: Path) -> None:
+    # The document is served through the package resource loader, so it is reachable only
+    # from inside the installed package; a repo-root copy resolved for no caller. The reader
+    # is an agent following it as the command surface, so it must describe this CLI's own
+    # card schema rather than merely be a document that exists.
+    workspace = initialized_workspace(tmp_path)
+    run_directory = unbound_dir(tmp_path)
+    assert not run_directory.is_relative_to(PROJECT_ROOT), "the served document must resolve without the source checkout on the path"
+
+    emitted = run_agent_memory(run_directory, "maintain", "skill", "agent-memory").stdout
+
+    assert load_frontmatter_text(emitted).metadata["name"] == "agent-memory"
+    schema_types = json_records(json_object(inspect_json(workspace, "schema", "--format", "json")["card_system"]), "types")
+    assert documented_card_prefixes(emitted) == {
+        json_string(card_type["name"]): json_string(card_type["id_prefix"]) for card_type in schema_types if card_type["name"] != QUEUE_CARD_TYPE
+    }

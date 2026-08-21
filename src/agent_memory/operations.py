@@ -181,6 +181,10 @@ QUEUE_CARD_ID_PREFIX = "QUEUE"
 QUEUE_DIRECTORY = "queue"
 # Tag that marks the stub `maintain move` leaves behind so a moved key still resolves.
 PROMOTION_POINTER_TAG = "promotion-pointer"
+# Ranked search runs on Probe, so Probe is a scoring engine, not just a CLI surface. Pinned
+# because an unpinned `@latest` re-resolves per invocation: the ranking could change between
+# two searches in one session with nothing in the vault having moved.
+PROBE_PACKAGE = "@probelabs/probe@0.6.0-rc331"
 
 
 def index_descriptions(scope: MemoryScope) -> dict[str, str]:
@@ -210,14 +214,14 @@ BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
         "run `just setup` from the agent-memory checkout; manual install: run `cargo install ripgrep`.",
     ),
     DependencyCheck(
-        "npx",
-        ("npx", "--version"),
-        "run `just setup` from the agent-memory checkout; manual install: install Node.js with npm/npx.",
+        "bunx",
+        ("bunx", "--version"),
+        "run `just setup` from the agent-memory checkout; manual install: install bun from https://bun.sh.",
     ),
     DependencyCheck(
         "@probelabs/probe",
-        ("npx", "-y", "@probelabs/probe@latest", "--version"),
-        "run `just setup` from the agent-memory checkout; manual install: run `npx -y @probelabs/probe@latest --version`.",
+        ("bunx", "--silent", PROBE_PACKAGE, "--version"),
+        f"run `just setup` from the agent-memory checkout; manual install: run `bunx --silent {PROBE_PACKAGE} --version`.",
     ),
     DependencyCheck(
         "zk",
@@ -1257,10 +1261,13 @@ def list_cards_with_unmigrated(card_type: str | None, scope: SearchScope, cwd: P
     return _list_cards(card_type, scope, CardListingSource.MANAGED_AND_UNMIGRATED, cwd)
 
 
-def listable_types(config: ProjectConfig) -> tuple[str, ...]:
+def listable_types(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
     # Everything a listing can hold: schema-backed card types plus the memory types that
-    # unmigrated records still carry in their frontmatter.
-    cards_config, _models = load_card_system(config)
+    # unmigrated records still carry in their frontmatter. A global-scope listing reads the
+    # vault schema only -- it never touches the project, so a malformed project schema must
+    # not decide which types it will accept.
+    project_id = None if scope is SearchScope.GLOBAL else config.project_id
+    cards_config = load_card_system_config(config.vault, project_id)
     names = {card_type.name for card_type in cards_config.card_types} | {memory_type.value for memory_type in MemoryType}
     return tuple(sorted(names))
 
@@ -1270,7 +1277,7 @@ def _list_cards(card_type: str | None, scope: SearchScope, listing_source: CardL
     # No --type lists every type, so absence is valid. A supplied name that no type uses is
     # not: silently returning an empty list turns a typo into "the vault has none of these".
     if card_type is not None:
-        known = listable_types(config)
+        known = listable_types(config, scope)
         if card_type not in known:
             raise MemoryOperationError(f"unknown type {card_type!r}; listable types: {', '.join(known)}. Omit --type to list every type.")
     records: list[CardListing] = [*managed_card_listings(config, scope)]
@@ -1315,30 +1322,32 @@ def search_content_ranked(scope: SearchScope, query: str, cwd: Path) -> JsonObje
         max_results=starter.search_max_results,
         max_tokens=starter.search_max_tokens,
     )
-    return with_unexcerpted_matches(config, merged, starter.search_max_results)
+    return ranked_results_payload(config, merged, starter.search_max_results)
 
 
-def with_unexcerpted_matches(config: ProjectConfig, payload: JsonObject, limit: int) -> JsonObject:
+def ranked_results_payload(config: ProjectConfig, payload: JsonObject, limit: int) -> JsonObject:
+    # Three corrections to what Probe hands back, all on the default search path.
+    #
     # Probe reports files it matched but could not excerpt in `skipped_files`, outside
-    # `results`. Those are matches, and they are the *strongest* ones: block extraction
-    # gives up on exactly the large records that mention a topic most. Leaving them in a
-    # sidecar array is how a search returns ten weaker hits while an agent concludes the
-    # vault has nothing on the topic. Rank them by match count and add them to `results`
-    # with a null excerpt, on top of the excerpted results rather than in place of them.
+    # `results`. Those are matches, and the strongest ones: block extraction gives up on
+    # exactly the large records that mention a topic most. Left in a sidecar array, a search
+    # returns ten weaker hits while an agent concludes the vault has nothing on the topic.
+    #
+    # Probe records name a file and no vault key, unlike every sibling search command, so
+    # `.results[].key` came back null for callers who read it the way the siblings taught.
+    #
+    # A record that scored zero with no excerpt is not a match, and Probe emits it
+    # inconsistently between identical runs. Dropping it makes ranked output reproducible.
+    excerpted = [record for record in probe_results(payload) if is_scored_match(record)]
     skipped = sorted(probe_skipped_files(payload), key=lambda record: json_int(record, "all"), reverse=True)
-    unexcerpted: list[JsonValue] = [
-        {
-            "key": memory_key(config.vault, Path(json_string(record, "file"))),
-            "file": record["file"],
-            "lines": None,
-            "code": None,
-            "match_count": record["all"],
-        }
-        for record in skipped[:limit]
-    ]
-    results = [*probe_results(payload), *unexcerpted]
+    unexcerpted: list[JsonObject] = [{"file": record["file"], "lines": None, "code": None, "match_count": record["all"]} for record in skipped[:limit]]
+    results: list[JsonValue] = [{**record, "key": memory_key(config.vault, Path(json_string(record, "file")))} for record in (*excerpted, *unexcerpted)]
     summary = json_child(payload, "summary")
     return {**payload, "results": json_list(results), "summary": {**summary, "count": len(results)}}
+
+
+def is_scored_match(record: JsonObject) -> bool:
+    return probe_score(record) > 0 or bool(record.get("code"))
 
 
 def json_string(payload: JsonObject, key: str) -> str:
@@ -1409,9 +1418,11 @@ def probe_search_root(
 ) -> JsonObject:
     result = run_checked(
         [
-            "npx",
-            "-y",
-            "@probelabs/probe@latest",
+            "bunx",
+            # Without --silent, a cold cache writes install progress into the stdout this
+            # function parses as JSON, so the first search after a fresh install fails.
+            "--silent",
+            PROBE_PACKAGE,
             "search",
             query,
             str(root),
@@ -4286,7 +4297,6 @@ def parse_card_fields(
     cards_config: CardSystemConfig,
     type_name: str,
     assignments: Sequence[str],
-    empty_set: Sequence[str] | None = None,
 ) -> dict[str, object]:
     spec = next((card_type for card_type in cards_config.card_types if card_type.name == type_name), None)
     if spec is None:
@@ -4315,13 +4325,6 @@ def parse_card_fields(
                 if field_type not in ("int", "number"):
                     raise
                 raise CardFieldError(f"field {key} expects {field_type} value, got {value}") from e
-
-    if empty_set is not None:
-        for key in empty_set:
-            if key not in field_types:
-                raise CardFieldError(f"unknown field {key} for card type {type_name}")
-            fields[key] = []
-
     return fields
 
 
@@ -4346,13 +4349,12 @@ def add_card(
     assignments: Sequence[str],
     body: str,
     cwd: Path,
-    empty_set: Sequence[str] | None = None,
 ) -> JsonObject:
     if type_name == QUEUE_CARD_TYPE:
         raise MemoryOperationError("queue-item cards are global queue records; use `agent-memory queue add`")
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
-    fields = parse_card_fields(cards_config, type_name, assignments, empty_set=empty_set)
+    fields = parse_card_fields(cards_config, type_name, assignments)
     path = create_card(
         project_plans_root(config, cards_config),
         cards_config,

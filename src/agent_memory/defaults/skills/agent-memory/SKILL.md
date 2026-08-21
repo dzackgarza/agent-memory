@@ -110,7 +110,7 @@ subcommands.
 
 | Command | Required | Optional (default) |
 | --- | --- | --- |
-| `<type> add ID` | `ID` | `--parent`, `--set`, `--empty-set`, `--body`, `--body-file` |
+| `<type> add ID` | `ID` | `--parent`, `--set`, `--body`, `--body-file` |
 | `<type> update ID` | `ID` | `--set`, `--body`, `--body-file` |
 | `<type> show ID` | `ID` | — |
 | `<type> delete ID` | `ID` | — |
@@ -121,6 +121,9 @@ subcommands.
 | `card validate` | — | — |
 | `card dag` | — | — |
 | `plan progress` | — | `--scope` (both) |
+
+`--set` repeats to append to a list field; `--set FIELD=` empties one. There is no
+separate option for either.
 
 The generated groups come from the active vault card schema. The packaged default schema
 provides `feature`, `plan`, `phase`, `task`, `spec`, `decision`, and `papercut`. The
@@ -152,8 +155,10 @@ Optional fields on a `papercut`: `status`, `category` (`tool-failure`, `broken-e
 `workflow-friction`, `other`), `scope`, `agent`, `timestamp`, `description`,
 `resolution`. File one the moment a tool wastes your time; only `title` is required.
 
-`--set` takes `key=value` and repeats for list fields. `--empty-set FIELD` initializes a
-list field as empty. `--body` takes Markdown inline; `--body-file` takes a path.
+`--set` takes `key=value` and repeats for list fields. `--set FIELD=` with nothing after
+the `=` empties a list field, on `add` and on `update` alike; it is the only way to clear
+one, since repeating `--set` only ever appends. `--body` takes Markdown inline;
+`--body-file` takes a path.
 
 `--parent` places the card and writes the `parents` link. Pass `--set parents=` instead
 when a card needs several parents: `parents` is a wikilink list, and an explicit `--set`
@@ -319,8 +324,8 @@ agent-memory plan update PLAN-ID --body-file /tmp/card-body.md
 
 ## Traps
 
-- `list --type` is an unvalidated filter string. A misspelled type returns
-  `"results": []`, not an error.
+- `list` with no `--type` lists every type. A `--type` naming no type in the schema is an
+  error, not an empty result, so a misspelling never reads as "the vault holds none".
 - `--scope` defaults to `both` on `search` and `list`, but is required on `inspect`
   commands and `maintain normalize`.
 - A card id must carry its type's prefix. `plan add PLAN-X` succeeds; `plan add X` fails.
