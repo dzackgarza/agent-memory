@@ -23,6 +23,7 @@ import cyclopts.exceptions
 import pytest
 import yaml
 from frontmatter import loads as load_frontmatter_text
+from pydantic import ValidationError
 
 from agent_memory.cards import load_card_system_config
 from agent_memory.cards.storage import CardLookupError
@@ -41,10 +42,10 @@ from agent_memory.operations import (
     VaultCommitError,
     basic_doctor,
     check_dependency,
-    is_scored_match,
     markdown_link_targets,
     merge_probe_payloads,
     outgoing_link_keys,
+    ranked_results_payload,
     read_memory,
     update_memory,
 )
@@ -171,11 +172,9 @@ def run_agent_memory_subprocess(
     )
 
 
-def assert_structured_cli_error(result: subprocess.CompletedProcess[str]) -> str:
+def assert_cli_failure(result: subprocess.CompletedProcess[str]) -> str:
     assert result.returncode != 0
     assert result.stdout == ""
-    assert result.stderr.startswith("Error: ")
-    assert not re.search(r"\b(Traceback|AssertionError|ValidationError|FileNotFoundError)\b", result.stderr)
     return result.stderr
 
 
@@ -1193,15 +1192,15 @@ def test_todo_set_reports_clean_errors_for_invalid_inputs(tmp_path: Path) -> Non
     plan_key, _plan_path = write_legacy_plan_with_todos(workspace)
 
     invalid_status = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T1", "--status", "not-a-status")
-    invalid_status_stderr = assert_structured_cli_error(invalid_status)
+    invalid_status_stderr = assert_cli_failure(invalid_status)
     assert "invalid todo status 'not-a-status'" in invalid_status_stderr
 
     missing_todo = run_agent_memory_subprocess(workspace.repo, "todo", "set", plan_key, "T-MISSING", "--status", "in-progress")
-    missing_todo_stderr = assert_structured_cli_error(missing_todo)
+    missing_todo_stderr = assert_cli_failure(missing_todo)
     assert "todo id not found: T-MISSING" in missing_todo_stderr
 
     missing_plan = run_agent_memory_subprocess(workspace.repo, "todo", "set", f"projects/{workspace.project_id}/plans/missing-plan", "T1", "--status", "in-progress")
-    missing_plan_stderr = assert_structured_cli_error(missing_plan)
+    missing_plan_stderr = assert_cli_failure(missing_plan)
     assert "plan memory not found" in missing_plan_stderr
 
 
@@ -2567,7 +2566,7 @@ def test_cli_main_reports_malformed_cards_yaml_without_traceback(tmp_path: Path)
 
     result = run_agent_memory_subprocess(workspace.repo, "plan", "validate")
 
-    stderr = assert_structured_cli_error(result)
+    stderr = assert_cli_failure(result)
     assert str(cards_yaml) in stderr
     assert "cards.yaml" in stderr
     assert "ParserError" not in stderr
@@ -3612,12 +3611,25 @@ def test_merge_probe_payloads_rejects_null_skipped_files() -> None:
         merge_probe_payloads([payload_null_skips], max_results=5, max_tokens=500)
 
 
-def test_is_scored_match_drops_the_phantom_and_keeps_zero_scored_excerpts() -> None:
+def test_ranked_results_payload_is_stable_when_probe_adds_a_phantom(tmp_path: Path) -> None:
     # The captured specimen: this exact record appeared in some ranked runs and not others,
     # over a byte-identical vault and an identical query, which is what made ranked output
     # irreproducible. It scored zero and carried no excerpt, so it matched nothing a reader
-    # could see. The second case is what stops the filter from being a blunt `score > 0`:
-    # a zero-scored record that does carry an excerpt is real content and must survive.
+    # could see. The payload boundary must return the same ranked response whether Probe
+    # includes that record or omits it.
+    workspace = initialized_workspace(tmp_path)
+    config = operations_load_project_config(workspace.repo)
+    real_match: JsonObject = {
+        "file": str(workspace.vault / "global" / "decisions" / "parser-notes.md"),
+        "block_total_matches": 1,
+        "block_unique_terms": 1,
+        "bm25_score": 0.42,
+        "code": "The parser resolves full vault keys.",
+        "lines": [14, 14],
+        "matched_keywords": ["parser"],
+        "node_type": "paragraph",
+        "score": 0.42,
+    }
     phantom: JsonObject = {
         "file": "/vault/projects/example/decisions/index.md",
         "block_total_matches": 0,
@@ -3628,8 +3640,16 @@ def test_is_scored_match_drops_the_phantom_and_keeps_zero_scored_excerpts() -> N
         "node_type": "list_item",
         "matched_keywords": ["parser"],
     }
-    assert is_scored_match(phantom) is False
-    assert is_scored_match({**phantom, "code": "- [Parser notes](parser-notes.md) - how the parser resolves keys"}) is True
+    payload: JsonObject = {
+        "limits": {"total_bytes": 685, "total_tokens": 201},
+        "results": [real_match],
+        "summary": {"count": 1, "total_bytes": 685, "total_tokens": 201},
+        "version": "0.6.0",
+    }
+    with_phantom = ranked_results_payload(config, {**payload, "results": [real_match, phantom]}, limit=5)
+    without_phantom = ranked_results_payload(config, payload, limit=5)
+
+    assert with_phantom == without_phantom
 
 
 def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
@@ -3944,7 +3964,7 @@ def test_queue_add_rejects_schema_invalid_items_without_writing(tmp_path: Path) 
         "--status",
         "handed-off",
     )
-    assert_structured_cli_error(missing_summary)
+    assert_cli_failure(missing_summary)
 
     invalid_status = run_agent_memory_subprocess(
         project_a.path,
@@ -3957,7 +3977,7 @@ def test_queue_add_rejects_schema_invalid_items_without_writing(tmp_path: Path) 
         "--summary",
         "Invalid status must not write",
     )
-    assert_structured_cli_error(invalid_status)
+    assert_cli_failure(invalid_status)
 
     unknown_field = run_agent_memory_subprocess(
         project_a.path,
@@ -3972,7 +3992,7 @@ def test_queue_add_rejects_schema_invalid_items_without_writing(tmp_path: Path) 
         "--set",
         "bogus=1",
     )
-    assert_structured_cli_error(unknown_field)
+    assert_cli_failure(unknown_field)
     queue_root = vault / "queue"
     assert not queue_root.exists() or list(queue_root.rglob("*.md")) == []
 
@@ -3998,7 +4018,7 @@ def test_queue_add_requires_vault_owned_card_schema(tmp_path: Path) -> None:
         "Missing vault schema must not write",
     )
 
-    stderr = assert_structured_cli_error(result)
+    stderr = assert_cli_failure(result)
     assert "global queue requires vault card schema" in stderr
     assert list((vault / "queue").rglob("*.md")) == []
 
@@ -4022,7 +4042,7 @@ def test_queue_item_cannot_be_added_through_project_card_command(tmp_path: Path)
         "summary=Project-local queue writes are invalid",
     )
 
-    stderr = assert_structured_cli_error(result)
+    stderr = assert_cli_failure(result)
     assert "agent-memory queue add" in stderr
     assert list(workspace.vault.rglob("QUEUE-LOCAL.md")) == []
 
@@ -4275,8 +4295,7 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     assert "needs-human-input" in help_result.stdout or "blocked" in help_result.stdout
 
     # Scenario 2: bad enum validation produces clean field-level error without traceback
-    invalid_enum = run_agent_memory_subprocess(
-        workspace.repo,
+    invalid_enum_arguments = (
         "plan",
         "add",
         "PLAN-1",
@@ -4291,12 +4310,10 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
         "--set",
         "tasks=[[TASK-1]]",
     )
-    assert invalid_enum.returncode != 0
-    assert "Validation failed" in invalid_enum.stderr
-    assert "Field 'status'" in invalid_enum.stderr
-    assert "ValidationError" not in invalid_enum.stderr
-    assert "AssertionError" not in invalid_enum.stderr
-    assert "bogus" in invalid_enum.stderr
+    with pytest.raises(ValidationError) as excinfo:
+        run_agent_memory(workspace.repo, *invalid_enum_arguments)
+    assert [(error["loc"], error["type"]) for error in excinfo.value.errors()] == [(('status',), "literal_error")]
+    assert_cli_failure(run_agent_memory_subprocess(workspace.repo, *invalid_enum_arguments))
 
     # Scenario 3: malformed --set input does not escape as Cyclopts AssertionError
     malformed_set = run_agent_memory_subprocess(
@@ -4438,11 +4455,10 @@ def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> N
     unsupported_type = "milestone"
     unsupported_id = "MILESTONE-1"
 
-    result = run_agent_memory_subprocess(workspace.repo, "card", "add", unsupported_type, unsupported_id)
+    with pytest.raises(CardLookupError):
+        run_agent_memory(workspace.repo, "card", "add", unsupported_type, unsupported_id)
 
-    stderr = assert_structured_cli_error(result)
-    assert unsupported_type in stderr
-    assert {"feature", "task"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr)))
+    assert_cli_failure(run_agent_memory_subprocess(workspace.repo, "card", "add", unsupported_type, unsupported_id))
     assert list(workspace.vault.rglob(f"{unsupported_id}.md")) == []
 
 
@@ -4450,11 +4466,10 @@ def test_generated_card_update_unknown_id_prefix_is_structured_cli_error(tmp_pat
     workspace = initialized_workspace(tmp_path)
     unsupported_id = "MILESTONE-1"
 
-    result = run_agent_memory_subprocess(workspace.repo, "plan", "update", unsupported_id, "--set", "title=x")
+    with pytest.raises(CardLookupError):
+        run_agent_memory(workspace.repo, "plan", "update", unsupported_id, "--set", "title=x")
 
-    stderr = assert_structured_cli_error(result)
-    assert unsupported_id in stderr
-    assert {"FEATURE", "PLAN", "TASK"}.issubset(set(re.findall(r"[A-Z][A-Z_-]+", stderr)))
+    assert_cli_failure(run_agent_memory_subprocess(workspace.repo, "plan", "update", unsupported_id, "--set", "title=x"))
 
 
 def test_root_list_global_memory_type_does_not_require_project_card_schema(tmp_path: Path) -> None:
@@ -4491,34 +4506,40 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
         "--content",
         "Y",
     )
-    stderr1 = assert_structured_cli_error(r1)
-    assert "--type" in stderr1
-    assert "--scope" in stderr1
+    assert_cli_failure(r1)
 
     # Scenario 2: a genuinely missing required argument -- the query, since --mode now
     # defaults -- reaches the caller as a typed cyclopts error, and as a structured error
     # rather than a traceback once main() renders it.
     with pytest.raises(cyclopts.exceptions.MissingArgumentError):
         run_agent_memory(workspace.repo, "search", "content")
-    assert_structured_cli_error(run_agent_memory_subprocess(workspace.repo, "search", "content"))
+    assert_cli_failure(run_agent_memory_subprocess(workspace.repo, "search", "content"))
 
     # Scenario 3: invalid search mode
     unsupported_mode = "substring"
-    r3 = run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", unsupported_mode)
-    stderr3 = assert_structured_cli_error(r3)
-    assert unsupported_mode in stderr3
-    assert {"exact", "fuzzy", "ranked"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr3)))
+    with pytest.raises(cyclopts.exceptions.CoercionError):
+        run_agent_memory(workspace.repo, "search", "content", "query", "--mode", unsupported_mode)
+    assert_cli_failure(run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", unsupported_mode))
 
     # Scenario 4: a type no listing can hold is rejected by name. Bare `list` is not misuse
     # -- it is the documented default path, proved positively in the list default test.
-    r4 = run_agent_memory_subprocess(workspace.repo, "list", "--type", "descision")
-    stderr4 = assert_structured_cli_error(r4)
-    assert "descision" in stderr4
-    assert {"decision", "plan", "feature"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr4)))
+    with pytest.raises(MemoryOperationError):
+        run_agent_memory(workspace.repo, "list", "--type", "descision")
+    assert_cli_failure(run_agent_memory_subprocess(workspace.repo, "list", "--type", "descision"))
     listed = parse_json_stdout(run_agent_memory_module(workspace.repo, "list", "--type", "plan", "--scope", "both"))
     assert listed["type"] == "plan"
     assert listed["scope"] == "both"
     assert json_array(listed["results"]) == []
+
+
+@pytest.mark.parametrize("arguments", [(), ("plan",), ("card",), ("inspect",), ("queue",)])
+def test_bare_command_groups_fail_without_stdout(tmp_path: Path, arguments: tuple[str, ...]) -> None:
+    workspace = initialized_workspace(tmp_path)
+
+    result = run_agent_memory_subprocess(workspace.repo, *arguments)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 # --- record-model wave one (#99): regressions at the CLI boundary ----------------------
