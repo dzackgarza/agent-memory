@@ -4723,11 +4723,7 @@ def write_card_dag(visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
     cards_config, models = load_card_system(config)
     scan, closure, plans_root = card_scan_for_project(config, cards_config, models)
     closure_records = {card_id: scan.records[card_id] for card_id in sorted(closure) if card_id in scan.records}
-    records = {
-        card_id: record
-        for card_id, record in closure_records.items()
-        if archived_record_is_visible(card_record_is_archived(record), visibility)
-    }
+    records = {card_id: record for card_id, record in closure_records.items() if archived_record_is_visible(card_record_is_archived(record), visibility)}
     findings = [card_load_finding_json(config, finding) for finding in scan.findings if finding.path.is_relative_to(plans_root) or finding.path.stem in closure]
     plans_root.mkdir(parents=True, exist_ok=True)
     path = plans_root / plan_dag_filename(visibility)
