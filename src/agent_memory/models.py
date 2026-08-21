@@ -26,6 +26,21 @@ class ArchiveVisibility(StrEnum):
     ALL = "all"
 
 
+class CardListingSource(StrEnum):
+    MANAGED = "managed"
+    MANAGED_AND_UNMIGRATED = "managed-and-unmigrated"
+
+
+class DeleteBacklinkMode(StrEnum):
+    BLOCK = "block"
+    ORPHAN = "orphan"
+
+
+class InspectLinksMode(StrEnum):
+    RECORD = "record"
+    BROKEN = "broken"
+
+
 class ContentSearchMode(StrEnum):
     EXACT = "exact"
     FUZZY = "fuzzy"

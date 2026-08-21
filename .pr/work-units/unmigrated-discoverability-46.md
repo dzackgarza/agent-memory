@@ -5,7 +5,7 @@ An onboarding agent can see progress already recorded in a managed plan's todo t
 ## Scope
 
 - Included: the remaining #46 plan-progress surface over existing `type: plan` todo metadata.
-- Already delivered on `main`: doctor warning for unmigrated plan/card records and `list --type --scope --unmigrated` (#59).
+- Already delivered on `main`: doctor warning for unmigrated plan/card records and `list --type --scope --source managed-and-unmigrated` (#59).
 - Excluded: archive/retire semantics (#47), todo mutation (#62), card-hierarchy progress inference, and global queue implementation (#39).
 - Preserved behavior: structured `PLAN-*` cards remain separate from plan-memory todo trees.
 

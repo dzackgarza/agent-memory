@@ -37,6 +37,7 @@ from agent_memory.cards.validation import CardLoadFinding, CardRecord, CardScan,
 from agent_memory.models import (
     ArchiveVisibility,
     BaseNoteMetadata,
+    CardListingSource,
     GlobalNoteMetadata,
     InspectExportFormat,
     InspectExportProfile,
@@ -91,11 +92,6 @@ class DeleteBacklinksRepointed:
 
 
 type DeleteBacklinkDisposition = DeleteBacklinksBlocked | DeleteBacklinksOrphaned | DeleteBacklinksRepointed
-
-
-class CardListingSource(Enum):
-    MANAGED = "managed"
-    MANAGED_AND_UNMIGRATED = "managed_and_unmigrated"
 
 
 class SyncCommitState(Enum):
@@ -258,9 +254,9 @@ class ProjectNotInitializedError(RuntimeError):
     # setup mutation. Name it first: the setup instructions below are the slower remedy.
     READ_ROUTE = "Rerun with `--scope global` to read the global vault from an unbound directory."
 
-    def __init__(self, default_vault: Path, *, read_route: bool = False) -> None:
+    def __init__(self, default_vault: Path, *, route: SearchScope = SearchScope.BOTH) -> None:
         guidance = self.GUIDANCE.format(default_vault=default_vault)
-        super().__init__(f"{self.READ_ROUTE} {guidance}" if read_route else guidance)
+        super().__init__(f"{self.READ_ROUTE} {guidance}" if route is SearchScope.PROJECT else guidance)
 
 
 class GlobalVaultNotInitializedError(RuntimeError):
@@ -1012,7 +1008,7 @@ def raw_memory_body(path: Path) -> str:
 
 
 def delete_backlink_disposition_error(key: str, inbound_keys: Sequence[str]) -> str:
-    return f"delete would orphan inbound wikilinks for {key}; inbound={', '.join(inbound_keys)}; rerun with --repoint <key-or-url> or --orphan-ok"
+    return f"delete would orphan inbound wikilinks for {key}; inbound={', '.join(inbound_keys)}; rerun with --repoint <key-or-url> or --backlinks orphan"
 
 
 def delete_memory(key: str, cwd: Path) -> JsonObject:
@@ -1273,7 +1269,8 @@ def select_search_records(config: ProjectConfig, records: Sequence[JsonObject], 
         path = search_record_path(record)
         fields = card_listing_fields_for_path(config, path)
         archived = fields is not None and fields[3]
-        if archived_record_is_visible(archived, visibility):
+        record_visibility = ArchiveVisibility.ARCHIVED if archived else ArchiveVisibility.ACTIVE
+        if archive_visibility_is_included(record_visibility, visibility):
             selected.append(record)
         if fields is not None and fields[3] and visibility is ArchiveVisibility.ACTIVE:
             title, card_type, _scope, _archived = fields
@@ -1342,7 +1339,11 @@ def _list_cards(card_type: str | None, scope: SearchScope, visibility: ArchiveVi
     if listing_source is CardListingSource.MANAGED_AND_UNMIGRATED:
         records.extend(unmigrated_card_listings(config, scope))
     typed = [record for record in records if card_type is None or record.card_type == card_type]
-    filtered = [record for record in typed if archived_record_is_visible(record.archived, visibility)]
+    filtered = [
+        record
+        for record in typed
+        if archive_visibility_is_included(ArchiveVisibility.ARCHIVED if record.archived else ArchiveVisibility.ACTIVE, visibility)
+    ]
     archived_matches = [record for record in typed if record.archived] if visibility is ArchiveVisibility.ACTIVE else []
     filtered.sort(
         key=lambda record: (
@@ -2888,7 +2889,7 @@ def resolve_search_scope(scope: SearchScope, cwd: Path) -> tuple[ProjectConfig, 
     if config is not None:
         return config, scope
     if scope is SearchScope.PROJECT:
-        raise ProjectNotInitializedError(global_vault_path(), read_route=True)
+        raise ProjectNotInitializedError(global_vault_path(), route=SearchScope.PROJECT)
     global_config = global_only_config()
     return global_config, available_search_scope(global_config, scope)
 
@@ -3127,10 +3128,10 @@ def card_record_is_archived(record: CardRecord) -> bool:
     return value
 
 
-def archived_record_is_visible(archived: bool, visibility: ArchiveVisibility) -> bool:
+def archive_visibility_is_included(record_visibility: ArchiveVisibility, visibility: ArchiveVisibility) -> bool:
     if visibility is ArchiveVisibility.ALL:
         return True
-    return archived is (visibility is ArchiveVisibility.ARCHIVED)
+    return record_visibility is visibility
 
 
 def card_listing_fields_for_path(config: ProjectConfig, path: Path) -> tuple[str, str, MemoryScope, bool] | None:
@@ -3699,7 +3700,7 @@ def inspect_broken_links(
     output_format: InspectOutputFormat,
     cwd: Path,
 ) -> JsonObject:
-    assert output_format is InspectOutputFormat.JSON, "inspect links --broken currently emits JSON"
+    assert output_format is InspectOutputFormat.JSON, "broken-link inspection currently emits JSON"
     config, scope = resolve_search_scope(scope, cwd)
     records = broken_wikilink_records(config, scope)
     return {
@@ -4723,7 +4724,14 @@ def write_card_dag(visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
     cards_config, models = load_card_system(config)
     scan, closure, plans_root = card_scan_for_project(config, cards_config, models)
     closure_records = {card_id: scan.records[card_id] for card_id in sorted(closure) if card_id in scan.records}
-    records = {card_id: record for card_id, record in closure_records.items() if archived_record_is_visible(card_record_is_archived(record), visibility)}
+    records = {
+        card_id: record
+        for card_id, record in closure_records.items()
+        if archive_visibility_is_included(
+            ArchiveVisibility.ARCHIVED if card_record_is_archived(record) else ArchiveVisibility.ACTIVE,
+            visibility,
+        )
+    }
     findings = [card_load_finding_json(config, finding) for finding in scan.findings if finding.path.is_relative_to(plans_root) or finding.path.stem in closure]
     plans_root.mkdir(parents=True, exist_ok=True)
     path = plans_root / plan_dag_filename(visibility)

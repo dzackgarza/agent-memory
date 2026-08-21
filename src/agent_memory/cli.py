@@ -17,10 +17,13 @@ from agent_memory.cards.loader import CardConfigError
 from agent_memory.cards.storage import CardLookupError, CardPlacementError, MalformedCardError
 from agent_memory.models import (
     ArchiveVisibility,
+    CardListingSource,
     ContentSearchMode,
+    DeleteBacklinkMode,
     InspectExportFormat,
     InspectExportProfile,
     InspectLinkDirection,
+    InspectLinksMode,
     InspectOutputFormat,
     InspectPathKind,
     InspectStatsGroup,
@@ -225,21 +228,15 @@ def delete_command(
         str | None,
         Parameter(help="Rewrite inbound wikilinks to this key or external URL before deleting."),
     ] = None,
-    orphan_ok: Annotated[
-        bool,
-        Parameter(
-            name="orphan-ok",
-            help="Allow deletion while leaving inbound wikilinks pointing at the deleted key.",
-        ),
-    ] = False,
+    backlinks: Annotated[DeleteBacklinkMode, Parameter(help="Inbound-link handling: block or orphan.")] = DeleteBacklinkMode.BLOCK,
 ) -> None:
     """Delete a memory and clean its index entry."""
-    if repoint is not None and orphan_ok:
-        raise MemoryOperationError("delete accepts --repoint or --orphan-ok, not both")
+    if repoint is not None and backlinks is DeleteBacklinkMode.ORPHAN:
+        raise MemoryOperationError("delete accepts --repoint or --backlinks orphan, not both")
     if repoint is not None:
         emit(delete_memory_repointing_backlinks(key=key, repoint=repoint, cwd=Path.cwd()))
         return
-    if orphan_ok:
+    if backlinks is DeleteBacklinkMode.ORPHAN:
         emit(delete_memory_orphaning_backlinks(key=key, cwd=Path.cwd()))
         return
     emit(delete_memory(key=key, cwd=Path.cwd()))
@@ -412,10 +409,10 @@ def inspect_tree_command(
 
 
 def inspect_links_command(
-    key: Annotated[str | None, Parameter(help="Memory key to inspect. Omit only with --broken.")] = None,
+    key: Annotated[str | None, Parameter(help="Memory key to inspect. Omit only in broken mode.")] = None,
     *,
-    broken: Annotated[bool, Parameter(help="Report broken wikilinks across the selected scope.")] = False,
-    scope: Annotated[SearchScope, Parameter(help="Scope for --broken: project, global, or both.")] = SearchScope.BOTH,
+    mode: Annotated[InspectLinksMode, Parameter(help="Inspection mode: record or broken.")] = InspectLinksMode.RECORD,
+    scope: Annotated[SearchScope, Parameter(help="Scope for broken mode: project, global, or both.")] = SearchScope.BOTH,
     direction: Annotated[
         InspectLinkDirection,
         Parameter(help="Link direction: children, parents, or both."),
@@ -424,15 +421,15 @@ def inspect_links_command(
     output_format: Annotated[InspectOutputFormat, Parameter(name="format", help="Output format: json.")] = InspectOutputFormat.JSON,
 ) -> int | None:
     """Show graph neighbors for a memory key."""
-    if broken:
+    if mode is InspectLinksMode.BROKEN:
         if key is not None:
-            raise CliUsageError(f"inspect links --broken reports the whole scope and takes no key; drop {key!r}, or drop --broken to inspect that one record")
+            raise CliUsageError(f"inspect links --mode broken takes no key; drop {key!r}, or use --mode record")
         # Broken links are findings, not a command failure: exiting nonzero while printing
         # a valid report leaves a caller unable to tell "found some" from "the command broke".
         emit(inspect_broken_links(scope=scope, output_format=output_format, cwd=Path.cwd()))
         return None
     if key is None:
-        raise CliUsageError("inspect links needs a memory key, or --broken to report broken links across the scope")
+        raise CliUsageError("inspect links needs a memory key, or --mode broken")
     emit(
         inspect_links(
             key=key,
@@ -575,11 +572,11 @@ def list_command(
         Parameter(name="type", help="Card or memory type to list, e.g. plan, decision, feature, task. Omit to list every type."),
     ] = None,
     scope: Annotated[SearchScope, Parameter(help="Scope to list: project, global, or both.")] = SearchScope.BOTH,
-    unmigrated: Annotated[bool, Parameter(help="Include records stranded outside managed global/project folders.")] = False,
+    source: Annotated[CardListingSource, Parameter(help="Record source: managed or managed-and-unmigrated.")] = CardListingSource.MANAGED,
     visibility: Annotated[ArchiveVisibility, Parameter(help="Card visibility: active, archived, or all.")] = ArchiveVisibility.ACTIVE,
 ) -> None:
     """List managed cards/memories and optionally stranded harness-local records."""
-    if unmigrated:
+    if source is CardListingSource.MANAGED_AND_UNMIGRATED:
         emit(list_cards_with_unmigrated(card_type=type_, scope=scope, visibility=visibility, cwd=Path.cwd()))
         return
     emit(list_cards(card_type=type_, scope=scope, visibility=visibility, cwd=Path.cwd()))

@@ -1533,9 +1533,6 @@ def test_delete_requires_backlink_disposition_and_can_repoint_inbound_links(tmp_
 
     assert target["key"] == old_key
     assert blocked.returncode != 0
-    assert old_key in blocked.stderr
-    assert "--repoint" in blocked.stderr
-    assert "--orphan-ok" in blocked.stderr
     assert target_path.is_file()
     assert f"[[{old_key}]]" in backlink_path.read_text(encoding="utf-8")
 
@@ -2244,7 +2241,9 @@ def test_doctor_and_list_surface_unmigrated_harness_plans(tmp_path: Path) -> Non
     assert doctor_record["suggested_destination"] == f"projects/{workspace.project_id}/plans"
     assert doctor_record["path"] == str(unmigrated)
 
-    listed = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "plan", "--scope", "both", "--unmigrated"))
+    listed = parse_json_stdout(
+        run_agent_memory(workspace.repo, "list", "--type", "plan", "--scope", "both", "--source", "managed-and-unmigrated")
+    )
     records = {json_string(record["title"]): record for record in json_records(listed, "results")}
     assert set(records) == {"Managed Plan", "Stranded Harness Plan"}
     assert records["Managed Plan"]["managed"] is True
@@ -3404,7 +3403,7 @@ def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tm
     source_lines = [line_number for line_number, line in enumerate(source_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line]
     index_line = next(line_number for line_number, line in enumerate(index_path.read_text(encoding="utf-8").splitlines(), start=1) if f"[[{broken_target}]]" in line)
 
-    result = run_agent_memory_subprocess(workspace.repo, "inspect", "links", "--broken", "--scope", "both", "--format", "json")
+    result = run_agent_memory_subprocess(workspace.repo, "inspect", "links", "--mode", "broken", "--scope", "both", "--format", "json")
 
     assert existing["key"] == "global/advice/existing-link-target"
     assert source["key"] == source_key

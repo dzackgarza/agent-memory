@@ -93,15 +93,15 @@ Run `init project` once per repository.
 | `search metadata` | — | `--scope` (both), `--type`, `--tag`, `--created-after`, `--visibility` (active) |
 | `retrieve KEY` | `KEY` — a memory note, never a card | — |
 | `update KEY` | `KEY` | `--title`, `--type`, `--content` |
-| `delete KEY` | `KEY` | `--repoint`, `--orphan-ok` (False) |
-| `list` | — | `--type` (every type), `--scope` (both), `--unmigrated` (False), `--visibility` (active) |
+| `delete KEY` | `KEY` | `--repoint`, `--backlinks` (block) |
+| `list` | — | `--type` (every type), `--scope` (both), `--source` (managed), `--visibility` (active) |
 
 - `--type` on `add`, `update`, and `search metadata`: `decision`, `trap`, `advice`, `context`, `reference`, `plan`. `add --type plan` is rejected; plans are cards.
 
 - `--mode` on `search content`: `exact`, `fuzzy`, `ranked`.
 
 - `--repoint` takes a memory key or an external URL, and rewrites inbound wikilinks before deleting.
-  `--orphan-ok` deletes while leaving inbound wikilinks dangling.
+  `--backlinks orphan` deletes while leaving inbound wikilinks dangling.
 
 - `--created-after` takes an ISO timestamp, for example `2026-06-13T00:00:00+00:00`.
 
@@ -228,7 +228,7 @@ Every command emits JSON.
 | `inspect schema` | — | `--format` (json) |
 | `inspect paths` | `--scope` | `--kind` (all), `--format` (json) |
 | `inspect tree` | `--scope`, `--depth INT` | `--format` (json) |
-| `inspect links [KEY]` | — | `--broken` (False), `--scope` (both), `--direction` (both), `--depth` (1), `--format` (json) |
+| `inspect links [KEY]` | — | `--mode` (record), `--scope` (both), `--direction` (both), `--depth` (1), `--format` (json) |
 | `inspect outline KEY` | `KEY` | `--format` (json) |
 | `inspect stats` | `--scope`, `--by` | `--format` (json) |
 | `inspect recent` | `--scope`, `--since ISO` | `--format` (json) |
@@ -245,7 +245,7 @@ Every command emits JSON.
 
 - `--profile`: `map`, `context`, `archive`.
 
-- `inspect links` needs `KEY` unless `--broken` is set.
+- `inspect links` needs `KEY` unless `--mode broken` is set.
 
 ### Vault maintenance
 
