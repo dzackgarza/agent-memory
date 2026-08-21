@@ -45,10 +45,6 @@ Examples below write `agent-memory <command>` as shorthand for the full prefix.
 Every command prints exactly one JSON object on stdout. Three exceptions print raw
 Markdown: `retrieve`, `maintain squash`, and `maintain skill`.
 
-A fourth exception is silent: a bare command group — `agent-memory`, `plan`, `card`,
-`inspect`, `queue` — prints its help to **stdout** and exits **0**. Piping one to `jq`
-fails to parse a call that reported success. Always name a subcommand.
-
 Errors print `Error: <message>` on stderr and exit nonzero.
 
 Search commands cap each result array at 10, not the response as a whole: `search` fills
@@ -95,6 +91,7 @@ Run `maintain init-global` once per machine. Run `init project` once per reposit
 - `--repoint` takes a memory key or an external URL, and rewrites inbound wikilinks
   before deleting. `--orphan-ok` deletes while leaving inbound wikilinks dangling.
 - `--created-after` takes an ISO timestamp, for example `2026-06-13T00:00:00+00:00`.
+- `search metadata` filters typed frontmatter. It takes no positional query.
 
 Keys are vault-relative paths: `projects/<project-id>/<directory>/<slug>` or
 `global/<directory>/<slug>`. The directory names are `decisions`, `traps`, `advice`,
@@ -167,11 +164,11 @@ the `=` empties a list field, on `add` and on `update` alike; it is the only way
 one, since repeating `--set` only ever appends. `--body` takes Markdown inline;
 `--body-file` takes a path.
 
-`--parent` places the card and writes the `parents` link. When a card needs several
-parents, repeat the flag with a value each time — `--set parents=[[FEATURE-A]] --set
-parents=[[FEATURE-B]]` — because an explicit `parents` assignment overrides what
-`--parent` would write. Never write a bare `--set parents=` to add one: an empty value
-clears the field, so it deletes every parent the card had.
+`--parent` places the card and writes the `parents` link. A card with several parents
+uses repeated assignments: `--set parents=[[FEATURE-A]] --set
+parents=[[FEATURE-B]]`. An explicit `parents` assignment replaces the link from
+`--parent`. Never write a bare `--set parents=` to add one. An empty value clears the
+field.
 
 Build the graph top down — a plan needs its feature to exist:
 
@@ -224,7 +221,7 @@ Read-only. Every command emits JSON.
 | `inspect schema` | — | `--format` (json) |
 | `inspect paths` | `--scope` | `--kind` (all), `--format` (json) |
 | `inspect tree` | `--scope`, `--depth INT` | `--format` (json) |
-| `inspect links` | — | `--key`, `--broken` (False), `--scope` (both), `--direction` (both), `--depth` (1), `--format` (json) |
+| `inspect links [KEY]` | — | `--broken` (False), `--scope` (both), `--direction` (both), `--depth` (1), `--format` (json) |
 | `inspect outline KEY` | `KEY` | `--format` (json) |
 | `inspect stats` | `--scope`, `--by` | `--format` (json) |
 | `inspect recent` | `--scope`, `--since ISO` | `--format` (json) |
@@ -236,7 +233,7 @@ Read-only. Every command emits JSON.
 - `--by`: `type`, `scope`, `day`.
 - `--direction`: `children`, `parents`, `both`.
 - `--profile`: `map`, `context`, `archive`.
-- `inspect links` needs `--key` unless `--broken` is set.
+- `inspect links` needs `KEY` unless `--broken` is set.
 
 ### Vault maintenance
 
@@ -291,6 +288,7 @@ Read-only. Every command emits JSON.
 | `--body` / `--body-file` on `add` or `update` | Memory bodies use `--content`. `--body`/`--body-file` are card options. |
 | `--append-content` / `--append-body-file` | No append exists. Read, append locally, write the whole body back. |
 | `plan list` | `list --type plan` |
+| `retrieve -k KEY` | `retrieve KEY` |
 | `plan push` | `sync run` |
 | `plan retrieve` | `plan show ID`, or `card show ID`. `retrieve` reads memory notes only — it refuses card keys, because rendering a card as a note keeps the body and drops `id`, `status`, `parents`, and every other field. `list` returns card keys, so check the key before choosing a reader. |
 | `inspect` with no subcommand | Pick one: `overview`, `schema`, `paths`, `tree`, `links`, `outline`, `stats`, `recent`, `export`. |
