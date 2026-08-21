@@ -3720,6 +3720,32 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     assert any(json_string(problem["kind"]) == "reference" for problem in problems)
 
 
+def test_card_dag_contains_only_local_reference_closure(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    other_repo = initialized_git_repo_with_remote(tmp_path, "other-repo", "other-memory")
+    run_agent_memory(other_repo.path, "init", "project", "--vault", str(workspace.vault))
+
+    run_agent_memory(other_repo.path, "feature", "add", "FEATURE-DEPENDENCY", "--set", "title=Dependency")
+    run_agent_memory(other_repo.path, "feature", "add", "FEATURE-UNRELATED", "--set", "title=Unrelated")
+    run_agent_memory(
+        workspace.repo,
+        "feature",
+        "add",
+        "FEATURE-LOCAL",
+        "--set",
+        "title=Local",
+        "--set",
+        "dependsOn=[[FEATURE-DEPENDENCY]]",
+    )
+
+    dag = parse_json_stdout(run_agent_memory(workspace.repo, "card", "dag"))
+    dag_text = Path(json_string(dag["path"])).read_text(encoding="utf-8")
+
+    assert "FEATURE-LOCAL" in dag_text
+    assert "FEATURE-DEPENDENCY" in dag_text
+    assert "FEATURE-UNRELATED" not in dag_text
+
+
 def test_plan_delete_commits_scoped_deletion_and_preserves_unrelated_staged_content(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(
