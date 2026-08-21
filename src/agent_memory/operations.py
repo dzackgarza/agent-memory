@@ -235,9 +235,7 @@ BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
         "run `just setup` from the agent-memory checkout; manual install: install zk v0.15.5 to a directory on PATH.",
     ),
 )
-NON_SEARCH_DEPENDENCIES: tuple[DependencyCheck, ...] = tuple(
-    dependency for dependency in BASIC_DEPENDENCIES if dependency is not PROBE_DEPENDENCY
-)
+NON_SEARCH_DEPENDENCIES: tuple[DependencyCheck, ...] = tuple(dependency for dependency in BASIC_DEPENDENCIES if dependency is not PROBE_DEPENDENCY)
 
 
 @dataclass(frozen=True)
@@ -2178,9 +2176,7 @@ def sync_vault(cwd: Path) -> JsonObject:
     remote = git_remote_or_empty(vault)
     if not remote:
         raise MemoryOperationError(
-            f"vault {vault} has no origin remote to sync with; run "
-            f"`git -C {vault} remote add origin <url>` once, then "
-            f"`git -C {vault} push -u origin HEAD`"
+            f"vault {vault} has no origin remote to sync with; run `git -C {vault} remote add origin <url>` once, then `git -C {vault} push -u origin HEAD`"
         )
     status_before = git_status_entries(vault)
     committed = bool(status_before)
@@ -2348,9 +2344,7 @@ def write_agents_pointer(project_root: Path, vault: Path, project_id: str) -> No
     has_end = AGENTS_SECTION_END in existing
     if has_start != has_end:
         raise MemoryOperationError(
-            f"{agents_path} has only one of the agent-memory section markers "
-            f"{AGENTS_SECTION_START} / {AGENTS_SECTION_END}; restore the missing one or "
-            "delete both and rerun"
+            f"{agents_path} has only one of the agent-memory section markers {AGENTS_SECTION_START} / {AGENTS_SECTION_END}; restore the missing one or delete both and rerun"
         )
     if has_start:
         prefix, marked = existing.split(AGENTS_SECTION_START, 1)
@@ -2663,16 +2657,12 @@ def project_id_from_remote(remote: str) -> str:
     is_ssh_remote = stripped.startswith("git@github.com:")
     is_https_remote = stripped.startswith("https://github.com/")
     if not (is_ssh_remote or is_https_remote):
-        raise MemoryOperationError(
-            f"cannot derive a project id from remote {remote}: only github.com remotes "
-            "are recognized; pass --project-id to name the project explicitly"
-        )
+        raise MemoryOperationError(f"cannot derive a project id from remote {remote}: only github.com remotes are recognized; pass --project-id to name the project explicitly")
     repository = stripped.removeprefix("git@github.com:") if is_ssh_remote else stripped.removeprefix("https://github.com/")
     parts = repository.split("/")
     if len(parts) != 2 or not all(parts):
         raise MemoryOperationError(
-            f"cannot derive a project id from remote {remote}: expected "
-            "github.com/<owner>/<repository>; pass --project-id to name the project explicitly"
+            f"cannot derive a project id from remote {remote}: expected github.com/<owner>/<repository>; pass --project-id to name the project explicitly"
         )
     owner, repo = parts
     return f"github.com__{owner}__{repo}"
@@ -2702,14 +2692,11 @@ def config_from_agent_state_link(git_root: Path) -> ProjectConfig | None:
     if any(path != project_dir for path in linked_project_dirs):
         targets = ", ".join(sorted(str(path) for path in linked_project_dirs))
         raise MemoryOperationError(
-            f"{'/'.join(PROJECT_AGENT_STATE_DIRECTORIES)} in {git_root} point at "
-            f"different vault projects ({targets}); repoint them at one project directory"
+            f"{'/'.join(PROJECT_AGENT_STATE_DIRECTORIES)} in {git_root} point at different vault projects ({targets}); repoint them at one project directory"
         )
     if project_dir.parent.name != "projects":
         raise MemoryOperationError(
-            f"the agent-state symlink in {git_root} points at {project_dir}, which is not "
-            "under a vault `projects` directory; repoint it or rerun "
-            "`agent-memory init project`"
+            f"the agent-state symlink in {git_root} points at {project_dir}, which is not under a vault `projects` directory; repoint it or rerun `agent-memory init project`"
         )
     vault = project_dir.parent.parent
     project_id = validate_project_id(project_dir.name)
@@ -2851,8 +2838,7 @@ def config_for_key(key: str, cwd: Path) -> ProjectConfig:
         return ProjectConfig(vault=vault, project_id=binding.project_id if binding is not None else None)
     if len(parts) < 3:
         raise MemoryOperationError(
-            f"{key!r} names no record. A project key is `projects/<project-id>/<type>/<slug>`. "
-            'Run `agent-memory search --scope both "<term>"` to discover keys.'
+            f'{key!r} names no record. A project key is `projects/<project-id>/<type>/<slug>`. Run `agent-memory search --scope both "<term>"` to discover keys.'
         )
     return ProjectConfig(vault=vault, project_id=validate_project_id(parts[1]))
 
@@ -4097,8 +4083,7 @@ def wikilink_rewrite_map(map_path: Path) -> tuple[WikilinkRewrite, ...]:
     for from_target, to_target in rewrites.items():
         if not isinstance(to_target, str):
             raise MemoryOperationError(
-                f"{map_path} maps {from_target!r} to {to_target!r}, which is not a key: "
-                "a rewrite map is a [rewrites] table mapping each old key to its new key"
+                f"{map_path} maps {from_target!r} to {to_target!r}, which is not a key: a rewrite map is a [rewrites] table mapping each old key to its new key"
             )
         records.append(wikilink_rewrite(from_target, to_target))
     if not records:
