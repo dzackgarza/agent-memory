@@ -29,6 +29,7 @@ from agent_memory.cards import load_card_system_config
 from agent_memory.cards.storage import CardLookupError
 from agent_memory.cli import app as agent_memory_app
 from agent_memory.cli import main as cli_main
+from agent_memory.cli import startup_dependencies
 from agent_memory.models import MemoryType, ProjectConfig
 from agent_memory.operations import (
     BUNDLED_SKILL_NAMES,
@@ -137,7 +138,7 @@ def run_agent_memory_process(cwd: Path, *args: str) -> subprocess.CompletedProce
         os.environ.update(command_env)
         sys.argv = command
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            basic_doctor(cwd)
+            basic_doctor(cwd, startup_dependencies(list(args)))
             returncode = agent_memory_app(list(args), exit_on_error=False, result_action="return_int_as_exit_code_else_zero")
     finally:
         os.chdir(original_cwd)
@@ -4312,7 +4313,7 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     )
     with pytest.raises(ValidationError) as excinfo:
         run_agent_memory(workspace.repo, *invalid_enum_arguments)
-    assert [(error["loc"], error["type"]) for error in excinfo.value.errors()] == [(("status",), "literal_error")]
+    assert [(error["loc"], error["type"]) for error in excinfo.value.errors()] == [(("status",), "value_error")]
     assert_cli_failure(run_agent_memory_subprocess(workspace.repo, *invalid_enum_arguments))
 
     # Scenario 3: malformed --set input does not escape as Cyclopts AssertionError

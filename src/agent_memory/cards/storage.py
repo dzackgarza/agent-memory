@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import yaml
@@ -110,7 +111,7 @@ def create_card(
     type_name: str,
     card_id: str,
     parent_id: str | None,
-    fields: dict[str, object],
+    fields: Mapping[str, object],
     body: str,
 ) -> Path:
     card_type = next((candidate for candidate in config.card_types if candidate.name == type_name), None)

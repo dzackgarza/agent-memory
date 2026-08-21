@@ -28,10 +28,13 @@ from agent_memory.models import (
     SearchScope,
 )
 from agent_memory.operations import (
+    BASIC_DEPENDENCIES,
     BUNDLED_SKILL_NAMES,
     INSPECT_COMMAND_NAMES,
+    NON_SEARCH_DEPENDENCIES,
     QUEUE_CARD_TYPE,
     CardFieldError,
+    DependencyCheck,
     DependencyError,
     GlobalVaultNotInitializedError,
     JsonValue,
@@ -138,6 +141,8 @@ class CardConfigUnavailable:
 
 
 type CardConfigRegistrationState = CardConfigAvailable | CardConfigUnavailable
+
+BARE_COMMAND_GROUPS = frozenset({"plan", "card", "inspect", "queue"})
 
 
 def maintain_init_global(
@@ -948,6 +953,26 @@ def add_command_scope_hint(arguments: list[str]) -> str | None:
     return None
 
 
+def invocation_error(arguments: list[str]) -> str | None:
+    if not arguments:
+        return "a subcommand is required"
+    if len(arguments) == 1 and arguments[0] in BARE_COMMAND_GROUPS:
+        return f"{arguments[0]} requires a subcommand"
+    if arguments[:2] == ["plan", "list"]:
+        return "plan list was removed; use `agent-memory list --type plan`"
+    if arguments[0] == "retrieve" and "-k" in arguments[1:]:
+        return "retrieve -k was removed; use `agent-memory retrieve <key>`"
+    return add_command_scope_hint(arguments)
+
+
+def startup_dependencies(arguments: list[str]) -> tuple[DependencyCheck, ...]:
+    if arguments[0] == "doctor" or any(argument in {"--help", "-h"} for argument in arguments):
+        return ()
+    if arguments[0] == "search":
+        return BASIC_DEPENDENCIES
+    return NON_SEARCH_DEPENDENCIES
+
+
 def command_requires_card_schema(arguments: list[str]) -> bool:
     if not arguments or arguments[0].startswith("-"):
         return False
@@ -955,17 +980,18 @@ def command_requires_card_schema(arguments: list[str]) -> bool:
 
 
 def main() -> None:
-    scope_hint = add_command_scope_hint(sys.argv[1:])
-    if scope_hint is not None:
-        print(f"Error: {scope_hint}", file=sys.stderr)
+    arguments = sys.argv[1:]
+    error = invocation_error(arguments)
+    if error is not None:
+        print(f"Error: {error}", file=sys.stderr)
         raise SystemExit(1)
-    if isinstance(CARD_CONFIG_REGISTRATION_STATE, CardConfigUnavailable) and command_requires_card_schema(sys.argv[1:]):
+    if isinstance(CARD_CONFIG_REGISTRATION_STATE, CardConfigUnavailable) and command_requires_card_schema(arguments):
         print(f"Error: {CARD_CONFIG_REGISTRATION_STATE.error}", file=sys.stderr)
         raise SystemExit(1)
 
     try:
-        basic_doctor(Path.cwd())
-        app(sys.argv[1:], print_error=False, exit_on_error=False)
+        basic_doctor(Path.cwd(), startup_dependencies(arguments))
+        app(arguments, print_error=False, exit_on_error=False)
     except cyclopts.exceptions.CycloptsError as e:
         print(f"Error: {e}", file=sys.stderr)
         raise SystemExit(1)

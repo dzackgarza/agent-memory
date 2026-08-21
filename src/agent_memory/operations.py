@@ -207,6 +207,11 @@ VAULT_DIRECTORIES: tuple[Path, ...] = (
     Path("templates"),
     Path("_meta"),
 )
+PROBE_DEPENDENCY = DependencyCheck(
+    "@probelabs/probe",
+    ("bunx", "--silent", PROBE_PACKAGE, "--version"),
+    f"run `just setup` from the agent-memory checkout; manual install: run `bunx --silent {PROBE_PACKAGE} --version`.",
+)
 BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
     DependencyCheck(
         "git",
@@ -223,16 +228,15 @@ BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
         ("bunx", "--version"),
         "run `just setup` from the agent-memory checkout; manual install: install bun from https://bun.sh.",
     ),
-    DependencyCheck(
-        "@probelabs/probe",
-        ("bunx", "--silent", PROBE_PACKAGE, "--version"),
-        f"run `just setup` from the agent-memory checkout; manual install: run `bunx --silent {PROBE_PACKAGE} --version`.",
-    ),
+    PROBE_DEPENDENCY,
     DependencyCheck(
         "zk",
         ("zk", "--version"),
         "run `just setup` from the agent-memory checkout; manual install: install zk v0.15.5 to a directory on PATH.",
     ),
+)
+NON_SEARCH_DEPENDENCIES: tuple[DependencyCheck, ...] = tuple(
+    dependency for dependency in BASIC_DEPENDENCIES if dependency is not PROBE_DEPENDENCY
 )
 
 
@@ -1572,7 +1576,11 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
         append_index_link(extracted_path.parent / "index.md", title, extracted_path.name, description)
         extracted_keys.append(affected_key)
     if len(extracted_keys) != 1:
-        raise MemoryOperationError(f"section {section!r} did not extract exactly one record from {key} (extracted {len(extracted_keys)}); name a heading that appears once, as `agent-memory inspect outline {key}` lists it")
+        raise MemoryOperationError(
+            f"section {section!r} did not extract exactly one record from {key} "
+            f"(extracted {len(extracted_keys)}); name a heading that appears once, "
+            f"as `agent-memory inspect outline {key}` lists it"
+        )
     rewritten = rewrite_wikilink_files(
         config,
         (wikilink_rewrite(f"{key}#{section}", extracted_keys[0]),),
@@ -1707,11 +1715,14 @@ def check_dependency(dependency: DependencyCheck, cwd: Path) -> JsonObject:
     return {"name": dependency.name, "command": list(dependency.command), "status": "ok"}
 
 
-def basic_doctor(cwd: Path) -> JsonObject:
-    dependencies = [check_dependency(dependency, cwd) for dependency in BASIC_DEPENDENCIES]
+def basic_doctor(
+    cwd: Path,
+    dependencies: Sequence[DependencyCheck] = BASIC_DEPENDENCIES,
+) -> JsonObject:
+    checked = [check_dependency(dependency, cwd) for dependency in dependencies]
     return {
-        "dependencies": json_list(dependencies),
-        "tools": [dependency.name for dependency in BASIC_DEPENDENCIES],
+        "dependencies": json_list(checked),
+        "tools": [dependency.name for dependency in dependencies],
     }
 
 
@@ -2166,7 +2177,11 @@ def sync_vault(cwd: Path) -> JsonObject:
     branch = git_current_branch(vault)
     remote = git_remote_or_empty(vault)
     if not remote:
-        raise MemoryOperationError(f"vault {vault} has no origin remote to sync with; run `git -C {vault} remote add origin <url>` once, then `git -C {vault} push -u origin HEAD`")
+        raise MemoryOperationError(
+            f"vault {vault} has no origin remote to sync with; run "
+            f"`git -C {vault} remote add origin <url>` once, then "
+            f"`git -C {vault} push -u origin HEAD`"
+        )
     status_before = git_status_entries(vault)
     committed = bool(status_before)
     if committed:
@@ -2232,7 +2247,11 @@ def install_project_agent_state_link(git_root: Path, project_dir: Path, name: st
     vault_path = project_dir
     if repo_path.is_symlink():
         if repo_path.resolve() != vault_path.resolve():
-            raise MemoryOperationError(f"{repo_path} is already a symlink to {repo_path.resolve()}, not to this project's {vault_path}; remove it and rerun `agent-memory init project` to bind this repository")
+            raise MemoryOperationError(
+                f"{repo_path} is already a symlink to {repo_path.resolve()}, not to this "
+                f"project's {vault_path}; remove it and rerun `agent-memory init project` "
+                "to bind this repository"
+            )
         return
     if repo_path.exists():
         if not repo_path.is_dir():
@@ -2328,7 +2347,11 @@ def write_agents_pointer(project_root: Path, vault: Path, project_id: str) -> No
     has_start = AGENTS_SECTION_START in existing
     has_end = AGENTS_SECTION_END in existing
     if has_start != has_end:
-        raise MemoryOperationError(f"{agents_path} has only one of the agent-memory section markers {AGENTS_SECTION_START} / {AGENTS_SECTION_END}; restore the missing one or delete both and rerun")
+        raise MemoryOperationError(
+            f"{agents_path} has only one of the agent-memory section markers "
+            f"{AGENTS_SECTION_START} / {AGENTS_SECTION_END}; restore the missing one or "
+            "delete both and rerun"
+        )
     if has_start:
         prefix, marked = existing.split(AGENTS_SECTION_START, 1)
         _, suffix = marked.split(AGENTS_SECTION_END, 1)
@@ -2640,11 +2663,17 @@ def project_id_from_remote(remote: str) -> str:
     is_ssh_remote = stripped.startswith("git@github.com:")
     is_https_remote = stripped.startswith("https://github.com/")
     if not (is_ssh_remote or is_https_remote):
-        raise MemoryOperationError(f"cannot derive a project id from remote {remote}: only github.com remotes are recognized; pass --project-id to name the project explicitly")
+        raise MemoryOperationError(
+            f"cannot derive a project id from remote {remote}: only github.com remotes "
+            "are recognized; pass --project-id to name the project explicitly"
+        )
     repository = stripped.removeprefix("git@github.com:") if is_ssh_remote else stripped.removeprefix("https://github.com/")
     parts = repository.split("/")
     if len(parts) != 2 or not all(parts):
-        raise MemoryOperationError(f"cannot derive a project id from remote {remote}: expected github.com/<owner>/<repository>; pass --project-id to name the project explicitly")
+        raise MemoryOperationError(
+            f"cannot derive a project id from remote {remote}: expected "
+            "github.com/<owner>/<repository>; pass --project-id to name the project explicitly"
+        )
     owner, repo = parts
     return f"github.com__{owner}__{repo}"
 
@@ -2672,9 +2701,16 @@ def config_from_agent_state_link(git_root: Path) -> ProjectConfig | None:
     project_dir = linked_project_dirs[0]
     if any(path != project_dir for path in linked_project_dirs):
         targets = ", ".join(sorted(str(path) for path in linked_project_dirs))
-        raise MemoryOperationError(f"{'/'.join(PROJECT_AGENT_STATE_DIRECTORIES)} in {git_root} point at different vault projects ({targets}); repoint them at one project directory")
+        raise MemoryOperationError(
+            f"{'/'.join(PROJECT_AGENT_STATE_DIRECTORIES)} in {git_root} point at "
+            f"different vault projects ({targets}); repoint them at one project directory"
+        )
     if project_dir.parent.name != "projects":
-        raise MemoryOperationError(f"the agent-state symlink in {git_root} points at {project_dir}, which is not under a vault `projects` directory; repoint it or rerun `agent-memory init project`")
+        raise MemoryOperationError(
+            f"the agent-state symlink in {git_root} points at {project_dir}, which is not "
+            "under a vault `projects` directory; repoint it or rerun "
+            "`agent-memory init project`"
+        )
     vault = project_dir.parent.parent
     project_id = validate_project_id(project_dir.name)
     if not (vault / ".agents" / "memories" / "config.toml").is_file():
@@ -4060,7 +4096,10 @@ def wikilink_rewrite_map(map_path: Path) -> tuple[WikilinkRewrite, ...]:
     records: list[WikilinkRewrite] = []
     for from_target, to_target in rewrites.items():
         if not isinstance(to_target, str):
-            raise MemoryOperationError(f"{map_path} maps {from_target!r} to {to_target!r}, which is not a key: a rewrite map is a [rewrites] table mapping each old key to its new key")
+            raise MemoryOperationError(
+                f"{map_path} maps {from_target!r} to {to_target!r}, which is not a key: "
+                "a rewrite map is a [rewrites] table mapping each old key to its new key"
+            )
         records.append(wikilink_rewrite(from_target, to_target))
     if not records:
         raise MemoryOperationError(f"{map_path} lists no rewrites: a rewrite map is a [rewrites] table mapping each old key to its new key")
