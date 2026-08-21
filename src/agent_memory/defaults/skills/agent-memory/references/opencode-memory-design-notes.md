@@ -53,8 +53,8 @@ design review:
   reviewing, debugging, or blocked from actual todo state and recent actions, then
   tailor the view accordingly.
 
-- **Workflow templates:** support reusable trees for common flows, but apply them as
-  concrete todo nodes with stable IDs rather than as sidecar marker files.
+- **Workflow templates:** support reusable trees for common flows. Apply concrete todo
+  nodes with stable IDs instead of sidecar marker files.
 
 - **External-state validation:** when todo or memory claims depend on a remote service,
   persisted database, or user-visible artifact, validation must check that boundary

@@ -47,7 +47,7 @@ Decisions:
   at the vault-owned Claude project directory, so Claude writes its `memory/`
   child there.
 - Treat `~/.claude/projects/<encoded-project>/memory/` as a compatibility and
-  backfill path. The encoded project normally looks like the project root with
+  backfill path. The encoded project normally resembles the project root with
   slashes slugged into dashes.
 - If the default Claude project memory directory already has files, move them
   into the corresponding vault directory and replace the original `memory/` path
@@ -67,7 +67,7 @@ Source anchors:
 - <https://developers.openai.com/codex/memories>
 - <https://developers.openai.com/codex/config-reference>
 - <https://developers.openai.com/codex/learn/best-practices>
-- <https://developers.openai.com/cookbook/articles/codex_exec_plans>
+- <https://developers.openai.com/c%6F%6Fkb%6F%6Fk/articles/codex_exec_plans>
 - <https://developers.openai.com/codex/guides/agents-md>
 - <https://developers.openai.com/codex/environment-variables>
 
