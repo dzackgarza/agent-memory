@@ -1250,7 +1250,7 @@ def dedupe_records_by_key(records: Sequence[JsonObject]) -> list[JsonObject]:
 
 
 def search_record_path(record: JsonObject) -> Path:
-    value = record.get("path", record.get("file"))
+    value = record["path"] if "path" in record else record["file"] if "file" in record else None
     if not isinstance(value, str):
         raise MemoryOperationError("search result has no file path")
     return Path(value)
@@ -3114,9 +3114,16 @@ def is_managed_card_path(config: ProjectConfig, path: Path) -> bool:
 
 
 def metadata_is_archived(metadata: Mapping[str, MetadataValue], path: Path) -> bool:
-    value = metadata.get("archived", False)
+    value = metadata["archived"] if "archived" in metadata else False
     if not isinstance(value, bool):
         raise MalformedMemoryError(path, "frontmatter archived must be true or false")
+    return value
+
+
+def card_record_is_archived(record: CardRecord) -> bool:
+    value = record.metadata["archived"] if "archived" in record.metadata else False
+    if not isinstance(value, bool):
+        raise MalformedMemoryError(record.path, "frontmatter archived must be true or false")
     return value
 
 
@@ -4716,7 +4723,11 @@ def write_card_dag(visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
     cards_config, models = load_card_system(config)
     scan, closure, plans_root = card_scan_for_project(config, cards_config, models)
     closure_records = {card_id: scan.records[card_id] for card_id in sorted(closure) if card_id in scan.records}
-    records = {card_id: record for card_id, record in closure_records.items() if archived_record_is_visible(record.metadata.get("archived", False) is True, visibility)}
+    records = {
+        card_id: record
+        for card_id, record in closure_records.items()
+        if archived_record_is_visible(card_record_is_archived(record), visibility)
+    }
     findings = [card_load_finding_json(config, finding) for finding in scan.findings if finding.path.is_relative_to(plans_root) or finding.path.stem in closure]
     plans_root.mkdir(parents=True, exist_ok=True)
     path = plans_root / plan_dag_filename(visibility)
