@@ -2185,6 +2185,12 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
     ]
 
 
+def test_startup_dependencies_resolve_probe_only_for_search() -> None:
+    assert "@probelabs/probe" in {dependency.name for dependency in startup_dependencies(["search", "term"])}
+    assert "@probelabs/probe" not in {dependency.name for dependency in startup_dependencies(["inspect", "schema"])}
+    assert startup_dependencies(["doctor"]) == ()
+
+
 def write_unmigrated_plan(path: Path, title: str, project_id: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

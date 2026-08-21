@@ -4623,14 +4623,18 @@ def validate_card_records(cwd: Path) -> JsonObject:
 def write_card_dag(cwd: Path) -> JsonObject:
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
-    scan, _closure, plans_root = card_scan_for_project(config, cards_config, models)
+    scan, closure, plans_root = card_scan_for_project(config, cards_config, models)
+    records = {card_id: scan.records[card_id] for card_id in sorted(closure) if card_id in scan.records}
+    findings = [
+        card_load_finding_json(config, finding)
+        for finding in scan.findings
+        if finding.path.is_relative_to(plans_root) or finding.path.stem in closure
+    ]
     plans_root.mkdir(parents=True, exist_ok=True)
     path = plans_root / PLAN_DAG_FILENAME
-    path.write_text(render_dag(scan.records), encoding="utf-8")
+    path.write_text(render_dag(records), encoding="utf-8")
     commit_vault_changes(config.vault, "Update plan DAG", paths=[path])
-    # A card the scan could not read is missing from the rendered graph, so the DAG says so
-    # instead of failing for every project because of one unreadable file (issue #89).
-    return {"path": str(path), "findings": json_list([card_load_finding_json(config, finding) for finding in scan.findings])}
+    return {"path": str(path), "findings": json_list(findings)}
 
 
 def migrate_cards(source: Path, cwd: Path) -> JsonObject:

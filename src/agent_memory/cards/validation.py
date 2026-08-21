@@ -349,13 +349,22 @@ def sibling_ordering_problems(records: dict[str, CardRecord], config: CardSystem
     return problems
 
 
-def plans_root_for(card_id: str, record: CardRecord, records: dict[str, CardRecord], config: CardSystemConfig) -> Path:
+def plans_root_for(
+    card_id: str,
+    record: CardRecord,
+    records: dict[str, CardRecord],
+    config: CardSystemConfig,
+    active: frozenset[str] = frozenset(),
+) -> Path:
     # Derive the project plans root that contains this card. A correctly-placed parent
     # anchors the root for a child; a root card anchors it from its configured container.
     # Used to feed card_file_path so the canonical layout is config-driven.
+    if card_id in active:
+        raise CardPlacementError(f"parents links form a cycle through {card_id}; drop one parents entry")
     parents = [parent_id for parent_id in parent_ids(record) if parent_id in records]
     if parents:
-        return plans_root_for(parents[0], records[parents[0]], records, config)
+        parent_id = parents[0]
+        return plans_root_for(parent_id, records[parent_id], records, config, active | {card_id})
     by_type = {card_type.name: card_type for card_type in config.card_types}
     card_type = by_type[record.type_name]
     parts = record.path.parts
@@ -378,10 +387,6 @@ def _filesystem_problem(card_id: str, record: CardRecord, card_type: CardTypeSpe
         expected = card_file_path(plans_root_for(card_id, record, records, config), card_type, card_id, parent_id).resolve()
     except CardPlacementError as error:
         return Problem("filesystem-hierarchy", card_id, str(error))
-    except RecursionError:
-        # ponytail: a parents cycle makes the root walk non-terminating. The cycle itself is
-        # reported precisely by the tags check; here it only has to not abort the scan.
-        return Problem("filesystem-hierarchy", card_id, f"parents links form a cycle, so {card_id} has no reachable root; drop one parents entry")
     if record.path.resolve() == expected:
         return None
     return Problem("filesystem-hierarchy", card_id, f"expected path {expected}, found {record.path.resolve()}")
