@@ -36,6 +36,7 @@ from agent_memory.operations import (
     OKF_VERSION,
     PROBE_PACKAGE,
     QUEUE_CARD_TYPE,
+    CardFieldError,
     DependencyCheck,
     DependencyError,
     MemoryOperationError,
@@ -4488,7 +4489,7 @@ def test_plan_add_unknown_card_type_is_structured_cli_error(tmp_path: Path) -> N
     unsupported_type = "milestone"
     unsupported_id = "MILESTONE-1"
 
-    with pytest.raises(CardLookupError):
+    with pytest.raises(CardFieldError):
         run_agent_memory(workspace.repo, "card", "add", unsupported_type, unsupported_id)
 
     assert_cli_failure(run_agent_memory_subprocess(workspace.repo, "card", "add", unsupported_type, unsupported_id))
