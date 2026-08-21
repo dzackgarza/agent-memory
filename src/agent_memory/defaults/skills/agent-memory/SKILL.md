@@ -144,8 +144,7 @@ There is no separate option for either.
 Every card type has an optional Boolean `archived` field.
 Archive with `--set archived=true` and restore with `--set archived=false`; the workflow `status` stays unchanged.
 `--visibility` accepts `active`, `archived`, or `all` on list, search, and card DAG commands.
-Active list and search results omit archived cards and return their identities in `archived_matches`.
-`<type> show ID` always returns an archived card with its stored fields and links.
+Active list and search results omit archived cards and return their identities in `archived_matches`. `<type> show ID` always returns an archived card with its stored fields and links.
 The card DAG writes `plan-dag.md`, `plan-dag-archived.md`, or `plan-dag-all.md` for the selected visibility.
 `inspect tree` and `inspect recent` cover memory-note indexes and timestamps; use list, search, show, or card DAG for cards.
 
