@@ -104,8 +104,12 @@ _install-zk:
 _install-probe:
     #!/usr/bin/env bash
     set -euo pipefail
-    npx --version
-    npx -y @probelabs/probe@latest --version
+    bunx --version
+    # Ask the code which Probe it calls rather than repeating the pin here: ranked search
+    # runs Probe as a scoring engine, and an install step that provisions a different
+    # version than the runtime invokes is a drift nobody would see.
+    probe_package="$(uv run --project "{{ justfile_directory() }}" python -c 'from agent_memory.operations import PROBE_PACKAGE; print(PROBE_PACKAGE)')"
+    bunx --silent "$probe_package" --version
 
 [private]
 _verify-toolchain:

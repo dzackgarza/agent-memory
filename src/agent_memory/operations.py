@@ -1231,14 +1231,13 @@ def json_list(values: Sequence[JsonValue]) -> list[JsonValue]:
     return list(values)
 
 
-STRUCTURED_CARD_PREFIX_TYPES = {
-    "FEATURE": "feature",
-    "PLAN": "plan",
-    "PHASE": "phase",
-    "TASK": "task",
-    "SPEC": "spec",
-    "DECISION": "decision",
-}
+@cache
+def card_prefix_types(config: ProjectConfig) -> dict[str, str]:
+    # Which id prefix names which card type, read from the active schema rather than a
+    # hand-kept copy of it: a duplicate map makes every new card type invisible to `list`
+    # until someone remembers to edit it. Cached because listings ask once per vault file.
+    cards_config = load_card_system_config(config.vault, config.project_id)
+    return {card_type.id_prefix: card_type.name for card_type in cards_config.card_types}
 
 
 def card_listing_json(record: CardListing) -> JsonObject:
@@ -1422,6 +1421,9 @@ def probe_search_root(
             # Without --silent, a cold cache writes install progress into the stdout this
             # function parses as JSON, so the first search after a fresh install fails.
             "--silent",
+            # Do not "simplify" this to a bare `probe`. A different package, @buger/probe,
+            # installs a binary of that name globally, so a bare command name would swap
+            # the ranking engine out from under this search with nothing to show for it.
             PROBE_PACKAGE,
             "search",
             query,
@@ -1556,7 +1558,10 @@ def split_memory(key: str, section: str, cwd: Path) -> JsonObject:
     source_title = metadata_string(source_document.metadata, "title", source_path)
     memory_type = MemoryType(metadata_string(source_document.metadata, "type", source_path))
     scope = MemoryScope(metadata_string(source_document.metadata, "scope", source_path))
-    affected_keys = iwe.extract(config.vault, key, section)
+    try:
+        affected_keys = iwe.extract(config.vault, key, section)
+    except RuntimeError as error:
+        raise MemoryOperationError(f"cannot split {key} at section {section!r}: {error}; `agent-memory inspect outline {key}` lists the headings it has") from error
     extracted_keys: list[str] = []
     for affected_key in affected_keys:
         if affected_key == key:
@@ -1598,7 +1603,10 @@ def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
     reference_path = memory_path_for_key(config, reference)
     reference_document = read_memory(reference_path)
     reference_title = metadata_string(reference_document.metadata, "title", reference_path)
-    affected_keys = iwe.inline(config.vault, key, reference)
+    try:
+        affected_keys = iwe.inline(config.vault, key, reference)
+    except RuntimeError as error:
+        raise MemoryOperationError(f"cannot merge {reference} into {key}: {error}; `agent-memory inspect links {key}` lists the references it has") from error
     rewritten = rewrite_non_index_wikilink_files(
         config,
         (wikilink_rewrite(reference, f"{key}#{reference_title}"),),
@@ -1817,16 +1825,15 @@ def git_current_branch(repo: Path) -> str:
     return branch
 
 
-def git_upstream(repo: Path) -> str:
-    result = run_checked(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd=repo)
-    upstream = result.stdout.strip()
-    if not upstream:
-        raise MemoryOperationError(f"{repo} has no upstream branch to sync with; run `git -C {repo} push -u origin HEAD` once")
-    return upstream
+def git_upstream(repo: Path) -> str | None:
+    result = run_checked_optional(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd=repo)
+    return result.stdout.strip() or None if result.returncode == 0 else None
 
 
-def git_ahead_behind(repo: Path) -> tuple[int, int]:
-    result = run_checked(["git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}"], cwd=repo)
+def git_ahead_behind(repo: Path) -> tuple[int, int] | None:
+    result = run_checked_optional(["git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}"], cwd=repo)
+    if result.returncode != 0:
+        return None
     parts = result.stdout.split()
     assert len(parts) == 2, f"unexpected git ahead/behind output: repo={repo}; output={result.stdout!r}"
     ahead, behind = (int(part) for part in parts)
@@ -2111,18 +2118,20 @@ def sync_status(cwd: Path) -> JsonObject:
     assert_vault_zk_initialized(config.vault)
     vault = config.vault
     changes = git_status_records(vault)
-    ahead, behind = git_ahead_behind(vault)
+    # A vault with no remote or no upstream is unsynced, not broken: `maintain init-global`
+    # creates exactly that, so status reports the absence instead of raising from git.
+    tracking = git_ahead_behind(vault)
     return {
         "vault": str(vault),
         "initialized": True,
         "project_bound": project_bound,
         "git": {
-            "remote": git_remote(vault),
+            "remote": git_remote_or_empty(vault) or None,
             "branch": git_current_branch(vault),
             "head": git_head(vault),
             "upstream": git_upstream(vault),
-            "ahead": ahead,
-            "behind": behind,
+            "ahead": tracking[0] if tracking is not None else None,
+            "behind": tracking[1] if tracking is not None else None,
             "worktree_clean": not changes,
             "changes": changes,
         },
@@ -2157,7 +2166,9 @@ def sync_vault(cwd: Path) -> JsonObject:
     config, _project_bound = sync_config(cwd)
     vault = config.vault
     branch = git_current_branch(vault)
-    remote = git_remote(vault)
+    remote = git_remote_or_empty(vault)
+    if not remote:
+        raise MemoryOperationError(f"vault {vault} has no origin remote to sync with; run `git -C {vault} remote add origin <url>` once, then `git -C {vault} push -u origin HEAD`")
     status_before = git_status_entries(vault)
     committed = bool(status_before)
     if committed:
@@ -2615,14 +2626,6 @@ def git_root_for(cwd: Path) -> Path:
     return root
 
 
-def git_remote(git_root: Path) -> str:
-    result = run_checked(["git", "remote", "get-url", "origin"], cwd=git_root)
-    remote = result.stdout.strip()
-    if not remote:
-        raise MemoryOperationError(f"{git_root} has no origin remote to derive a project id from; add one, or pass --project-id to name the project explicitly")
-    return remote
-
-
 def git_remote_or_empty(git_root: Path) -> str:
     result = subprocess.run(["git", "remote", "get-url", "origin"], cwd=git_root, check=False, text=True, capture_output=True)
     if result.returncode == 0:
@@ -3020,7 +3023,7 @@ def card_listing_fields_for_path(config: ProjectConfig, path: Path) -> tuple[str
         document = read_memory(path)
     except MalformedMemoryError:
         return None
-    card_type = card_type_from_metadata(document.metadata)
+    card_type = card_type_from_metadata(config, document.metadata)
     if card_type is None:
         return None
     return (
@@ -3058,14 +3061,13 @@ def unmigrated_card_listing_for_path(config: ProjectConfig, path: Path) -> Unmig
     )
 
 
-def card_type_from_metadata(metadata: Mapping[str, MetadataValue]) -> str | None:
+def card_type_from_metadata(config: ProjectConfig, metadata: Mapping[str, MetadataValue]) -> str | None:
     type_value = metadata.get("type")
     if isinstance(type_value, str):
         return type_value
     id_value = metadata.get("id")
     if isinstance(id_value, str):
-        prefix = id_value.split("-", 1)[0]
-        return STRUCTURED_CARD_PREFIX_TYPES.get(prefix)
+        return card_prefix_types(config).get(id_value.split("-", 1)[0])
     return None
 
 
@@ -3791,7 +3793,7 @@ def card_command_for_path(config: ProjectConfig, path: Path) -> str | None:
     cards_root = memory_directory(config, MemoryScope.PROJECT, MemoryType.PLAN)
     if not path.is_relative_to(cards_root) or path.parent == cards_root:
         return None
-    return STRUCTURED_CARD_PREFIX_TYPES.get(path.stem.split("-", 1)[0])
+    return card_prefix_types(config).get(path.stem.split("-", 1)[0])
 
 
 def first_heading_title(path: Path, markdown: str) -> str:

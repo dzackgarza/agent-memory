@@ -42,13 +42,20 @@ Examples below write `agent-memory <command>` as shorthand for the full prefix.
 
 ### Output contract
 
-Every command prints exactly one JSON object on stdout. The three exceptions print raw
+Every command prints exactly one JSON object on stdout. Three exceptions print raw
 Markdown: `retrieve`, `maintain squash`, and `maintain skill`.
+
+A fourth exception is silent: a bare command group — `agent-memory`, `plan`, `card`,
+`inspect`, `queue` — prints its help to **stdout** and exits **0**. Piping one to `jq`
+fails to parse a call that reported success. Always name a subcommand.
 
 Errors print `Error: <message>` on stderr and exit nonzero.
 
-Search commands return at most 10 results. That cap is packaged configuration, not a
-command option. Narrow the query, or filter the JSON with `jq`.
+Search commands cap each result array at 10, not the response as a whole: `search` fills
+`results`, `key_matches`, `exact_content_matches`, `fuzzy_content_matches`, and
+`ranked_content_matches` independently, and `ranked_content_matches` holds one entry per
+matching block, so one file can repeat within it. The cap is packaged configuration, not
+a command option. Narrow the query, or filter the JSON with `jq`.
 
 * * *
 
@@ -160,14 +167,19 @@ the `=` empties a list field, on `add` and on `update` alike; it is the only way
 one, since repeating `--set` only ever appends. `--body` takes Markdown inline;
 `--body-file` takes a path.
 
-`--parent` places the card and writes the `parents` link. Pass `--set parents=` instead
-when a card needs several parents: `parents` is a wikilink list, and an explicit `--set`
-overrides what `--parent` would write.
+`--parent` places the card and writes the `parents` link. When a card needs several
+parents, repeat the flag with a value each time — `--set parents=[[FEATURE-A]] --set
+parents=[[FEATURE-B]]` — because an explicit `parents` assignment overrides what
+`--parent` would write. Never write a bare `--set parents=` to add one: an empty value
+clears the field, so it deletes every parent the card had.
 
 Build the graph top down — a plan needs its feature to exist:
 
 ```bash
 agent-memory feature add FEATURE-CLI-FRICTION --set title="CLI discovery friction"
+
+printf '# Close the friction backlog\n\nMeasured from the invocation corpus.\n' \
+  > /tmp/plan-body.md
 
 agent-memory plan add PLAN-CLOSE-FRICTION-BACKLOG --parent FEATURE-CLI-FRICTION \
   --set title="Close the friction backlog" \
@@ -241,8 +253,9 @@ Read-only. Every command emits JSON.
 
 - `maintain move --to` accepts destinations under `global/` only, such as `global/traps`.
 - `maintain squash` prints rendered Markdown, not JSON.
-- `maintain skill` accepts `vault-maintenance` and prints Markdown. Load it when a vault
-  defect blocks a memory operation.
+- `maintain skill` accepts `agent-memory` and `vault-maintenance`, and prints Markdown.
+  `maintain skill agent-memory` prints this document — it is how a cold agent fetches the
+  command surface. Load `vault-maintenance` when a vault defect blocks a memory operation.
 - `links rewrite` takes either `--from`/`--to` or `--map`, a TOML file with a
   `[rewrites]` table.
 
@@ -250,7 +263,7 @@ Read-only. Every command emits JSON.
 
 | Command | Required | Optional |
 | --- | --- | --- |
-| `queue add` | — | `--project`, `--agent`, `--status`, `--summary`, `--timestamp`, `--link`, `--set` |
+| `queue add` | `--project`, `--status`, `--summary` | `--agent`, `--timestamp`, `--link`, `--set` |
 | `queue list` | — | — |
 
 `--link` repeats for multiple wikilinks.

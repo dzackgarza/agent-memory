@@ -414,13 +414,14 @@ def inspect_links_command(
 ) -> int | None:
     """Show graph neighbors for a memory key."""
     if broken:
-        assert key is None, "inspect links --broken is vault-scoped and does not accept a memory key"
-        payload = inspect_broken_links(scope=scope, output_format=output_format, cwd=Path.cwd())
-        emit(payload)
-        broken_links = payload["broken_links"]
-        assert isinstance(broken_links, list), "broken link report must contain a list"
-        return 1 if broken_links else 0
-    assert key is not None, "inspect links requires a memory key unless --broken is set"
+        if key is not None:
+            raise CliUsageError(f"inspect links --broken reports the whole scope and takes no key; drop {key!r}, or drop --broken to inspect that one record")
+        # Broken links are findings, not a command failure: exiting nonzero while printing
+        # a valid report leaves a caller unable to tell "found some" from "the command broke".
+        emit(inspect_broken_links(scope=scope, output_format=output_format, cwd=Path.cwd()))
+        return None
+    if key is None:
+        raise CliUsageError("inspect links needs a memory key, or --broken to report broken links across the scope")
     emit(
         inspect_links(
             key=key,

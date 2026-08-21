@@ -3400,7 +3400,9 @@ def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tm
 
     assert existing["key"] == "global/advice/existing-link-target"
     assert source["key"] == source_key
-    assert result.returncode == 1
+    # Broken links are findings, not a command failure. The report below carries them; a
+    # nonzero exit here would leave a caller unable to tell "found some" from "it broke".
+    assert result.returncode == 0
     assert parse_json_stdout(result) == {
         "scope": "both",
         "broken_links": [
@@ -4499,10 +4501,8 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     assert unsupported_mode in stderr3
     assert {"exact", "fuzzy", "ranked"}.issubset(set(re.findall(r"[A-Za-z][A-Za-z_-]+", stderr3)))
 
-    # Scenario 4: omitting --type lists every type, but a type no listing can hold is
-    # rejected by name. An unknown value must not read as "the vault has none of these".
-    every_type = parse_json_stdout(run_agent_memory_module(workspace.repo, "list"))
-    assert every_type["type"] is None
+    # Scenario 4: a type no listing can hold is rejected by name. Bare `list` is not misuse
+    # -- it is the documented default path, proved positively in the list default test.
     r4 = run_agent_memory_subprocess(workspace.repo, "list", "--type", "descision")
     stderr4 = assert_structured_cli_error(r4)
     assert "descision" in stderr4
@@ -4769,10 +4769,11 @@ def test_inspect_commands_answer_without_the_format_option(tmp_path: Path) -> No
         )
 
 
-def test_list_rejects_a_type_that_no_schema_declares(tmp_path: Path) -> None:
-    # The other half of making --type optional: absence now means every type, so a name
-    # nothing declares can no longer be answered with an empty list and a zero exit, which
-    # read as "the vault holds none of these" for what was only a typo.
+def test_list_spans_every_type_by_default_and_rejects_an_undeclared_type(tmp_path: Path) -> None:
+    # The two halves of making --type optional, one line apart because the distinction is
+    # the point: absence means every type, while a name nothing declares can no longer be
+    # answered with an empty list and a zero exit, which read as "the vault holds none of
+    # these" for what was only a typo.
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(workspace.repo, "feature", "add", "FEATURE-LISTED", "--set", "title=Listed feature")
     add_cli_memory(workspace, scope="project", memory_type="decision", title="Listed Decision", content="A listed decision record.")
