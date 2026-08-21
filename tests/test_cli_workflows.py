@@ -3767,9 +3767,7 @@ def test_archived_cards_remain_discoverable_without_active_clutter(tmp_path: Pat
     active_list = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project"))
     assert result_keys(active_list) == {active_key}
     assert {json_string(record["key"]) for record in json_records(active_list, "archived_matches")} == {archived_key}
-    archived_list = parse_json_stdout(
-        run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project", "--visibility", "archived")
-    )
+    archived_list = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project", "--visibility", "archived"))
     assert result_keys(archived_list) == {archived_key}
     all_list = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project", "--visibility", "all"))
     assert result_keys(all_list) == {active_key, archived_key}
