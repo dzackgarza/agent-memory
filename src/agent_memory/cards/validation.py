@@ -153,7 +153,13 @@ def containment_problems(
     records: dict[str, CardRecord],
 ) -> list[Problem]:
     problems: list[Problem] = []
-    for parent_id in wikilink_ids(record.metadata.get("parents") or []):
+    declared = wikilink_ids(record.metadata.get("parents") or [])
+    # An orphan is reported here or nowhere: the filesystem check skips a non-root card whose
+    # parent count is not one, deferring to this function, and the loop below only inspects
+    # parents that were declared.
+    if card_type.parents and not declared:
+        problems.append(Problem("containment", card_id, f"{card_type.name} declares no parent, but every {card_type.name} is contained by a {' or '.join(card_type.parents)}"))
+    for parent_id in declared:
         if parent_id in records and records[parent_id].type_name not in card_type.parents:
             problems.append(Problem("containment", card_id, f"parent {parent_id} is a {records[parent_id].type_name}, not in allowed {card_type.parents}"))
     return problems

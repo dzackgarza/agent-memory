@@ -53,7 +53,9 @@ def _list_field(field: FieldSpec) -> tuple[Any, Any]:
 def _scalar_field(field: FieldSpec) -> tuple[Any, Any]:
     scalar: Any = bool if field.type == "bool" else str
     if field.required:
-        return (scalar, Field())
+        # A required string that accepts "" makes `required: true` mean nothing: an empty
+        # assignment satisfies the field while erasing the value it was required to carry.
+        return (scalar, Field() if field.type == "bool" else Field(min_length=1))
     # POLICY.RUNTIME_DEFAULT exception (user-granted): default applies only when FieldSpec.required is
     # False; required fields compile to a bare Field() and fail loud if missing.
     # ast-grep-ignore: no-field-default

@@ -73,6 +73,23 @@ def seed_feature_chain(root: Path, suffix: str, config: CardSystemConfig, models
     )
 
 
+def test_card_that_declares_no_parent_is_reported_against_itself(tmp_path: Path) -> None:
+    # Clearing a placed card's parents leaves it nested under a feature while claiming no
+    # container. The filesystem check skips a non-root card whose parent count is not one,
+    # so before this the only findings landed on the descendants whose chains shortened --
+    # every card but the one that broke.
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    seed_feature_chain(root, "ORPHAN", config, models)
+    update_card(root, config, models, "PLAN-ORPHAN", {"parents": []})
+
+    problems = validate_cards(load_card_records([root], config, models), config)
+
+    containment = [problem for problem in problems if problem.kind == "containment"]
+    assert [problem.card_id for problem in containment] == ["PLAN-ORPHAN"]
+    assert "feature" in containment[0].detail
+
+
 def test_wikilink_ids_strips_brackets() -> None:
     assert wikilink_ids(["[[PLAN-A]]", "[[TASK-B]]"]) == ["PLAN-A", "TASK-B"]
     assert wikilink_ids("[[FEATURE-X]]") == ["FEATURE-X"]

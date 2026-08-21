@@ -184,6 +184,11 @@ PROMOTION_POINTER_TAG = "promotion-pointer"
 # Ranked search runs on Probe, so Probe is a scoring engine, not just a CLI surface. Pinned
 # because an unpinned `@latest` re-resolves per invocation: the ranking could change between
 # two searches in one session with nothing in the vault having moved.
+#
+# Bumping this version is what the payload-shape asserts in probe_results, probe_skipped_files,
+# probe_score, json_child and json_int are holding up. They are asserts on purpose -- a shape
+# change is a broken pin, not user input -- but they assert against THIS version. Re-run a
+# ranked search against a real vault after any bump, and read the failure as "the pin moved".
 PROBE_PACKAGE = "@probelabs/probe@0.6.0-rc331"
 
 
@@ -1019,10 +1024,10 @@ def delete_memory_repointing_backlinks(key: str, cwd: Path, repoint: str) -> Jso
 
 def _delete_memory(key: str, cwd: Path, backlink_disposition: DeleteBacklinkDisposition) -> JsonObject:
     config = config_for_key(key, cwd)
+    path = memory_path_for_key(config, key)
     inbound_keys = non_index_incoming_link_keys(config, key)
     if inbound_keys and isinstance(backlink_disposition, DeleteBacklinksBlocked):
         raise MemoryOperationError(delete_backlink_disposition_error(key, inbound_keys))
-    path = config.vault / f"{key}.md"
     try:
         document = read_memory(path)
     except MalformedMemoryError:
@@ -1532,22 +1537,15 @@ def json_int(payload: JsonObject, key: str) -> int:
 
 def retrieve_memory(key: str, cwd: Path) -> str:
     config = config_for_key(key, cwd)
-    try:
-        return iwe.retrieve(config.vault, key)
-    except KeyError as exc:
-        raise MemoryOperationError(
-            "retrieve expects a full vault-relative key. "
-            f"Could not resolve `{key}`. "
-            'Use `agent-memory search --scope both "<term>"` to discover keys, then retrieve a result such as '
-            "`projects/<project-id>/decisions/parser-choice` or "
-            "`projects/<project-id>/plans/features/FEATURE-ID/FEATURE-ID`."
-        ) from exc
+    memory_path_for_key(config, key)
+    return iwe.retrieve(config.vault, key)
 
 
 def squash_memory(key: str, depth: int, cwd: Path) -> str:
     if depth < 1:
         raise MemoryOperationError(f"squash --depth must be 1 or more, got {depth}")
     config = config_for_key(key, cwd)
+    memory_path_for_key(config, key)
     return iwe.squash(config.vault, key, depth)
 
 
@@ -3773,7 +3771,12 @@ def inspect_scope_for_path(config: ProjectConfig, path: Path) -> str:
 def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
     path = config.vault / f"{key}.md"
     if not path.is_file():
-        raise MemoryOperationError(f'no record at key {key!r} in {config.vault}; run `agent-memory search --scope both "<term>"` to discover keys')
+        raise MemoryOperationError(
+            f"no record at key {key!r} in {config.vault}. "
+            "Keys are vault-relative, such as `projects/<project-id>/decisions/parser-choice` or "
+            "`projects/<project-id>/plans/features/FEATURE-ID/FEATURE-ID`. "
+            'Run `agent-memory search --scope both "<term>"` to discover keys.'
+        )
     card_command = card_command_for_path(config, path)
     if card_command is not None:
         raise MemoryOperationError(

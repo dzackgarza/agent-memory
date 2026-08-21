@@ -948,13 +948,6 @@ def add_command_scope_hint(arguments: list[str]) -> str | None:
     return None
 
 
-def missing_argument_message(error: cyclopts.exceptions.MissingArgumentError, arguments: list[str]) -> str:
-    message = str(error)
-    if len(arguments) >= 2 and arguments[:2] == ["search", "content"] and "--mode" not in arguments:
-        return f"{message} Missing required option: --mode (exact, fuzzy, or ranked)."
-    return message
-
-
 def command_requires_card_schema(arguments: list[str]) -> bool:
     if not arguments or arguments[0].startswith("-"):
         return False
@@ -973,9 +966,6 @@ def main() -> None:
     try:
         basic_doctor(Path.cwd())
         app(sys.argv[1:], print_error=False, exit_on_error=False)
-    except cyclopts.exceptions.MissingArgumentError as e:
-        print(f"Error: {missing_argument_message(e, sys.argv[1:])}", file=sys.stderr)
-        raise SystemExit(1)
     except cyclopts.exceptions.CycloptsError as e:
         print(f"Error: {e}", file=sys.stderr)
         raise SystemExit(1)

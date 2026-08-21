@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 
+import cyclopts.exceptions
 import pytest
 import yaml
 from frontmatter import loads as load_frontmatter_text
@@ -1067,7 +1068,7 @@ def test_project_memory_crud_and_search_cross_real_scopes(tmp_path: Path) -> Non
 
     basename_miss = run_agent_memory_subprocess(workspace.repo, "retrieve", "project-alpha")
     assert basename_miss.returncode != 0
-    assert "retrieve expects a full vault-relative key" in basename_miss.stderr
+    assert "Keys are vault-relative" in basename_miss.stderr
     assert "projects/<project-id>/decisions/parser-choice" in basename_miss.stderr
     assert "projects/<project-id>/plans/features/FEATURE-ID/FEATURE-ID" in basename_miss.stderr
     assert "agent-memory search --scope both" in basename_miss.stderr
@@ -3662,9 +3663,12 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     feature_key = f"projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
     search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"))
     assert feature_key in result_keys(search)
-    feature_text = run_agent_memory(workspace.repo, "retrieve", feature_key).stdout
-    assert f"#projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO" in feature_text
-    assert "# FEATURE-DEMO" in feature_text
+    note_read = run_agent_memory_subprocess(workspace.repo, "retrieve", feature_key)
+    stderr_card = assert_structured_cli_error(note_read)
+    assert "feature show FEATURE-DEMO" in stderr_card
+    shown = parse_json_stdout(run_agent_memory(workspace.repo, "feature", "show", "FEATURE-DEMO"))
+    assert shown["id"] == "FEATURE-DEMO"
+    assert json_object(shown["metadata"])["status"] == "in-progress"
 
     # migrate an in-repo card tree (carrying trackerStatus) into the vault
     source = tmp_path / "incoming" / "plans" / "features" / "FEATURE-MIG"
@@ -4489,10 +4493,12 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     assert "--type" in stderr1
     assert "--scope" in stderr1
 
-    # Scenario 2: missing modes/arguments
-    r2 = run_agent_memory_subprocess(workspace.repo, "search", "content")
-    stderr2 = assert_structured_cli_error(r2)
-    assert "--mode" in stderr2
+    # Scenario 2: a genuinely missing required argument -- the query, since --mode now
+    # defaults -- reaches the caller as a typed cyclopts error, and as a structured error
+    # rather than a traceback once main() renders it.
+    with pytest.raises(cyclopts.exceptions.MissingArgumentError):
+        run_agent_memory(workspace.repo, "search", "content")
+    assert_structured_cli_error(run_agent_memory_subprocess(workspace.repo, "search", "content"))
 
     # Scenario 3: invalid search mode
     unsupported_mode = "substring"

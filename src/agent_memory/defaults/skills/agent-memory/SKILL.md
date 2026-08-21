@@ -84,7 +84,7 @@ Run `maintain init-global` once per machine. Run `init project` once per reposit
 | `search keys QUERY` | `QUERY` | `--scope` (both) |
 | `search content QUERY` | `QUERY` | `--mode` (ranked), `--scope` (both) |
 | `search metadata` | — | `--scope` (both), `--type`, `--tag`, `--created-after` |
-| `retrieve KEY` | `KEY` | — |
+| `retrieve KEY` | `KEY` — a memory note, never a card | — |
 | `update KEY` | `KEY` | `--title`, `--type`, `--content` |
 | `delete KEY` | `KEY` | `--repoint`, `--orphan-ok` (False) |
 | `list` | — | `--type` (every type), `--scope` (both), `--unmigrated` (False) |
@@ -292,7 +292,7 @@ Read-only. Every command emits JSON.
 | `--append-content` / `--append-body-file` | No append exists. Read, append locally, write the whole body back. |
 | `plan list` | `list --type plan` |
 | `plan push` | `sync run` |
-| `plan retrieve` | `plan show ID` for the card, `retrieve KEY` for the full note. |
+| `plan retrieve` | `plan show ID`, or `card show ID`. `retrieve` reads memory notes only — it refuses card keys, because rendering a card as a note keeps the body and drops `id`, `status`, `parents`, and every other field. `list` returns card keys, so check the key before choosing a reader. |
 | `inspect` with no subcommand | Pick one: `overview`, `schema`, `paths`, `tree`, `links`, `outline`, `stats`, `recent`, `export`. |
 | `plan show`, `plan dag` | Both exist. See the card tables above. |
 
