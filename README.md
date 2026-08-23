@@ -16,7 +16,7 @@ This installs `agent-memory` as an editable global `uv` tool and provisions the 
 - `iwe` through the documented Cargo installer when absent
 - `rg` through Cargo when absent
 - `zk` `v0.15.5` into `~/.local/bin`
-- Probe through `npx -y @probelabs/probe@latest`
+- Probe `v0.6.0-rc331` as `~/.local/bin/probelabs-probe`
 
 Run the first-time setup prompt for the global vault:
 
@@ -193,7 +193,6 @@ Runtime tools:
 - `git`
 - `iwe`
 - `rg`
-- `npx`
 - `@probelabs/probe`
 - `zk`
 
