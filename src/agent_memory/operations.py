@@ -179,14 +179,15 @@ QUEUE_DIRECTORY = "queue"
 # Tag that marks the stub `maintain move` leaves behind so a moved key still resolves.
 PROMOTION_POINTER_TAG = "promotion-pointer"
 # Ranked search runs on Probe, so Probe is a scoring engine, not just a CLI surface. Pinned
-# because an unpinned `@latest` re-resolves per invocation: the ranking could change between
-# two searches in one session with nothing in the vault having moved.
+# because an unpinned release can change the ranking between two searches when the vault
+# has not changed.
 #
 # Bumping this version is what the payload-shape asserts in probe_results, probe_skipped_files,
 # probe_score, json_child and json_int are holding up. They are asserts on purpose -- a shape
 # change is a broken pin, not user input -- but they assert against THIS version. Re-run a
 # ranked search against a real vault after any bump, and read the failure as "the pin moved".
-PROBE_PACKAGE = "@probelabs/probe@0.6.0-rc331"
+PROBE_VERSION = "0.6.0-rc331"
+PROBE_BINARY = Path.home() / ".local/bin/probelabs-probe"
 
 
 def index_descriptions(scope: MemoryScope) -> dict[str, str]:
@@ -206,8 +207,8 @@ VAULT_DIRECTORIES: tuple[Path, ...] = (
 )
 PROBE_DEPENDENCY = DependencyCheck(
     "@probelabs/probe",
-    ("bunx", "--silent", PROBE_PACKAGE, "--version"),
-    f"run `just setup` from the agent-memory checkout; manual install: run `bunx --silent {PROBE_PACKAGE} --version`.",
+    (str(PROBE_BINARY), "--version"),
+    "run `just setup` from the agent-memory checkout.",
 )
 BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
     DependencyCheck(
@@ -219,11 +220,6 @@ BASIC_DEPENDENCIES: tuple[DependencyCheck, ...] = (
         "rg",
         ("rg", "--version"),
         "run `just setup` from the agent-memory checkout; manual install: run `cargo install ripgrep`.",
-    ),
-    DependencyCheck(
-        "bunx",
-        ("bunx", "--version"),
-        "run `just setup` from the agent-memory checkout; manual install: install bun from https://bun.sh.",
     ),
     PROBE_DEPENDENCY,
     DependencyCheck(
@@ -1491,14 +1487,9 @@ def probe_search_root(
 ) -> JsonObject:
     result = run_checked(
         [
-            "bunx",
-            # Without --silent, a cold cache writes install progress into the stdout this
-            # function parses as JSON, so the first search after a fresh install fails.
-            "--silent",
-            # Do not "simplify" this to a bare `probe`. A different package, @buger/probe,
-            # installs a binary of that name globally, so a bare command name would swap
-            # the ranking engine out from under this search with nothing to show for it.
-            PROBE_PACKAGE,
+            # A different package, @buger/probe, also installs `probe`. The dedicated
+            # install name preserves the ranked-search engine at this boundary.
+            str(PROBE_BINARY),
             "search",
             query,
             str(root),

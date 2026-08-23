@@ -14,9 +14,12 @@ just install
 This installs `agent-memory` as an editable global `uv` tool and provisions the command-line tools that the app invokes:
 
 - `iwe` through the documented Cargo installer when absent
+
 - `rg` through Cargo when absent
+
 - `zk` `v0.15.5` into `~/.local/bin`
-- Probe through `npx -y @probelabs/probe@latest`
+
+- Probe `v0.6.0-rc331` as `~/.local/bin/probelabs-probe`
 
 Run the first-time setup prompt for the global vault:
 
@@ -184,26 +187,36 @@ agent-memory maintain merge <key> --reference <other-key>
 agent-memory maintain squash <key> --depth 3
 ```
 
-When an `agent-memory` command has a real commit or validation failure, or vault recovery is explicitly requested, dispatch a dedicated `vault-maintenance` subagent. It owns inspection, repair, validation, commit, and push of affected vault paths while the parent task continues unrelated work. A dirty worktree alone neither triggers maintenance nor blocks path-scoped memory CRUD; preserve unrelated changes.
+When an `agent-memory` command has a real commit or validation failure, or vault recovery is explicitly requested, dispatch a dedicated `vault-maintenance` subagent.
+It owns inspection, repair, validation, commit, and push of affected vault paths while the parent task continues unrelated work.
+A dirty worktree alone neither triggers maintenance nor blocks path-scoped memory CRUD; preserve unrelated changes.
 
 ## Dependencies
 
 Runtime tools:
 
 - `git`
+
 - `iwe`
+
 - `rg`
-- `npx`
+
 - `@probelabs/probe`
+
 - `zk`
 
 Setup and installation tools:
 
 - `uv`
+
 - `cargo`
+
 - `gh`
+
 - `gum`
+
 - `tar`
+
 - `trash`
 
 Python dependencies are declared in `pyproject.toml`.

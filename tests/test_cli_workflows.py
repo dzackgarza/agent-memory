@@ -34,7 +34,7 @@ from agent_memory.models import MemoryType, ProjectConfig
 from agent_memory.operations import (
     BUNDLED_SKILL_NAMES,
     OKF_VERSION,
-    PROBE_PACKAGE,
+    PROBE_BINARY,
     QUEUE_CARD_TYPE,
     CardFieldError,
     DependencyCheck,
@@ -2173,12 +2173,11 @@ def test_doctor_reports_declared_project_contract(tmp_path: Path) -> None:
             "issues": [],
         },
     ]
-    assert doctor["tools"] == ["git", "rg", "bunx", "@probelabs/probe", "zk"]
+    assert doctor["tools"] == ["git", "rg", "@probelabs/probe", "zk"]
     assert doctor["dependencies"] == [
         {"name": "git", "command": ["git", "--version"], "status": "ok"},
         {"name": "rg", "command": ["rg", "--version"], "status": "ok"},
-        {"name": "bunx", "command": ["bunx", "--version"], "status": "ok"},
-        {"name": "@probelabs/probe", "command": ["bunx", "--silent", PROBE_PACKAGE, "--version"], "status": "ok"},
+        {"name": "@probelabs/probe", "command": [str(PROBE_BINARY), "--version"], "status": "ok"},
         {"name": "zk", "command": ["zk", "--version"], "status": "ok"},
     ]
 

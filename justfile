@@ -104,12 +104,26 @@ _install-zk:
 _install-probe:
     #!/usr/bin/env bash
     set -euo pipefail
-    bunx --version
-    # Ask the code which Probe it calls rather than repeating the pin here: ranked search
-    # runs Probe as a scoring engine, and an install step that provisions a different
-    # version than the runtime invokes is a drift nobody would see.
-    probe_package="$(uv run --project "{{ justfile_directory() }}" python -c 'from agent_memory.operations import PROBE_PACKAGE; print(PROBE_PACKAGE)')"
-    bunx --silent "$probe_package" --version
+    gh --version
+    tar --version
+    install --version
+    sha256sum --version
+    uvx --from trash-cli trash --version
+    probe_version="$(uv run --project "{{ justfile_directory() }}" python -c 'from agent_memory.operations import PROBE_VERSION; print(PROBE_VERSION)')"
+    probe_binary="$(uv run --project "{{ justfile_directory() }}" python -c 'from agent_memory.operations import PROBE_BINARY; print(PROBE_BINARY)')"
+    probe_tag="v${probe_version}"
+    probe_asset="probe-${probe_tag}-x86_64-unknown-linux-musl.tar.gz"
+    probe_directory="probe-${probe_tag}-x86_64-unknown-linux-musl"
+    temp_dir="$(mktemp -d)"
+    trap 'uvx --from trash-cli trash "$temp_dir"' EXIT
+    gh release download "$probe_tag" --repo probelabs/probe --pattern "${probe_asset}*" --dir "$temp_dir"
+    (
+        cd "$temp_dir"
+        sha256sum -c "${probe_asset}.sha256"
+    )
+    tar -xzf "$temp_dir/$probe_asset" -C "$temp_dir"
+    install -D -m 0755 "$temp_dir/$probe_directory/probe" "$probe_binary"
+    "$probe_binary" --version
 
 [private]
 _verify-toolchain:
@@ -117,12 +131,12 @@ _verify-toolchain:
     set -euo pipefail
     test -x "$(uv tool dir --bin)/agent-memory"
     test -x "{{ LOCAL_BIN }}/zk"
+    test -x "{{ LOCAL_BIN }}/probelabs-probe"
     uv --version
     git --version
     gum --version
     cargo --version
     rg --version
-    npx --version
     "{{ LOCAL_BIN }}/zk" --version
-    npx -y @probelabs/probe@latest --version
+    "{{ LOCAL_BIN }}/probelabs-probe" --version
     "$(uv tool dir --bin)/agent-memory" --help >/dev/null
