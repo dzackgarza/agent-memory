@@ -122,7 +122,7 @@ _install-probe:
         sha256sum -c "${probe_asset}.sha256"
     )
     tar -xzf "$temp_dir/$probe_asset" -C "$temp_dir"
-    install -m 0755 "$temp_dir/$probe_directory/probe" "$probe_binary"
+    install -D -m 0755 "$temp_dir/$probe_directory/probe" "$probe_binary"
     "$probe_binary" --version
 
 [private]
