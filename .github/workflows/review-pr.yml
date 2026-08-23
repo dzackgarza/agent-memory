@@ -13,6 +13,7 @@ jobs:
       tier: test-ci
       profile: 'python'
       infra_ref: 'main'
+      setup_recipe: '_install-probe'
   deterministic-diff:
     uses: dzackgarza/ai-review-ci/.github/workflows/_gates.yml@main
     permissions:
