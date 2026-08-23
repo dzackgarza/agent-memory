@@ -108,14 +108,14 @@ _install-probe:
     tar --version
     install --version
     sha256sum --version
-    trash --version
+    uvx --from trash-cli trash --version
     probe_version="$(uv run --project "{{ justfile_directory() }}" python -c 'from agent_memory.operations import PROBE_VERSION; print(PROBE_VERSION)')"
     probe_binary="$(uv run --project "{{ justfile_directory() }}" python -c 'from agent_memory.operations import PROBE_BINARY; print(PROBE_BINARY)')"
     probe_tag="v${probe_version}"
     probe_asset="probe-${probe_tag}-x86_64-unknown-linux-musl.tar.gz"
     probe_directory="probe-${probe_tag}-x86_64-unknown-linux-musl"
     temp_dir="$(mktemp -d)"
-    trap 'trash "$temp_dir"' EXIT
+    trap 'uvx --from trash-cli trash "$temp_dir"' EXIT
     gh release download "$probe_tag" --repo probelabs/probe --pattern "${probe_asset}*" --dir "$temp_dir"
     (
         cd "$temp_dir"
