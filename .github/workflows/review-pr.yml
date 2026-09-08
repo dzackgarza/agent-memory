@@ -57,7 +57,7 @@ jobs:
       gate: pr-description-checklist
       profile: 'python'
   slop:
-    uses: dzackgarza/ai-review-ci/.github/workflows/_review.yml@main
+    uses: dzackgarza/automated-reviews/.github/workflows/_slop-review.yml@main
     permissions:
       contents: read
       security-events: write
@@ -65,7 +65,6 @@ jobs:
       pull-requests: write
       issues: write
     with:
-      report_type: slop
       scope: diff
   thread-resolution:
     needs:

@@ -11,12 +11,12 @@ on:
 
 jobs:
   slop:
-    uses: dzackgarza/ai-review-ci/.github/workflows/_review.yml@main
+    uses: dzackgarza/automated-reviews/.github/workflows/_slop-review.yml@main
     permissions:
       contents: read
       security-events: write
       actions: read
       pull-requests: write
+      issues: write
     with:
-      report_type: slop
       scope: repo
