@@ -15,6 +15,10 @@ LOCAL_BIN := env_var("HOME") / ".local/bin"
 default:
     @just --list
 
+[private]
+_test-target +args:
+    uv run --group dev pytest {{args}}
+
 # Install the agent-memory toolchain (agent-memory, ripgrep, zk, probe).
 install: _install-agent-memory _install-ripgrep _install-zk _install-probe _verify-toolchain
 

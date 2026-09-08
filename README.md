@@ -41,6 +41,8 @@ agent-memory init project --vault <vault>
 
 This registers the project in the vault's `_meta/projects.toml`, adds an `AGENTS.md` pointer to the project memory key, and symlinks the repository `.agents` and `.hermes` paths to the same vault-owned project directory.
 Existing local `.agents` or `.hermes` contents are merged into that vault-owned project directory during initialization.
+Binding commits its project metadata without refreshing the shared search index.
+Search refreshes that derived index when needed; an unrelated index operation does not block binding.
 The project id is derived from the GitHub origin remote when available and from the git root folder name otherwise; use `--project-id <name>` only when that derived name should be overridden.
 
 ### Global operations from an unbound directory
