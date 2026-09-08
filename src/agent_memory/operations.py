@@ -628,7 +628,8 @@ def init_project(vault: Path, cwd: Path, project_id: str | None = None) -> JsonO
         vault / "_meta" / "projects.toml",
         {"project_id": project_id, "root": str(git_root), "remote": remote},
     )
-    index_zk_notebook(vault)
+    # Binding writes project metadata. Search owns refreshing the derived index;
+    # waiting for a vault-wide zk scan here couples setup to unrelated projects.
 
     paths = [
         vault / "index.md",
