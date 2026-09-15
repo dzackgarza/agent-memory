@@ -319,21 +319,14 @@ def ordered_children(parent_id: str, child_type: str, field_name: str, children:
     return _reconcile_declared_order(parent_id, child_type, field_name, declared, children)
 
 
-def _dependson_order_problems(sequence: list[str], records: dict[str, CardRecord]) -> list[Problem]:
-    return [
-        Problem("sibling-ordering", child_id, f"sibling order requires dependsOn '{previous_id}'")
-        for previous_id, child_id in zip(sequence, sequence[1:], strict=False)
-        if previous_id not in depends_targets(records[child_id], records)
-    ]
-
-
 def ordered_child_fields(config: CardSystemConfig) -> dict[str, tuple[str, str]]:
     return {parent_type.name: (child_type, field_name) for parent_type in config.card_types for child_type, field_name in parent_type.ordered_children.items()}
 
 
 def sibling_ordering_problems(records: dict[str, CardRecord], config: CardSystemConfig) -> list[Problem]:
-    # Port of validate_sibling_ordering: a parent's like-typed children must be declared in
-    # the parent's ordered link field and each sibling must dependsOn its predecessor.
+    # A parent's ordered child-link field records execution/presentation sequence only.
+    # It must contain exactly the parent's like-typed children; dependsOn is reserved
+    # for genuine logical prerequisites, not adjacency in the working order.
     children = children_by_parent(records)
     order_fields = ordered_child_fields(config)
     problems: list[Problem] = []
@@ -345,7 +338,6 @@ def sibling_ordering_problems(records: dict[str, CardRecord], config: CardSystem
         typed = [child_id for child_id in children[parent_id] if records[child_id].type_name == child_type]
         resolved = ordered_children(parent_id, child_type, field_name, typed, records)
         problems.extend(resolved.problems)
-        problems.extend(_dependson_order_problems(resolved.sequence, records))
     return problems
 
 

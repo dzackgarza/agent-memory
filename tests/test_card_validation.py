@@ -245,3 +245,13 @@ def test_dependency_cycles_diamond_is_acyclic() -> None:
     from agent_memory.cards.validation import dependency_cycles
 
     assert dependency_cycles({"A": ["B", "C"], "B": ["D"], "C": ["D"], "D": []}) == []
+
+
+def test_ordered_siblings_do_not_require_logical_dependency(tmp_path: Path) -> None:
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    create_card(root, config, models, type_name="feature", card_id="FEATURE-SEQ", parent_id=None, fields={"title": "F", "status": "in-progress", "description": "d", "plans": ["[[PLAN-A]]", "[[PLAN-B]]"]}, body="# F\n")
+    for plan_id in ("PLAN-A", "PLAN-B"):
+        create_card(root, config, models, type_name="plan", card_id=plan_id, parent_id="FEATURE-SEQ", fields={"title": plan_id, "status": "in-progress", "description": "d", "successCriteria": ["c"], "tags": ["FEATURE-SEQ"]}, body=f"# {plan_id}\n")
+    problems = validate_cards(load_card_records([root], config, models), config)
+    assert [problem for problem in problems if problem.kind == "sibling-ordering"] == []

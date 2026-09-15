@@ -4722,7 +4722,7 @@ def write_card_dag(visibility: ArchiveVisibility, cwd: Path) -> JsonObject:
     findings = [card_load_finding_json(config, finding) for finding in scan.findings if finding.path.is_relative_to(plans_root) or finding.path.stem in closure]
     plans_root.mkdir(parents=True, exist_ok=True)
     path = plans_root / plan_dag_filename(visibility)
-    path.write_text(render_dag(records), encoding="utf-8")
+    path.write_text(render_dag(records, cards_config), encoding="utf-8")
     commit_vault_changes(config.vault, "Update plan DAG", paths=[path])
     return {"path": str(path), "visibility": visibility.value, "findings": json_list(findings)}
 

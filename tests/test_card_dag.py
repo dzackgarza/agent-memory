@@ -65,10 +65,10 @@ def test_dag_renders_dependency_and_containment_edges(tmp_path: Path) -> None:
     seed_feature_chain(root1, "ONE", config, models)
     seed_feature_chain(root2, "TWO", config, models)
     update_card(root1, config, models, "TASK-ONE", {"dependsOn": ["[[PLAN-TWO]]"]})
-    dag = render_dag(load_card_records([root1, root2], config, models))
+    dag = render_dag(load_card_records([root1, root2], config, models), config)
     assert "```mermaid" in dag
-    # cross-project dependency edge appears in the dependency graph
-    assert "TASK-ONE --> PLAN-TWO" in dag
+    # dependency arrows run prerequisite -> dependent
+    assert "PLAN-TWO --> TASK-ONE" in dag
     # containment edge parent -> child appears in the containment graph
     assert "PHASE-ONE --> TASK-ONE" in dag
     assert "FEATURE-TWO --> PLAN-TWO" in dag
@@ -83,6 +83,19 @@ def test_dag_omits_edges_to_nonexistent_targets(tmp_path: Path) -> None:
     seed_feature_chain(root, "ONE", config, models)
     update_card(root, config, models, "TASK-ONE", {"dependsOn": ["[[TASK-GHOST]]"]})
     update_card(root, config, models, "PHASE-ONE", {"parents": ["[[PLAN-ONE]]", "[[PLAN-GHOST]]"]})
-    dag = render_dag(load_card_records([root], config, models))
+    dag = render_dag(load_card_records([root], config, models), config)
     assert "TASK-GHOST" not in dag
     assert "PLAN-GHOST" not in dag
+
+
+def test_dag_renders_sequence_without_turning_it_into_dependency(tmp_path: Path) -> None:
+    config, models = models_and_config()
+    root = tmp_path / "p" / "plans"
+    create_card(root, config, models, type_name="feature", card_id="FEATURE-SEQ", parent_id=None, fields={"title": "F", "status": "in-progress", "description": "d", "plans": ["[[PLAN-A]]", "[[PLAN-B]]"]}, body="# F\n")
+    for plan_id in ("PLAN-A", "PLAN-B"):
+        create_card(root, config, models, type_name="plan", card_id=plan_id, parent_id="FEATURE-SEQ", fields={"title": plan_id, "status": "in-progress", "description": "d", "successCriteria": ["c"], "tags": ["FEATURE-SEQ"]}, body=f"# {plan_id}\n")
+    dag = render_dag(load_card_records([root], config, models), config)
+    sequence = dag.split("## Dependencies", 1)[0]
+    dependencies = dag.split("## Dependencies", 1)[1].split("## Containment", 1)[0]
+    assert "PLAN-A --> PLAN-B" in sequence
+    assert "PLAN-A --> PLAN-B" not in dependencies
