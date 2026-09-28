@@ -1,6 +1,6 @@
 # Repo-owned configuration: edit triggers and `with:` values directly.
 # All review behavior lives upstream in the referenced workflows.
-name: PR Review
+name: PR QC
 on:
   pull_request: {}
 jobs:
@@ -56,19 +56,7 @@ jobs:
     with:
       gate: pr-description-checklist
       profile: 'python'
-  slop:
-    uses: dzackgarza/automated-reviews/.github/workflows/_slop-review.yml@main
-    permissions:
-      contents: read
-      security-events: write
-      actions: read
-      pull-requests: write
-      issues: write
-    with:
-      scope: diff
   thread-resolution:
-    needs:
-      - slop
     uses: dzackgarza/ai-review-ci/.github/workflows/_gates.yml@main
     permissions:
       contents: read
