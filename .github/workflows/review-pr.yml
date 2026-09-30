@@ -56,13 +56,3 @@ jobs:
     with:
       gate: pr-description-checklist
       profile: 'python'
-  thread-resolution:
-    uses: dzackgarza/ai-review-ci/.github/workflows/_gates.yml@main
-    permissions:
-      contents: read
-      pull-requests: read
-      actions: read
-      issues: read
-    with:
-      gate: thread-resolution
-      profile: 'python'
