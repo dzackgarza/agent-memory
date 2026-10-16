@@ -48,11 +48,9 @@ test-ci:
     set -euo pipefail
     just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-ci
 
-# Full-repo deferred-debt audit (complexity, dead code, duplication). Scheduled, not push-blocking.
+# Run the scheduled whole-tree audit (semgrep and debt scans) through the central implementation.
 ambient:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    direnv exec "{{ justfile_directory() }}" just -f "$HOME/ai-review-ci/justfiles/qc-tooling.just" -d "{{ justfile_directory() }}" ambient
+    @just -f ~/ai-review-ci/justfiles/python.just -d . ambient
 
 [private]
 _install-agent-memory:
