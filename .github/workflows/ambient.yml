@@ -1,19 +1,19 @@
-# Repo-owned configuration: edit triggers and `with:` values directly.
-# Behavior lives upstream. Signal separation: the PR gate (review-pr.yml) blocks
-# on the diff; this scheduled run owns the full-repo deferred-debt audit
-# (complexity, dead code, duplication). It does NOT run on pull_request, so
-# pre-existing repo-wide debt never blocks an unrelated PR.
 name: Ambient audit
-
+# The whole-tree QC tier. The commit tier scans the staged files and the PR gate
+# the diff, so this scheduled run is the only semgrep scan of the whole tree.
+# Its findings fail this run, where they are reviewed; they never block an
+# unrelated pull request.
 on:
   schedule:
-    - cron: '0 7 * * 1'
+    - cron: '0 7 * * *'
   workflow_dispatch: {}
-
 jobs:
-  ambient-audit:
+  ambient:
     uses: dzackgarza/ai-review-ci/.github/workflows/_qc.yml@main
     permissions:
       contents: read
+      issues: read
     with:
       tier: ambient
+      profile: 'python'
+      infra_ref: 'main'
