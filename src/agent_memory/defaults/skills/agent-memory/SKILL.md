@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: "Use when deciding what belongs in agent memory, preserving significant experiences or reflections, managing plan records and the central vault, defining memory policy, converting historical material without erasing its evidential value, or invoking the agent-memory CLI. Contains the complete command surface: commands, options, defaults, and required arguments."
+description: Cross-session knowledge storage, retrieval, and vault memory management.
 ---
 
 # Agent Memory

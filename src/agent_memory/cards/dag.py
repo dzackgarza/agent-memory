@@ -60,4 +60,10 @@ def render_dag(records: dict[str, CardRecord], config: CardSystemConfig) -> str:
     sequence_edges = sequence_edges_for(records, config)
     dependency_edges = dependency_edges_for(records, nodes)
     containment_edges = containment_edges_for(records, nodes)
-    return mermaid_block("Sequence", nodes, sequence_edges) + "\n" + mermaid_block("Dependencies", nodes, dependency_edges) + "\n" + mermaid_block("Containment", nodes, containment_edges)
+    return (
+        mermaid_block("Sequence", nodes, sequence_edges)
+        + "\n"
+        + mermaid_block("Dependencies", nodes, dependency_edges)
+        + "\n"
+        + mermaid_block("Containment", nodes, containment_edges)
+    )

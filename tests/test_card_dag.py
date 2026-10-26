@@ -91,9 +91,33 @@ def test_dag_omits_edges_to_nonexistent_targets(tmp_path: Path) -> None:
 def test_dag_renders_sequence_without_turning_it_into_dependency(tmp_path: Path) -> None:
     config, models = models_and_config()
     root = tmp_path / "p" / "plans"
-    create_card(root, config, models, type_name="feature", card_id="FEATURE-SEQ", parent_id=None, fields={"title": "F", "status": "in-progress", "description": "d", "plans": ["[[PLAN-A]]", "[[PLAN-B]]"]}, body="# F\n")
+    create_card(
+        root,
+        config,
+        models,
+        type_name="feature",
+        card_id="FEATURE-SEQ",
+        parent_id=None,
+        fields={"title": "F", "status": "in-progress", "description": "d", "plans": ["[[PLAN-A]]", "[[PLAN-B]]"]},
+        body="# F\n",
+    )
     for plan_id in ("PLAN-A", "PLAN-B"):
-        create_card(root, config, models, type_name="plan", card_id=plan_id, parent_id="FEATURE-SEQ", fields={"title": plan_id, "status": "in-progress", "description": "d", "successCriteria": ["c"], "tags": ["FEATURE-SEQ"]}, body=f"# {plan_id}\n")
+        create_card(
+            root,
+            config,
+            models,
+            type_name="plan",
+            card_id=plan_id,
+            parent_id="FEATURE-SEQ",
+            fields={
+                "title": plan_id,
+                "status": "in-progress",
+                "description": "d",
+                "successCriteria": ["c"],
+                "tags": ["FEATURE-SEQ"],
+            },
+            body=f"# {plan_id}\n",
+        )
     dag = render_dag(load_card_records([root], config, models), config)
     sequence = dag.split("## Dependencies", 1)[0]
     dependencies = dag.split("## Dependencies", 1)[1].split("## Containment", 1)[0]
