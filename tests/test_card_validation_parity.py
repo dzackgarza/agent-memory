@@ -149,16 +149,15 @@ def test_status_hierarchy_complete_parent_with_complete_child_silent(tmp_path: P
 # --- sibling ordering -------------------------------------------------------
 
 
-def test_sibling_ordering_missing_dependson_flagged(tmp_path: Path) -> None:
+def test_sibling_ordering_does_not_imply_logical_dependency(tmp_path: Path) -> None:
     config, models = models_and_config()
     root = tmp_path / "p" / "plans"
     make_feature(root, config, models, "ONE", "in-progress")
     make_plan(root, config, models, "A", "in-progress", "FEATURE-ONE")
     make_plan(root, config, models, "B", "in-progress", "FEATURE-ONE")
-    # declare ordered plans but PLAN-B does not dependsOn PLAN-A
     update_card(root, config, models, "FEATURE-ONE", {"plans": ["[[PLAN-A]]", "[[PLAN-B]]"]})
     problems = validate_cards(load_card_records([root], config, models), config)
-    assert any(p.kind == "sibling-ordering" and p.card_id == "PLAN-B" and "dependsOn 'PLAN-A'" in p.detail for p in problems)
+    assert [p for p in problems if p.kind == "sibling-ordering"] == []
 
 
 def test_sibling_ordering_undeclared_children_flagged(tmp_path: Path) -> None:
@@ -202,7 +201,7 @@ def test_sibling_ordering_extra_declared_flagged(tmp_path: Path) -> None:
     assert any(p.kind == "sibling-ordering" and p.card_id == "FEATURE-ONE" and "non-child" in p.detail and "TASK-GHOST" in p.detail for p in problems)
 
 
-def test_sibling_ordering_phase_to_task_level(tmp_path: Path) -> None:
+def test_sibling_ordering_phase_to_task_level_is_sequence_only(tmp_path: Path) -> None:
     config, models = models_and_config()
     root = tmp_path / "p" / "plans"
     make_feature(root, config, models, "ONE", "in-progress")
@@ -211,9 +210,8 @@ def test_sibling_ordering_phase_to_task_level(tmp_path: Path) -> None:
     make_task(root, config, models, "A", "in-progress", "PHASE-ONE")
     make_task(root, config, models, "B", "in-progress", "PHASE-ONE")
     update_card(root, config, models, "PHASE-ONE", {"tasks": ["[[TASK-A]]", "[[TASK-B]]"]})
-    # TASK-B does not dependsOn TASK-A
     problems = validate_cards(load_card_records([root], config, models), config)
-    assert any(p.kind == "sibling-ordering" and p.card_id == "TASK-B" and "dependsOn 'TASK-A'" in p.detail for p in problems)
+    assert [p for p in problems if p.kind == "sibling-ordering"] == []
 
 
 def test_sibling_ordering_clean_tree_silent(tmp_path: Path) -> None:
@@ -222,7 +220,6 @@ def test_sibling_ordering_clean_tree_silent(tmp_path: Path) -> None:
     make_feature(root, config, models, "ONE", "in-progress")
     make_plan(root, config, models, "A", "in-progress", "FEATURE-ONE")
     make_plan(root, config, models, "B", "in-progress", "FEATURE-ONE")
-    update_card(root, config, models, "PLAN-B", {"dependsOn": ["[[PLAN-A]]"]})
     update_card(root, config, models, "FEATURE-ONE", {"plans": ["[[PLAN-A]]", "[[PLAN-B]]"]})
     problems = validate_cards(load_card_records([root], config, models), config)
     assert [p for p in problems if p.kind == "sibling-ordering"] == []
