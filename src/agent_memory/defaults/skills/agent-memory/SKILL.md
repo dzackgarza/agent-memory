@@ -594,15 +594,13 @@ Omit dates and step-by-step narration only when they add no meaning beyond the o
 
 ## Transforming Historical Material into Memory
 
-### Teaching a judgment learned through correction
+### Writing a memory that teaches a judgment
 
-When asked what a conversation taught you, start with the exchange itself. Read the answer that prompted an objection, the objection, and the next attempt. If that attempt drew a second objection, ask what the first revision still missed. Keep the evidence available at the time distinct from explanations you found afterward. A handbook can help you file a memory. Its account of good practice cannot establish what went wrong in an earlier conversation.
+Picture an agent encountering a similar problem months from now. It has the repository and the note. What would still make the mistaken choice look reasonable to that reader? Use the evidence from the original work to identify the missing distinction. Give the note a title the reader could find from the symptom, before knowing the answer.
 
-Choose what to teach by asking which decision a fresh agent could plausibly get wrong again. A finished artifact gives equal prominence to facts the agent knew from the start, choices the user corrected, and details introduced during implementation. Only the exchange tells you which of those required teaching. Preserve the cue that should prompt the decision, what made the original choice seem reasonable, and the distinction that settled it. If the exchange leaves the reason open, record the observation with that uncertainty.
+For example, a note titled *Showing how two maps determine homology* might begin with a diagram that lists every map correctly. Why would a reader still struggle? To compute homology at B, the reader needs the image of the map into B and the kernel of the map out of B, in the same group. A single chain A → B → C displays that shared term. Separate lists require the reader to reconstruct it. “Put the arrows on one line” preserves the edit but loses the reason to make it.
 
-For example, a diagram inspector puts the maps entering a term in one panel and the maps leaving it in another. Both panels are accurate. A note saying “put the arrows on one line” tells a future agent how to copy the final layout. What did the reader actually need to do? To compute homology at \(B\), the reader compares the image of \(A\to B\) with the kernel of \(B\to C\). The chain \(A\to B\to C\) puts both at the same \(B\). Separate panels make the reader reconstruct that identification. This explains why keeping every map matters, why rearranging them helps, and when a different presentation might serve a different question.
-
-Before filing, read the note as someone who has never seen the conversation. Change the example: suppose a proof describes two homomorphisms in successive paragraphs and asks for homology at their common term. Could the reader recognize the same issue and explain an appropriate edit? If the note only supplies the old layout or names an abstract virtue such as “clarity,” supply the missing reasoning. If the reader already gets that reasoning from the owning source, keep the source as its home.
+Before filing, change the example. Suppose the two maps occur in separate paragraphs of a proof. Could someone with only the note recognize the same obstacle and decide what would help? Supply whatever premise that decision still requires. Details the reader can recover from the finished artifact can stay there.
 
 ### Preserve before interpreting
 
