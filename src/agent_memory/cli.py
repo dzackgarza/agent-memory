@@ -258,7 +258,7 @@ def plan_progress_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Scope to summarize: project, global, or both.")] = SearchScope.BOTH,
 ) -> None:
-    """Summarize progress for plan memories with structured todo trees."""
+    """Summarize structured todos in plan notes and cards; report plans without todos."""
     emit(plan_progress(scope=scope, cwd=Path.cwd()))
 
 

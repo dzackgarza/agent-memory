@@ -411,6 +411,15 @@ class NoteScan:
 
 
 @dataclass(frozen=True)
+class PlanProgressRecord:
+    key: str
+    path: Path
+    title: str
+    scope: MemoryScope
+    metadata: Mapping[str, MetadataValue]
+
+
+@dataclass(frozen=True)
 class IndexScan:
     records: tuple[JsonObject, ...]
     findings: tuple[NoteFinding, ...]
@@ -862,35 +871,69 @@ def update_plan_todo(
     return result
 
 
+def scan_plan_progress_records(
+    config: ProjectConfig,
+    scope: SearchScope,
+    project_schema: CardSystemConfig | None,
+) -> tuple[list[PlanProgressRecord], list[NoteFinding]]:
+    # Legacy notes and schema-backed cards are distinct record formats. In particular,
+    # a valid plan card need not have the scope, tags, or type fields of a legacy note.
+    notes = scan_note_records(config, scope)
+    cards = (
+        scan_card_records([project_plans_root(config, project_schema)], project_schema, build_card_models(project_schema)) if project_schema is not None else CardScan({}, ())
+    )
+    card_paths = {card.path for card in cards.records.values()}
+    records = [
+        PlanProgressRecord(note.key, note.path, note.title, note.scope, note.document.metadata)
+        for note in notes.records
+        if note.memory_type is MemoryType.PLAN and note.path not in card_paths
+    ]
+    # A schema can also place cards directly in the plans root. Do not report those
+    # valid cards as malformed notes, or double-report a path already scanned as a note.
+    note_paths = {note.path for note in notes.records} | {finding.path for finding in notes.findings}
+    findings = [finding for finding in notes.findings if finding.path not in card_paths]
+    findings.extend(
+        note_finding_for_error(config, finding.path, MalformedMemoryError(finding.path, finding.detail)) for finding in cards.findings if finding.path not in note_paths
+    )
+    for card in cards.records.values():
+        if card.type_name != MemoryType.PLAN.value:
+            continue
+        try:
+            metadata = {key: yaml_metadata_value(card.path, key, value) for key, value in card.metadata.items()}
+        except MalformedMemoryError as error:
+            findings.append(note_finding_for_error(config, card.path, error))
+            continue
+        records.append(PlanProgressRecord(memory_key(config.vault, card.path), card.path, card_title_from_metadata(card.path, metadata), MemoryScope.PROJECT, metadata))
+    return records, findings
+
+
 def plan_progress(scope: SearchScope, cwd: Path) -> JsonObject:
     config, scope = resolve_search_scope(scope, cwd)
+    schemas_by_scope: dict[MemoryScope, CardSystemConfig] = {}
     complete_statuses_by_scope: dict[MemoryScope, set[str]] = {}
     excluded_scopes: list[JsonObject] = []
     for memory_scope in search_scope_memory_scopes(config, scope, both_order=(MemoryScope.PROJECT, MemoryScope.GLOBAL)):
         schema_project_id = require_project_id(config) if memory_scope is MemoryScope.PROJECT else None
         cards_config = load_card_system_config(config.vault, schema_project_id)
+        schemas_by_scope[memory_scope] = cards_config
         if not cards_config.workflow_roles:
             excluded_scopes.append({"scope": memory_scope.value, "reason": "active card schema has no workflow_roles"})
             continue
         complete_statuses_by_scope[memory_scope] = cards_config.statuses_with_role("complete")
-    note_scan = scan_note_records(config, scope)
-    findings = list(note_scan.findings)
+    records, findings = scan_plan_progress_records(config, scope, schemas_by_scope.get(MemoryScope.PROJECT))
     plans: list[JsonObject] = []
     unsupported_plans: list[JsonObject] = []
     total_todos = 0
     completed_todos = 0
-    for record in note_scan.records:
-        if record.memory_type is not MemoryType.PLAN:
-            continue
+    for record in records:
         path = record.path
-        if "todos" not in record.document.metadata:
+        if "todos" not in record.metadata:
             unsupported_plans.append({"key": record.key, "path": str(path), "title": record.title, "reason": "plan has no todos list"})
             continue
-        todos = record.document.metadata["todos"]
-        if not isinstance(todos, list):
-            findings.append(note_finding_for_error(config, path, MalformedMemoryError(path, "plan todos must be a list")))
-            continue
         try:
+            todos = record.metadata["todos"]
+            if not isinstance(todos, list):
+                raise MalformedMemoryError(path, "plan todos must be a list")
             status_counts = Counter(plan_todo_statuses(todos, path))
         except MalformedMemoryError as error:
             findings.append(note_finding_for_error(config, path, error))

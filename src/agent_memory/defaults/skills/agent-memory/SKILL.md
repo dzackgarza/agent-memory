@@ -138,6 +138,8 @@ Each type has a generated command group with the same four subcommands.
 | `card dag` | — | `--visibility` (active) |
 | `plan progress` | — | `--scope` (both) |
 
+`plan progress` reports structured todo totals from plan notes and project plan cards, including nested cards; plans without a todo list appear in `unsupported_plans`.
+
 `--set` repeats to append to a list field; `--set FIELD=` empties one.
 There is no separate option for either.
 

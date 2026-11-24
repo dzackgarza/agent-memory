@@ -1328,6 +1328,115 @@ def test_plan_progress_counts_legacy_todo_statuses_across_scopes(tmp_path: Path)
     assert_note_finding(both_progress, nonlist_plan_path, workspace)
 
 
+def test_plan_progress_discovers_nested_plan_cards(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    plan_key = add_cli_plan_tree(
+        workspace,
+        feature_id="FEATURE-PROGRESS",
+        plan_id="PLAN-PROGRESS",
+        phase_id="PHASE-PROGRESS",
+        task_id="TASK-PROGRESS",
+        feature_title="Progress Feature",
+        plan_title="Nested Plan",
+        description_signal="nested-progress",
+    )
+    plan_path = workspace.vault / f"{plan_key}.md"
+    shown = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "show", "PLAN-PROGRESS"))
+    assert shown["path"] == str(plan_path)
+    clean = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
+    assert json_array(clean["problems"]) == []
+    run_agent_memory(workspace.repo, "card", "dag")
+
+    legacy_key, _legacy_path = write_legacy_plan_with_todos(workspace, slug="flat-progress")
+    for scope in ("project", "both"):
+        progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", scope))
+        assert progress["total_todos"] == 3
+        assert progress["completed_todos"] == 0
+        assert [plan["key"] for plan in json_records(progress, "plans")] == [legacy_key]
+        assert json_records(progress, "unsupported_plans") == [
+            {
+                "key": plan_key,
+                "path": str(plan_path),
+                "title": "Nested Plan",
+                "reason": "plan has no todos list",
+            }
+        ]
+        assert json_records(progress, "findings") == []
+
+    global_progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "global"))
+    assert json_records(global_progress, "plans") == []
+    assert json_records(global_progress, "unsupported_plans") == []
+    assert json_records(global_progress, "findings") == []
+
+    # A malformed nested card must not silently disappear either.
+    malformed = plan_path.parent.parent / "PLAN-INVALID" / "PLAN-INVALID.md"
+    malformed.parent.mkdir()
+    malformed.write_text("---\nid: PLAN-INVALID\ntitle: Incomplete Plan\n---\n", encoding="utf-8")
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "project"))
+    assert_note_finding(progress, malformed, workspace)
+    assert [plan["key"] for plan in json_records(progress, "unsupported_plans")] == [plan_key]
+
+
+@pytest.mark.parametrize("root", ["plans", "custom-plans"])
+def test_plan_progress_uses_configured_card_root_and_counts_todos(tmp_path: Path, root: str) -> None:
+    workspace = initialized_workspace(tmp_path)
+    project_root = workspace.vault / "projects" / workspace.project_id
+    cards_path = project_root / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards = yaml.safe_load((workspace.vault / "_meta" / "cards.yaml").read_text(encoding="utf-8"))
+    assert isinstance(cards, dict)
+    cards["root"] = root
+    # A project may configure a plan type that stores structured todos and lives
+    # directly in its root, rather than nested beneath a feature.
+    plan = next(card for card in cards["card_types"] if card["name"] == "plan")
+    plan.update(parents=[], container="", own_dir=False)
+    plan["fields"].append(
+        {
+            "name": "todos",
+            "type": "object_list",
+            "schema": [
+                {"name": "id", "type": "string", "required": True},
+                {"name": "status", "type": "status", "required": True},
+            ],
+        }
+    )
+    # The flat plan type has no child card types in this project schema.
+    plan.pop("ordered_children")
+    cards["card_types"] = [plan]
+    cards_path.write_text(yaml.safe_dump(cards, sort_keys=False), encoding="utf-8")
+
+    for card_id in ("PLAN-TODOS", "PLAN-EMPTY"):
+        run_agent_memory(
+            workspace.repo,
+            "plan",
+            "add",
+            card_id,
+            "--set",
+            "title=Schema Plan",
+            "--set",
+            "description=Configured plan fixture",
+            "--set",
+            "status=in-progress",
+            "--set",
+            "successCriteria=Complete the todo",
+        )
+    plan_path = project_root / root / "PLAN-TODOS.md"
+    plan_metadata = frontmatter(plan_path)
+    plan_metadata["todos"] = [
+        {"id": "T1", "status": "complete"},
+        {"id": "T2", "status": "unstarted"},
+    ]
+    plan_path.write_text("---\n" + yaml.safe_dump(plan_metadata, sort_keys=False) + "---\n# Schema Plan\n", encoding="utf-8")
+    empty_path = project_root / root / "PLAN-EMPTY.md"
+    progress = parse_json_stdout(run_agent_memory(workspace.repo, "plan", "progress", "--scope", "project"))
+    assert progress["total_todos"] == 2
+    assert progress["completed_todos"] == 1
+    assert progress["completion_percent"] == 50
+    assert [item["path"] for item in json_records(progress, "plans")] == [str(plan_path)]
+    assert [item["path"] for item in json_records(progress, "unsupported_plans")] == [str(empty_path)]
+    assert json_records(progress, "findings") == []
+
+
 def test_plan_progress_both_excludes_scope_without_workflow_roles(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     project_key, _project_path = write_legacy_plan_with_todos(workspace, slug="excluded-project-progress")
