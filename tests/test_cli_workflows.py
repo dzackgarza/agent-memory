@@ -3793,7 +3793,8 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
 
     dag = parse_json_stdout(run_agent_memory(workspace.repo, "card", "dag"))
     dag_text = Path(json_string(dag["path"])).read_text(encoding="utf-8")
-    assert dag_text.count("```mermaid") == 2
+    assert dag_text.count("```mermaid") == 3
+    assert [line for line in dag_text.splitlines() if line.startswith("## ")] == ["## Sequence", "## Dependencies", "## Containment"]
 
     feature_key = f"projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
     search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"))
