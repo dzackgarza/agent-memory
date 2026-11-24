@@ -109,6 +109,10 @@ agent-memory phase add PHASE-DEMO --parent PLAN-DEMO --set title=Phase --set sta
 agent-memory task add TASK-DEMO --parent PHASE-DEMO --set title=Task --set status=in-progress --set parents=[[PHASE-DEMO]] --set successCriteria=task-ships --set tags=FEATURE-DEMO --set tags=PLAN-DEMO --set tags=PHASE-DEMO
 ```
 
+When `add` omits `--set status=...`, the new card stores its configured status set's default, including for types whose stored status is required. An explicit status still takes precedence and is validated against the schema. `queue add` uses the same rule for an omitted `--status`.
+
+`agent-memory doctor` lists missing or null stored statuses in `card_findings`, with the card's path and configured default. It checks the bound project's card tree and the global queue (only the global queue when unbound), using the appropriate schema for each. It does not change existing files.
+
 Validate and render the shared DAG:
 
 ```bash

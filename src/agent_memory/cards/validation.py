@@ -55,12 +55,15 @@ def validation_detail(error: ValidationError) -> str:
     return "; ".join(f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}" for item in error.errors())
 
 
-def read_card_record(path: Path, config: CardSystemConfig, models: dict[str, type[BaseModel]]) -> CardRecord | CardLoadFinding:
+def read_card_record(path: Path, config: CardSystemConfig, models: dict[str, type[BaseModel]], *, require_stored_status: bool = False) -> CardRecord | CardLoadFinding:
     try:
         metadata, _body = split_card(path.read_text(encoding="utf-8"), path)
         if metadata.get("id") != path.stem:
             raise MalformedCardError(f"card declares id {metadata.get('id')!r} but its filename says {path.stem}; set the id field to {path.stem} or rename the file")
         card_type = card_type_for_id(config, path.stem)
+        if require_stored_status and metadata.get("status") is None:
+            default = config.status_sets[card_type.status_set].default
+            raise MalformedCardError(f"card has no stored status; set status to an appropriate value (status set default: {default})")
         models[card_type.name].model_validate(metadata)
     except ValidationError as error:
         return CardLoadFinding(path, validation_detail(error))
@@ -73,6 +76,8 @@ def scan_card_records(
     plans_roots: Sequence[Path],
     config: CardSystemConfig,
     models: dict[str, type[BaseModel]],
+    *,
+    require_stored_status: bool = False,
 ) -> CardScan:
     # Load every card across all given project plan roots into one id-keyed map; building
     # the index vault-wide is what lets cross-project [[ID]] references resolve. An unreadable
@@ -87,7 +92,7 @@ def scan_card_records(
         for path in sorted(root.rglob("*.md")):
             if not path.stem.startswith(prefixes):
                 continue  # skip non-card files such as the generated plan-dag.md
-            loaded = read_card_record(path, config, models)
+            loaded = read_card_record(path, config, models, require_stored_status=require_stored_status)
             if isinstance(loaded, CardLoadFinding):
                 findings.append(loaded)
             elif path.stem in records:
@@ -190,8 +195,8 @@ def default_statuses(config: CardSystemConfig) -> dict[str, str]:
 
 
 def card_status(record: CardRecord, default: str) -> str:
-    # An absent status is not a defect: the field is optional for most types and the compiled
-    # model supplies the status set's default, so hierarchy checks must read the same value.
+    # Doctor reports absent stored statuses separately. Keep hierarchy validation useful
+    # for old cards by reading the same default as the compiled optional status field.
     status = record.metadata.get("status")
     if status is None:
         return default

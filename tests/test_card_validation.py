@@ -5,7 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from agent_memory.cards import CardSystemConfig, build_card_models, load_card_system_config
-from agent_memory.cards.storage import create_card, update_card
+from agent_memory.cards.storage import UNSET_FIELD, create_card, update_card
 from agent_memory.cards.validation import load_card_records, scan_card_records, validate_cards, wikilink_ids
 
 
@@ -192,12 +192,12 @@ def test_scan_reports_duplicate_ids_without_dropping_the_first(tmp_path: Path) -
 
 
 def test_parent_without_declared_status_validates_against_the_schema_default(tmp_path: Path) -> None:
-    # `feature add` does not require status, so the ordinary two-command sequence leaves a
-    # parent whose status is absent. The compiled model reads that as the status set's
-    # default, and validation must read it the same way instead of calling the card broken.
+    # Older cards may lack an explicitly stored status. Hierarchy validation must still
+    # use the status set's default, independently of doctor's missing-status diagnostic.
     config, models = models_and_config()
     root = tmp_path / "p" / "plans"
     create_card(root, config, models, type_name="feature", card_id="FEATURE-A", parent_id=None, fields={"title": "A"}, body="# A\n")
+    update_card(root, config, models, "FEATURE-A", {"status": UNSET_FIELD})
     plan_fields = {"title": "P", "status": "approved-and-unstarted", "description": "d", "successCriteria": ["c"], "tasks": ["[[TASK-A]]"], "tags": ["FEATURE-A"]}
     create_card(root, config, models, type_name="plan", card_id="PLAN-A", parent_id="FEATURE-A", fields=plan_fields, body="# P\n")
 

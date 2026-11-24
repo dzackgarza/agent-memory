@@ -125,6 +125,11 @@ def create_card(
     # from its container is still expressible.
     if parent_id is not None and "parents" not in fields and any(field.name == "parents" for field in card_type.fields):
         fields = {**fields, "parents": [f"[[{parent_id}]]"]}
+    # Materialize only the configured status default at creation, before validation.
+    # This handles required status fields too, while retaining exclude_unset for every
+    # other field and keeping existing-record validation strict.
+    if "status" not in fields:
+        fields = {**fields, "status": config.status_sets[card_type.status_set].default}
     validated = models[type_name].model_validate({**fields, "id": card_id})
     path = card_file_path(plans_root, card_type, card_id, parent_id)
     if path.exists():
