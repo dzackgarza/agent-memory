@@ -197,3 +197,25 @@ def test_remove_index_link_by_target(tmp_path: Path) -> None:
     index_file.write_text(content, encoding="utf-8")
     remove_index_link_by_target(index_file, "victim.md")
     assert "* [Victim]" not in index_file.read_text(encoding="utf-8")
+
+
+def test_loose_managed_list_items_and_iwe_rewritten_targets(tmp_path: Path) -> None:
+    index_file = tmp_path / "index.md"
+    index_file.write_text(
+        "# Concepts\n\n- [Moved](../references/moved) - Description\n\n- [Sibling](sibling.md) - Sibling description\n\nMore prose.\n",
+        encoding="utf-8",
+    )
+    remove_index_link(index_file, "moved.md", alternate_targets=("../references/moved.md",))
+    assert "[Moved]" not in index_file.read_text(encoding="utf-8")
+    assert "- [Sibling](sibling.md) - Sibling description" in index_file.read_text(encoding="utf-8")
+    assert "More prose." in index_file.read_text(encoding="utf-8")
+    replace_index_link(index_file, "sibling.md", "Sibling", "sibling.md", "Refreshed description")
+    assert index_file.read_text(encoding="utf-8").count("[Sibling](sibling.md)") == 1
+    assert "Refreshed description" in index_file.read_text(encoding="utf-8")
+
+
+def test_extensionless_and_explicit_markdown_targets_are_duplicates(tmp_path: Path) -> None:
+    index_file = tmp_path / "index.md"
+    index_file.write_text("# Concepts\n\n* [Title](target.md) - Desc\n\n* [Title](target) - Desc\n", encoding="utf-8")
+    with pytest.raises(MemoryOperationError, match="multiple links"):
+        remove_index_link(index_file, "target.md")

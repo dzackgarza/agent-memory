@@ -708,17 +708,20 @@ def memory_transition(
     old_type = metadata_memory_type(document.metadata, source_path)
     new_title = title if title is not None else old_title
     new_type = memory_type if memory_type is not None else old_type
-    body = updated_memory_body(document.body, new_title, content)
-    description = okf_description(content if content is not None else body)
-    # An update owns the canonical OKF fields and nothing else. Keys the record already
-    # carries survive because they are merged first; the tags this write does not own --
-    # everything beyond the canonical scope/type pair -- are carried across explicitly,
-    # since note_metadata rebuilds the tag list from scratch.
-    canonical = note_metadata(config, scope, new_type, new_title, description)
-    carried_tags: list[MetadataValue] = list(okf_tags(scope, new_type, unowned_tags(document.metadata, source_path, scope, old_type)))
-    canonical["tags"] = carried_tags
-    metadata = {**document.metadata, **canonical}
-    destination_path = memory_directory(config, scope, new_type) / f"{memory_slug(new_title)}.md"
+    body = document.body if title is None and content is None else updated_memory_body(document.body, new_title, content)
+    description = metadata_string(document.metadata, "description", source_path) if content is None else okf_description(content)
+    # Update is a patch, not creation. In particular the timestamp records
+    # authorship, and the description is independent of a title/type change.
+    metadata = dict(document.metadata)
+    if title is not None:
+        metadata["title"] = new_title
+    if content is not None:
+        metadata["description"] = description
+    if new_type is not old_type:
+        metadata["type"] = new_type.value
+        metadata["tags"] = list(okf_tags(scope, new_type, unowned_tags(document.metadata, source_path, scope, old_type)))
+    filename = source_path.name if title is None else f"{memory_slug(new_title)}.md"
+    destination_path = memory_directory(config, scope, new_type) / filename
     return MemoryTransition(
         old_key=key,
         new_key=memory_key(config.vault, destination_path),
@@ -742,18 +745,25 @@ def memory_slug(title: str) -> str:
 
 
 def sync_memory_transition_indexes(transition: MemoryTransition) -> None:
-    if transition.destination_path.parent == transition.source_path.parent:
+    source_index = transition.source_path.parent / "index.md"
+    destination_index = transition.destination_path.parent / "index.md"
+    # IWE has already renamed the graph's references, including the owned
+    # source listing. Find that entry by its old OR rewritten relative target.
+    rewritten_target = os.path.relpath(transition.destination_path, source_index.parent)
+    if source_index == destination_index:
         replace_index_link(
-            transition.destination_path.parent / "index.md",
+            source_index,
             transition.source_path.name,
             transition.new_title,
             transition.destination_path.name,
             transition.description,
+            alternate_targets=(rewritten_target,),
         )
         return
-    remove_index_link(transition.source_path.parent / "index.md", transition.source_path.name)
-    append_index_link(
-        transition.destination_path.parent / "index.md",
+    remove_index_link(source_index, transition.source_path.name, alternate_targets=(rewritten_target,))
+    replace_index_link(
+        destination_index,
+        transition.destination_path.name,
         transition.new_title,
         transition.destination_path.name,
         transition.description,
@@ -2526,10 +2536,6 @@ def _parse_index_entries(lines: list[str]) -> list[ParsedIndexEntry]:
             if token.map is None:
                 continue
             start_line = token.map[0] + body_start
-            end_line = token.map[1] + body_start
-
-            if end_line - start_line != 1:
-                continue
 
             if (
                 i + 4 < len(tokens)
@@ -2539,6 +2545,10 @@ def _parse_index_entries(lines: list[str]) -> list[ParsedIndexEntry]:
                 and tokens[i + 4].type == "list_item_close"
             ):
                 inline_token = tokens[i + 2]
+                # A loose list item's map includes trailing blank lines. The
+                # paragraph's map, not the item map, measures its actual text.
+                if inline_token.map != [token.map[0], token.map[0] + 1]:
+                    continue
                 children = inline_token.children
                 if not children:
                     continue
@@ -2573,7 +2583,7 @@ def append_index_link(index_path: Path, title: str, target: str, description: st
         index_file.write("\n" + okf_index_entry(title, target, description) + "\n")
 
 
-def locate_index_link(index_path: Path, target: str) -> tuple[list[str], int | None]:
+def locate_index_link(index_path: Path, target: str, *, alternate_targets: Sequence[str] = ()) -> tuple[list[str], int | None]:
     if not index_path.is_file():
         return [], None
 
@@ -2581,7 +2591,10 @@ def locate_index_link(index_path: Path, target: str) -> tuple[list[str], int | N
         lines = f.readlines()
 
     entries = _parse_index_entries(lines)
-    matching = [e.line_index for e in entries if e.target == target]
+    # The IWE renderer can omit .md from its Markdown references. Only
+    # canonical managed list entries are parsed here; prose links are untouched.
+    targets = {name.removesuffix(".md") for name in (target, *alternate_targets)}
+    matching = [e.line_index for e in entries if e.target.removesuffix(".md") in targets]
 
     if len(matching) > 1:
         raise MemoryOperationError(f"index {index_path} contains multiple links for target: {target}")
@@ -2590,8 +2603,8 @@ def locate_index_link(index_path: Path, target: str) -> tuple[list[str], int | N
     return lines, matching[0]
 
 
-def replace_index_link(index_path: Path, old_target: str, new_title: str, new_target: str, description: str) -> None:
-    lines, entry_start = locate_index_link(index_path, old_target)
+def replace_index_link(index_path: Path, old_target: str, new_title: str, new_target: str, description: str, *, alternate_targets: Sequence[str] = ()) -> None:
+    lines, entry_start = locate_index_link(index_path, old_target, alternate_targets=alternate_targets)
     if entry_start is None:
         line_ending = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
         if lines and not lines[-1].endswith(("\n", "\r")):
@@ -2605,8 +2618,8 @@ def replace_index_link(index_path: Path, old_target: str, new_title: str, new_ta
         index_file.write("".join(lines))
 
 
-def remove_index_link(index_path: Path, target: str) -> None:
-    lines, entry_start = locate_index_link(index_path, target)
+def remove_index_link(index_path: Path, target: str, *, alternate_targets: Sequence[str] = ()) -> None:
+    lines, entry_start = locate_index_link(index_path, target, alternate_targets=alternate_targets)
     if entry_start is None:
         return
     del lines[entry_start]
@@ -3499,8 +3512,14 @@ def normalize_memories(scope: SearchScope, cwd: Path) -> JsonObject:
         write_memory(path, metadata, body)
     selected_keys = None if scope is SearchScope.BOTH else [memory_key(config.vault, path) for path in selected_paths]
     normalized_keys = iwe.normalize(config.vault, selected_keys)
+    index_paths: set[Path] = set()
+    for path, metadata, _ in reconciled:
+        index_path = path.parent / "index.md"
+        replace_index_link(index_path, path.name, metadata_string(metadata, "title", path), path.name, metadata_string(metadata, "description", path))
+        index_paths.add(index_path)
     index_zk_notebook(config.vault)
     changed_paths = [config.vault / f"{key}.md" for key in normalized_keys] if scope is SearchScope.BOTH else list(selected_paths)
+    changed_paths.extend(sorted(index_paths))
     commit_vault_changes(config.vault, "Normalize vault Markdown and reconcile OKF frontmatter", paths=changed_paths)
     return {"scope": scope.value, "normalized": json_list(normalized_keys)}
 
