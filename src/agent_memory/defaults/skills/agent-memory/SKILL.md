@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: Cross-session knowledge storage, retrieval, and vault memory management.
+description: "Use when storing, searching, retrieving, or maintaining memories and plan cards in the agent-memory vault."
 ---
 
 # Agent Memory
@@ -549,10 +549,12 @@ Memories are stored as typed Markdown records.
 ```yaml
 ---
 title: Memory Title
-status: active            # Optional: active, draft, reviewed, archived
+status: active
 tags: [tag1, tag2]
 ---
 ```
+
+`status` is optional. Its values are `active`, `draft`, `reviewed`, and `archived`.
 
 Memory entries should make their own epistemic role clear.
 Depending on the record, include:
