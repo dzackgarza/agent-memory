@@ -2810,6 +2810,78 @@ def linked_inspect_workspace(tmp_path: Path) -> tuple[CliWorkspace, str, str]:
     return workspace, project_key, global_key
 
 
+def test_card_add_persists_status_set_defaults_and_explicit_statuses(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cases = [
+        ("unstarted", ("feature", "add", "FEATURE-DEFAULT", "--set", "title=Feature")),
+        (
+            "needs-agent-review",
+            ("plan", "add", "PLAN-DEFAULT", "--parent", "FEATURE-DEFAULT", "--set", "title=Plan", "--set", "description=Details", "--set", "successCriteria=Ships"),
+        ),
+        ("unstarted", ("phase", "add", "PHASE-DEFAULT", "--parent", "PLAN-DEFAULT", "--set", "title=Phase", "--set", "description=Details", "--set", "successCriteria=Ships")),
+        ("unstarted", ("task", "add", "TASK-DEFAULT", "--parent", "PHASE-DEFAULT", "--set", "title=Task", "--set", "description=Details", "--set", "successCriteria=Ships")),
+        ("unstarted", ("spec", "add", "SPEC-DEFAULT", "--parent", "FEATURE-DEFAULT", "--set", "title=Spec")),
+        ("unstarted", ("decision", "add", "DECISION-DEFAULT", "--parent", "FEATURE-DEFAULT", "--set", "title=Decision")),
+        ("pending", ("papercut", "add", "PC-DEFAULT", "--set", "title=Papercut")),
+        ("pending", ("queue", "add", "--project", workspace.project_id, "--summary", "Queue item")),
+        ("complete", ("card", "add", "feature", "FEATURE-EXPLICIT", "--set", "title=Explicit", "--set", "status=complete")),
+    ]
+    for expected, args in cases:
+        created = parse_json_stdout(run_agent_memory(workspace.repo, *args))
+        assert frontmatter(Path(json_string(created["path"])))["status"] == expected
+    shown = parse_json_stdout(run_agent_memory(workspace.repo, "card", "show", "FEATURE-DEFAULT"))
+    assert json_object(shown["metadata"])["status"] == "unstarted"
+    assert json_array(parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))["card_findings"]) == []
+
+
+def test_doctor_reports_cards_with_missing_stored_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = initialized_workspace(tmp_path)
+    feature = parse_json_stdout(run_agent_memory(workspace.repo, "feature", "add", "FEATURE-OLD", "--set", "title=Old", "--set", "status=unstarted"))
+    feature_path = Path(json_string(feature["path"]))
+    plan = parse_json_stdout(
+        run_agent_memory(
+            workspace.repo,
+            "plan",
+            "add",
+            "PLAN-OLD",
+            "--parent",
+            "FEATURE-OLD",
+            "--set",
+            "title=Old plan",
+            "--set",
+            "status=unstarted",
+            "--set",
+            "description=Details",
+            "--set",
+            "successCriteria=Ships",
+        )
+    )
+    plan_path = Path(json_string(plan["path"]))
+    queue = parse_json_stdout(run_agent_memory(workspace.repo, "queue", "add", "--project", workspace.project_id, "--status", "pending", "--summary", "Old queue item"))
+    queue_path = Path(json_string(queue["path"]))
+    # Simulate cards written before the fix, including an explicit YAML null and a
+    # missing required status. Doctor must not repair files as a side effect.
+    for path, null_status in ((feature_path, False), (plan_path, True), (queue_path, False)):
+        metadata = frontmatter(path)
+        metadata.pop("status")
+        if null_status:
+            metadata["status"] = None
+        path.write_text("---\n" + yaml.safe_dump(metadata) + "---\n# Old\n", encoding="utf-8")
+    before = {path: path.read_bytes() for path in (feature_path, plan_path, queue_path)}
+
+    report = parse_json_stdout(run_agent_memory(workspace.repo, "doctor"))
+    findings = {json_string(item["path"]): item for item in json_records(report, "card_findings")}
+    assert set(findings) == {str(path) for path in before}
+    for path, default in ((feature_path, "unstarted"), (plan_path, "needs-agent-review"), (queue_path, "pending")):
+        assert "status" in json_string(findings[str(path)]["detail"])
+        assert default in json_string(findings[str(path)]["detail"])
+        assert path.read_bytes() == before[path]
+
+    monkeypatch.setenv("AGENT_MEMORY_VAULT", str(workspace.vault))
+    global_report = parse_json_stdout(run_agent_memory(unbound_dir(tmp_path), "doctor"))
+    assert [item["path"] for item in json_records(global_report, "card_findings")] == [str(queue_path)]
+
+
 def test_card_add_validate_supports_project_cards_yaml_override(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
     cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
@@ -2866,6 +2938,45 @@ card_types:
 
     clean = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
     assert json_array(clean["problems"]) == []
+
+
+def test_card_add_and_doctor_use_custom_status_set_without_explicit_status_field(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    cards_path = workspace.vault / "projects" / workspace.project_id / "_meta" / "cards.yaml"
+    cards_path.parent.mkdir(parents=True)
+    cards_path.write_text(
+        yaml.safe_dump(
+            {
+                "statuses": ["open", "closed"],
+                "status_sets": {"custom": {"default": "open", "options": ["open", "closed"]}},
+                "card_types": [
+                    {
+                        "name": "ticket",
+                        "id_prefix": "TICKET",
+                        "status_set": "custom",
+                        "fields": [{"name": "id", "type": "string", "required": True}, {"name": "title", "type": "string", "required": True}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    created = parse_json_stdout(run_agent_memory(workspace.repo, "card", "add", "ticket", "TICKET-1", "--set", "title=Custom"))
+    path = Path(json_string(created["path"]))
+    assert frontmatter(path) == {"id": "TICKET-1", "title": "Custom", "status": "open"}
+    run_agent_memory(workspace.repo, "card", "update", "TICKET-1", "--set", "status=closed")
+    assert frontmatter(path)["status"] == "closed"
+    with pytest.raises(ValidationError):
+        run_agent_memory(workspace.repo, "card", "add", "ticket", "TICKET-2", "--set", "title=Invalid", "--set", "status=pending")
+    assert not list(workspace.vault.rglob("TICKET-2.md"))
+    # The project override must not be applied to the separately owned queue schema.
+    queue = parse_json_stdout(run_agent_memory(workspace.repo, "queue", "add", "--project", workspace.project_id, "--summary", "Queue item"))
+    assert frontmatter(Path(json_string(queue["path"])))["status"] == "pending"
+    assert json_records(parse_json_stdout(run_agent_memory(workspace.repo, "doctor")), "card_findings") == []
+    run_agent_memory(workspace.repo, "card", "update", "TICKET-1", "--set", "status=")
+    findings = json_records(parse_json_stdout(run_agent_memory(workspace.repo, "doctor")), "card_findings")
+    assert [item["path"] for item in findings] == [str(path)]
+    assert "open" in json_string(findings[0]["detail"])
 
 
 def test_maintain_add_card_status_option_updates_only_named_status_set(tmp_path: Path) -> None:
@@ -3751,7 +3862,8 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
 
     dag = parse_json_stdout(run_agent_memory(workspace.repo, "card", "dag"))
     dag_text = Path(json_string(dag["path"])).read_text(encoding="utf-8")
-    assert dag_text.count("```mermaid") == 2
+    assert dag_text.count("```mermaid") == 3
+    assert [line for line in dag_text.splitlines() if line.startswith("## ")] == ["## Sequence", "## Dependencies", "## Containment"]
 
     feature_key = f"projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
     search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"))
@@ -5055,7 +5167,7 @@ def test_papercut_files_and_triages_through_the_generated_card_lifecycle(tmp_pat
     run_agent_memory(workspace.repo, "papercut", "add", "PC-STALE-SKILL", "--set", "title=maintain skill served a stale document")
 
     papercut_path = project_card_path(workspace, "papercuts", "PC-STALE-SKILL.md")
-    assert frontmatter(papercut_path) == {"id": "PC-STALE-SKILL", "title": "maintain skill served a stale document"}
+    assert frontmatter(papercut_path) == {"id": "PC-STALE-SKILL", "title": "maintain skill served a stale document", "status": "pending"}
     assert json_array(parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))["problems"]) == []
 
     run_agent_memory(

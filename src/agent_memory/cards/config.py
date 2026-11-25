@@ -66,6 +66,10 @@ ARCHIVED_FIELD = FieldSpec(name="archived", type="bool", default=False)
 
 def card_fields(card_type: CardTypeSpec) -> tuple[FieldSpec, ...]:
     declared = tuple(card_type.fields)
+    # Every card type names a status set. An explicit field may specify stricter
+    # stored-record validation; otherwise supply the status field from that set.
+    if not any(field.name == "status" for field in declared):
+        declared = (*declared, FieldSpec(name="status", type="status"))
     if any(field.name == ARCHIVED_FIELD.name for field in declared):
         return declared
     return (*declared, ARCHIVED_FIELD)

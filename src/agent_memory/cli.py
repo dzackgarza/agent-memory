@@ -266,7 +266,7 @@ def queue_add_command(
     *,
     project: Annotated[str | None, Parameter(help="Project id the queue item belongs to.")] = None,
     agent: Annotated[str | None, Parameter(help="Agent or user handing off the work.")] = None,
-    status: Annotated[str | None, Parameter(help="Queue status from the vault card schema.")] = None,
+    status: Annotated[str | None, Parameter(help="Queue status from the vault card schema; defaults to the status set's default.")] = None,
     summary: Annotated[str | None, Parameter(help="Queue item summary.")] = None,
     timestamp: Annotated[str | None, Parameter(help="Optional timestamp string.")] = None,
     link: Annotated[
@@ -894,9 +894,9 @@ def field_help(config: CardSystemConfig, card_type_name: str, field: FieldSpec) 
 
 
 def set_required_fields(config: CardSystemConfig, card_type: CardTypeSpec) -> list[str]:
-    # The id comes from the positional ID argument and parents comes from --parent, so
-    # neither belongs on the --set line the caller has to type.
-    supplied_elsewhere = {"id", "parents"} if card_type.parents else {"id"}
+    # ID and parents come from positional/parent arguments; creation supplies a missing
+    # status from the status set. None belongs on the required --set line.
+    supplied_elsewhere = {"id", "status", "parents"} if card_type.parents else {"id", "status"}
     return [field_help(config, card_type.name, field) for field in card_type.fields if field.required and field.name not in supplied_elsewhere]
 
 
@@ -920,8 +920,9 @@ def card_add_help_text(config: CardSystemConfig) -> str:
     doc.append("")
     doc.append("Required fields per card type:")
     for card_type in config.card_types:
-        required_fields = [field_help(config, card_type.name, field) for field in card_type.fields if field.required]
-        doc.append(f"  - {card_type.name}: {', '.join(required_fields)}")
+        required_fields = set_required_fields(config, card_type)
+        status_set = config.status_sets[card_type.status_set]
+        doc.append(f"  - {card_type.name}: {', '.join(required_fields)} (status defaults to {status_set.default})")
     return "\n".join(doc)
 
 
@@ -936,6 +937,8 @@ def card_type_add_help_text(config: CardSystemConfig, card_type: CardTypeSpec) -
         "Required --set fields:",
     ]
     doc.append(f"  {', '.join(set_required_fields(config, card_type))}")
+    status_set = config.status_sets[card_type.status_set]
+    doc.append(f"Optional --set status=<value>: defaults to {status_set.default}; allowed: {', '.join(status_set.options)}")
     return "\n".join(doc)
 
 
