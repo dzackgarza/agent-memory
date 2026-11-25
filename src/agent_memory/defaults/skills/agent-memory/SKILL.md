@@ -156,7 +156,7 @@ The packaged default schema provides `feature`, `plan`, `phase`, `task`, `spec`,
 | Type | Id prefix | `--parent` | Required `--set` fields |
 | --- | --- | --- | --- |
 | `feature` | `FEATURE-` | not required | `title` |
-| `plan` | `PLAN-` | a `feature` | `title`, `status`, `description`, `successCriteria` |
+| `plan` | `PLAN-` | a `feature` | `title`, `description`, `successCriteria` |
 | `phase` | `PHASE-` | a `plan` | `title`, `description`, `successCriteria` |
 | `task` | `TASK-` | a `phase` | `title`, `description`, `successCriteria` |
 | `spec` | `SPEC-` | a `feature` | `title` |
@@ -166,6 +166,8 @@ The packaged default schema provides `feature`, `plan`, `phase`, `task`, `spec`,
 **This table is the packaged default schema, not a fixed contract.** Card types and their required fields come from the reader's own vault schema, which drifts: a vault keeps the schema it was initialized with until someone reconciles it.
 If a command rejects a field this table does not list, or a whole type is missing, the vault schema is the authority and it is older or newer than this baseline.
 `inspect schema` prints what the vault actually has.
+
+On creation, an omitted status is written explicitly using the card type's status set default (the packaged plan default is `needs-agent-review`). An explicit status is validated against the status set. `doctor` reports existing cards lacking a stored status in `card_findings` without rewriting them.
 
 Allowed `status` values on a plan card: `needs-agent-review`, `needs-human-input`, `approved-and-unstarted`, `in-progress`, `complete`, `blocked`, `unstarted`.
 
@@ -276,10 +278,10 @@ Every command emits JSON.
 
 | Command | Required | Optional |
 | --- | --- | --- |
-| `queue add` | `--project`, `--status`, `--summary` | `--agent`, `--timestamp`, `--link`, `--set` |
+| `queue add` | `--project`, `--summary` | `--status`, `--agent`, `--timestamp`, `--link`, `--set` |
 | `queue list` | — | — |
 
-`--link` repeats for multiple wikilinks.
+`--link` repeats for multiple wikilinks. An omitted `--status` uses the queue status set default.
 
 ### Sync
 
