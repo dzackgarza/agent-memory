@@ -1,4 +1,3 @@
-# ai-review-ci contract variables consumed by doctor and workflow installers.
 ai_review_ci_schema_version := "1"
 ai_review_ci_profile := "python"
 ai_review_ci_ref := "main"
@@ -11,7 +10,7 @@ ZK_VERSION := "v0.15.5"
 ZK_ASSET := "zk-" + ZK_VERSION + "-linux-amd64.tar.gz"
 LOCAL_BIN := env_var("HOME") / ".local/bin"
 
-# List available recipes.
+[doc("List available recipes.")]
 default:
     @just --list
 
@@ -19,10 +18,10 @@ default:
 _test-target +args:
     uv run --group dev pytest {{args}}
 
-# Install the agent-memory toolchain (agent-memory, ripgrep, zk, probe).
+[doc("Install the agent-memory toolchain (agent-memory, ripgrep, zk, probe).")]
 install: _install-agent-memory _install-ripgrep _install-zk _install-probe _verify-toolchain
 
-# Install the toolchain, then initialize the global memory vault.
+[doc("Install the toolchain, then initialize the global memory vault.")]
 setup: install
     #!/usr/bin/env bash
     set -euo pipefail
@@ -30,25 +29,25 @@ setup: install
     : "${vault:?Global memory vault path is required}"
     agent-memory maintain init-global --vault "$vault"
 
-# Run commit-tier Python QC through the central implementation.
+[doc("Run commit-tier Python QC through the central implementation.")]
 test-commit:
     #!/usr/bin/env bash
     set -euo pipefail
     just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-commit
 
-# Run the full Python test suite before pushing.
+[doc("Run the full Python test suite before pushing.")]
 test-push:
     #!/usr/bin/env bash
     set -euo pipefail
     just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-push
 
-# Run CI acceptance QC through the central implementation.
+[doc("Run CI acceptance QC through the central implementation.")]
 test-ci:
     #!/usr/bin/env bash
     set -euo pipefail
     just -f "$HOME/ai-review-ci/justfiles/python.just" -d . test-ci
 
-# Run the scheduled whole-tree audit (semgrep and debt scans) through the central implementation.
+[doc("Run the scheduled whole-tree audit (semgrep and debt scans) through the central implementation.")]
 ambient:
     @just -f ~/ai-review-ci/justfiles/python.just -d . ambient
 
