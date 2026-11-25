@@ -1443,6 +1443,7 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     )
     original_key = project_memory_key(workspace, "decisions", "project-transition")
     assert project_note["key"] == original_key
+    add_cli_memory(workspace, scope="project", memory_type="decision", title="Sibling Decision", content="Sibling description")
 
     renamed_key = project_memory_key(workspace, "decisions", "project-transition-renamed")
     renamed = parse_json_stdout(run_agent_memory(workspace.repo, "update", original_key, "--title", "Project Transition Renamed"))
@@ -1451,8 +1452,10 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     assert "# Project Transition Renamed" in renamed_text
     assert "transition-signal-0d1f body stays attached to the moved memory" in renamed_text
     decisions_index = (workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md").read_text()
-    assert "[Project Transition](project-transition.md)" not in decisions_index
+    assert "[Project Transition]" not in decisions_index
+    assert decisions_index.count("[Project Transition Renamed]") == 1
     assert "[Project Transition Renamed](project-transition-renamed.md)" in decisions_index
+    assert "[Sibling Decision](sibling-decision.md) - Sibling description" in decisions_index
 
     retagged_key = project_memory_key(workspace, "traps", "project-transition-renamed")
     retagged = parse_json_stdout(run_agent_memory(workspace.repo, "update", renamed_key, "--type", "trap"))
@@ -1463,7 +1466,9 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     assert not (workspace.vault / f"{renamed_key}.md").exists()
     updated_decisions_index = (workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md").read_text()
     traps_index = (workspace.vault / "projects" / workspace.project_id / "traps" / "index.md").read_text()
-    assert "[Project Transition Renamed](project-transition-renamed.md)" not in updated_decisions_index
+    assert "Project Transition Renamed" not in updated_decisions_index
+    assert "[Sibling Decision](sibling-decision.md) - Sibling description" in updated_decisions_index
+    assert traps_index.count("[Project Transition Renamed]") == 1
     assert "[Project Transition Renamed](project-transition-renamed.md)" in traps_index
 
     no_update = run_agent_memory_subprocess(workspace.repo, "update", retagged_key)
@@ -1471,6 +1476,70 @@ def test_project_memory_update_moves_title_and_type_indexes(tmp_path: Path) -> N
     assert "update requires at least one of --title, --type, or --content" in no_update.stderr
     assert "AssertionError" not in no_update.stderr
     assert "Traceback" not in no_update.stderr
+
+
+def test_type_only_update_preserves_legacy_plan_metadata_and_indexes(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    old_key, source = write_legacy_plan_with_todos(workspace)
+    original = read_memory(source)
+    old_index = source.parent / "index.md"
+    old_index.write_text(old_index.read_text(encoding="utf-8") + "\n* [Legacy Plan](legacy-plan.md) - legacy plan with mutable todos\n", encoding="utf-8")
+    new_key = project_memory_key(workspace, "references", "legacy-plan")
+    result = parse_json_stdout(run_agent_memory(workspace.repo, "update", old_key, "--type", "reference"))
+    assert result["key"] == new_key
+    destination = workspace.vault / f"{new_key}.md"
+    updated = read_memory(destination)
+    assert updated.metadata == {**original.metadata, "type": "reference", "tags": ["project", "reference"]}
+    assert updated.body == original.body
+    assert not source.exists()
+    assert "Legacy Plan" not in old_index.read_text(encoding="utf-8")
+    destination_index = destination.parent / "index.md"
+    assert destination_index.read_text(encoding="utf-8").count("[Legacy Plan](legacy-plan.md) - legacy plan with mutable todos") == 1
+    assert not subprocess.run(["git", "status", "--porcelain"], cwd=workspace.vault, check=True, capture_output=True, text=True).stdout
+
+
+def test_title_and_content_update_preserve_authoring_timestamp(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    created = add_cli_memory(workspace, scope="global", memory_type="advice", title="Original Title", content="Original description")
+    original = Path(str(created["path"]))
+    document = read_memory(original)
+    metadata = {**document.metadata, "timestamp": "2026-07-04T00:00:00Z", "description": "Curated description", "tags": ["global", "advice", "custom"]}
+    original.write_text("---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n" + document.body + "\n", encoding="utf-8")
+    renamed = parse_json_stdout(run_agent_memory(workspace.repo, "update", str(created["key"]), "--title", "Renamed Title"))
+    renamed_path = Path(str(renamed["path"]))
+    assert read_memory(renamed_path).metadata == {**metadata, "title": "Renamed Title"}
+    index = renamed_path.parent / "index.md"
+    assert index.read_text(encoding="utf-8").count("Renamed Title") == 1
+    assert "[Renamed Title](renamed-title.md) - Curated description" in index.read_text(encoding="utf-8")
+    run_agent_memory(workspace.repo, "update", str(renamed["key"]), "--content", "Replacement description\n\nNew body")
+    assert read_memory(renamed_path).metadata == {**metadata, "title": "Renamed Title", "description": "Replacement description"}
+    assert "[Renamed Title](renamed-title.md) - Replacement description" in index.read_text(encoding="utf-8")
+    assert "Curated description" not in index.read_text(encoding="utf-8")
+
+
+def test_normalize_refreshes_index_descriptions_in_selected_scope(tmp_path: Path) -> None:
+    workspace = initialized_workspace(tmp_path)
+    project = add_cli_memory(workspace, scope="project", memory_type="reference", title="Corrected Note", content="Stale index description")
+    global_note = add_cli_memory(workspace, scope="global", memory_type="reference", title="Global Note", content="Global index description")
+    add_cli_memory(workspace, scope="project", memory_type="reference", title="Sibling Note", content="Sibling description")
+    note_path = Path(str(project["path"]))
+    document = read_memory(note_path)
+    metadata = {**document.metadata, "description": "Restored author description"}
+    note_path.write_text("---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n" + document.body + "\n", encoding="utf-8")
+    index = note_path.parent / "index.md"
+    global_index = Path(str(global_note["path"])).parent / "index.md"
+    global_original = global_index.read_bytes()
+    # IWE has previously rendered this managed entry without a Markdown extension.
+    index.write_text(index.read_text(encoding="utf-8").replace("(corrected-note.md)", "(corrected-note)"), encoding="utf-8")
+    run_agent_memory(workspace.repo, "maintain", "normalize", "--scope", "project")
+    assert read_memory(note_path).metadata == metadata
+    assert index.read_text(encoding="utf-8").count("Corrected Note") == 1
+    assert "[Corrected Note](corrected-note.md) - Restored author description" in index.read_text(encoding="utf-8")
+    assert "Stale index description" not in index.read_text(encoding="utf-8")
+    assert index.read_text(encoding="utf-8").count("[Sibling Note](sibling-note.md) - Sibling description") == 1
+    assert global_index.read_bytes() == global_original
+    committed_index = subprocess.run(["git", "show", f"HEAD:{index.relative_to(workspace.vault)}"], cwd=workspace.vault, check=True, capture_output=True, text=True).stdout
+    assert "Restored author description" in committed_index
 
 
 def test_project_memory_update_rewrites_inbound_wikilinks_on_key_change(tmp_path: Path) -> None:

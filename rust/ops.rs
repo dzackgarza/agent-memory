@@ -40,9 +40,13 @@ impl From<OperationError> for IweError {
 }
 
 fn markdown_options() -> MarkdownOptions {
-    // The vault stores plain markdown notes at the vault root with default markdown
-    // options, matching the iwe binary run with no project config (library.path = "").
-    MarkdownOptions::default()
+    // Managed vault links explicitly name Markdown files; Python's index and
+    // graph readers require that extension. Keep it when liwe renders references
+    // (in particular, when renaming a note rewrites its entire parent index).
+    MarkdownOptions {
+        refs_extension: ".md".into(),
+        ..MarkdownOptions::default()
+    }
 }
 
 fn load_graph(vault: &Path) -> Graph {

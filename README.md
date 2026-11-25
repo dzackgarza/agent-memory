@@ -83,6 +83,10 @@ Update a memory:
 agent-memory update projects/<project-id>/decisions/parser-choice --content "Updated Markdown body."
 ```
 
+An update preserves the original authoring timestamp and all metadata not affected by the supplied options. Replacing the content derives the description from its first line; renaming or changing the type alone preserves the description. A type change moves the note and its managed index entry together.
+
+Use `agent-memory maintain normalize --scope project` (or `global` or `both`) to reconcile frontmatter, normalize Markdown, and refresh the selected notes' index entries from that frontmatter.
+
 Delete a memory:
 
 ```bash

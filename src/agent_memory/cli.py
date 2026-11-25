@@ -556,7 +556,7 @@ def maintain_normalize_command(
     *,
     scope: Annotated[SearchScope, Parameter(help="Memory scope to reconcile before normalizing: project, global, or both.")],
 ) -> None:
-    """Reconcile OKF frontmatter, then normalize the selected vault memories."""
+    """Reconcile OKF frontmatter, normalize selected memories, and refresh their index entries."""
     emit(normalize_memories(scope=scope, cwd=Path.cwd()))
 
 
