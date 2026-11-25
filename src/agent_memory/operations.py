@@ -1799,6 +1799,7 @@ def doctor(cwd: Path) -> JsonObject:
         "project_bound": True,
         "agent_state": project_agent_state_records(git_root, project_dir),
         "unmigrated_cards": json_list([card_listing_json(record) for record in unmigrated_card_listings(config, SearchScope.BOTH)]),
+        "card_findings": json_list(doctor_card_findings(config)),
         "auto_sync": sync_auto_status(),
         "last_sync": sync_state(),
         "tools": basic["tools"],
@@ -1818,6 +1819,7 @@ def unbound_doctor(basic: JsonObject) -> JsonObject:
         "project_root": None,
         "project_bound": False,
         "agent_state": [],
+        "card_findings": json_list(doctor_card_findings(config)),
         "auto_sync": sync_auto_status(),
         "last_sync": sync_state(),
         "tools": basic["tools"],
@@ -4681,6 +4683,22 @@ def card_scan_for_project(config: ProjectConfig, cards_config: CardSystemConfig,
 
 def card_load_finding_json(config: ProjectConfig, finding: CardLoadFinding) -> JsonObject:
     return {"kind": "unreadable", "card": finding.path.stem, "project": card_project_id(config, finding.path), "path": str(finding.path), "detail": finding.detail}
+
+
+def doctor_card_findings(config: ProjectConfig) -> list[JsonObject]:
+    # Each storage area uses its own schema: a project's override must never be used to
+    # diagnose the global queue. An unbound doctor checks just the global queue.
+    findings: list[CardLoadFinding] = []
+    if config.project_id is not None:
+        cards_config, models = load_card_system(config)
+        scan = scan_card_records([project_plans_root(config, cards_config)], cards_config, models, require_stored_status=True)
+        findings.extend(scan.findings)
+    queue_root = global_queue_root(config)
+    if queue_root.is_dir():
+        queue_config = load_card_system_config(config.vault)
+        scan = scan_card_records([queue_root], queue_config, build_card_models(queue_config), require_stored_status=True)
+        findings.extend(scan.findings)
+    return [card_load_finding_json(config, finding) for finding in findings]
 
 
 def validate_card_records(cwd: Path) -> JsonObject:
