@@ -155,13 +155,8 @@ PLAN_TODO_STATUSES: frozenset[str] = frozenset(
 )
 PLAN_TODO_CHILD_KEYS: tuple[str, ...] = ("children", "todos", "tasks")
 
-# The directory names for every memory type, in MemoryType enum order. This is the
-# single source for both the global vault layout and the per-project layout.
 MEMORY_TYPE_DIRECTORY_NAMES: tuple[str, ...] = tuple(MEMORY_TYPE_DIRECTORIES[memory_type] for memory_type in MemoryType)
 
-# Canonical ordering of `agent-memory inspect` subcommands. The CLI layer drives command
-# registration from this tuple and inspect_schema advertises it, so the command set has
-# exactly one source of truth in the inner layer the CLI depends on.
 INSPECT_COMMAND_NAMES: tuple[str, ...] = (
     "overview",
     "schema",
@@ -176,16 +171,7 @@ INSPECT_COMMAND_NAMES: tuple[str, ...] = (
 QUEUE_CARD_TYPE = "queue-item"
 QUEUE_CARD_ID_PREFIX = "QUEUE"
 QUEUE_DIRECTORY = "queue"
-# Tag that marks the stub `maintain move` leaves behind so a moved key still resolves.
 PROMOTION_POINTER_TAG = "promotion-pointer"
-# Ranked search runs on Probe, so Probe is a scoring engine, not just a CLI surface. Pinned
-# because an unpinned release can change the ranking between two searches when the vault
-# has not changed.
-#
-# Bumping this version is what the payload-shape asserts in probe_results, probe_skipped_files,
-# probe_score, json_child and json_int are holding up. They are asserts on purpose -- a shape
-# change is a broken pin, not user input -- but they assert against THIS version. Re-run a
-# ranked search against a real vault after any bump, and read the failure as "the pin moved".
 PROBE_VERSION = "0.6.0-rc331"
 PROBE_BINARY = Path.home() / ".local/bin/probelabs-probe"
 
@@ -246,8 +232,6 @@ class ProjectNotInitializedError(RuntimeError):
         "{default_vault}` once if the global vault does not exist, then run "
         "`agent-memory init project --vault <path-to-global-vault>` from this repository."
     )
-    # A read that only needs project scope has a route that works right now, without any
-    # setup mutation. Name it first: the setup instructions below are the slower remedy.
     READ_ROUTE = "Rerun with `--scope global` to read the global vault from an unbound directory."
 
     def __init__(self, default_vault: Path, *, route: SearchScope = SearchScope.BOTH) -> None:
@@ -575,10 +559,6 @@ def init_global_vault(vault: Path) -> JsonObject:
 
 
 def write_agent_memory_marker(vault: Path) -> None:
-    # The vault's agent-memory metadata marker. Its presence proves the vault was
-    # initialized by this tool; the file is asserted but never read, so it carries only
-    # the marker version. liwe loads notes directly from the vault root in-process, so no
-    # .iwe/ config directory is created.
     marker_dir = vault / ".agents" / "memories"
     marker_dir.mkdir(parents=True)
     write_new_file(marker_dir / "config.toml", tomli_w.dumps({"okf_version": OKF_VERSION}))
@@ -637,8 +617,6 @@ def init_project(vault: Path, cwd: Path, project_id: str | None = None) -> JsonO
         vault / "_meta" / "projects.toml",
         {"project_id": project_id, "root": str(git_root), "remote": remote},
     )
-    # Binding writes project metadata. Search owns refreshing the derived index;
-    # waiting for a vault-wide zk scan here couples setup to unrelated projects.
 
     paths = [
         vault / "index.md",
@@ -672,7 +650,6 @@ def add_memory(
     metadata = note_metadata(config, scope, memory_type, title, description)
     body = f"# {title}\n\n{content}\n"
 
-    # Track existing state for rollback
     index_path = directory / "index.md"
     index_existed = index_path.exists()
     old_index_content = index_path.read_text(encoding="utf-8") if index_existed else None
@@ -685,7 +662,6 @@ def add_memory(
         index_zk_notebook(config.vault)
         commit_vault_changes(config.vault, f"Record {scope.value} {memory_type.value} memory: {title}", paths=[path, index_path])
     except subprocess.CalledProcessError as e:
-        # Rollback!
         run_checked_optional(["git", "reset", "HEAD", "--", str(path.relative_to(config.vault)), str(index_path.relative_to(config.vault))], cwd=config.vault)
         if index_existed and old_index_content is not None:
             index_path.write_text(old_index_content, encoding="utf-8")
@@ -719,10 +695,6 @@ def memory_transition(
     new_type = memory_type if memory_type is not None else old_type
     body = updated_memory_body(document.body, new_title, content)
     description = okf_description(content if content is not None else body)
-    # An update owns the canonical OKF fields and nothing else. Keys the record already
-    # carries survive because they are merged first; the tags this write does not own --
-    # everything beyond the canonical scope/type pair -- are carried across explicitly,
-    # since note_metadata rebuilds the tag list from scratch.
     canonical = note_metadata(config, scope, new_type, new_title, description)
     carried_tags: list[MetadataValue] = list(okf_tags(scope, new_type, unowned_tags(document.metadata, source_path, scope, old_type)))
     canonical["tags"] = carried_tags
@@ -876,8 +848,6 @@ def scan_plan_progress_records(
     scope: SearchScope,
     project_schema: CardSystemConfig | None,
 ) -> tuple[list[PlanProgressRecord], list[NoteFinding]]:
-    # Legacy notes and schema-backed cards are distinct record formats. In particular,
-    # a valid plan card need not have the scope, tags, or type fields of a legacy note.
     notes = scan_note_records(config, scope)
     cards = (
         scan_card_records([project_plans_root(config, project_schema)], project_schema, build_card_models(project_schema)) if project_schema is not None else CardScan({}, ())
@@ -888,8 +858,6 @@ def scan_plan_progress_records(
         for note in notes.records
         if note.memory_type is MemoryType.PLAN and note.path not in card_paths
     ]
-    # A schema can also place cards directly in the plans root. Do not report those
-    # valid cards as malformed notes, or double-report a path already scanned as a note.
     note_paths = {note.path for note in notes.records} | {finding.path for finding in notes.findings}
     findings = [finding for finding in notes.findings if finding.path not in card_paths]
     findings.extend(
@@ -1207,11 +1175,7 @@ def key_search_records_from_notes(records: Sequence[NoteRecord], query: str, lim
 def exact_content_records(config: ProjectConfig, scope: SearchScope, query: str) -> list[JsonObject]:
     limit = starter_config().search_max_results
     roots = [str(root) for root in search_roots(config, scope)]
-    # span plan cards too, so one query covers both memories and plans (issue #4). Plans
-    # are project-scoped, so include them whenever the scope reaches the project.
     if scope in (SearchScope.PROJECT, SearchScope.BOTH):
-        # An initialized project always has its plans/ directory (it is also the
-        # MemoryType.PLAN directory), so it is unconditionally a valid search root.
         roots.append(str(project_plans_root(config, load_card_system_config())))
     output = run_ripgrep_search(
         [
@@ -1319,17 +1283,11 @@ def select_search_records(config: ProjectConfig, records: Sequence[JsonObject], 
 
 
 def json_list(values: Sequence[JsonValue]) -> list[JsonValue]:
-    # Widen a homogeneous JSON-value sequence to the list[JsonValue] shape required by
-    # JsonObject slots. Sequence is covariant, so list[JsonObject] and list[str] inputs
-    # satisfy Sequence[JsonValue]; the copy decouples the emitted payload from callers.
     return list(values)
 
 
 @cache
 def card_prefix_types(config: ProjectConfig) -> dict[str, str]:
-    # Which id prefix names which card type, read from the active schema rather than a
-    # hand-kept copy of it: a duplicate map makes every new card type invisible to `list`
-    # until someone remembers to edit it. Cached because listings ask once per vault file.
     cards_config = load_card_system_config(config.vault, config.project_id)
     return {card_type.id_prefix: card_type.name for card_type in cards_config.card_types}
 
@@ -1356,10 +1314,6 @@ def list_cards_with_unmigrated(card_type: str | None, scope: SearchScope, visibi
 
 
 def listable_types(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]:
-    # Everything a listing can hold: schema-backed card types plus the memory types that
-    # unmigrated records still carry in their frontmatter. A global-scope listing reads the
-    # vault schema only -- it never touches the project, so a malformed project schema must
-    # not decide which types it will accept.
     project_id = None if scope is SearchScope.GLOBAL else config.project_id
     cards_config = load_card_system_config(config.vault, project_id)
     names = {card_type.name for card_type in cards_config.card_types} | {memory_type.value for memory_type in MemoryType}
@@ -1368,8 +1322,6 @@ def listable_types(config: ProjectConfig, scope: SearchScope) -> tuple[str, ...]
 
 def _list_cards(card_type: str | None, scope: SearchScope, visibility: ArchiveVisibility, listing_source: CardListingSource, cwd: Path) -> JsonObject:
     config, scope = resolve_search_scope(scope, cwd)
-    # No --type lists every type, so absence is valid. A supplied name that no type uses is
-    # not: silently returning an empty list turns a typo into "the vault has none of these".
     if card_type is not None:
         known = listable_types(config, scope)
         if card_type not in known:
@@ -1437,18 +1389,6 @@ def search_content_ranked(scope: SearchScope, query: str, cwd: Path, visibility:
 
 
 def ranked_results_payload(config: ProjectConfig, payload: JsonObject, limit: int) -> JsonObject:
-    # Three corrections to what Probe hands back, all on the default search path.
-    #
-    # Probe reports files it matched but could not excerpt in `skipped_files`, outside
-    # `results`. Those are matches, and the strongest ones: block extraction gives up on
-    # exactly the large records that mention a topic most. Left in a sidecar array, a search
-    # returns ten weaker hits while an agent concludes the vault has nothing on the topic.
-    #
-    # Probe records name a file and no vault key, unlike every sibling search command, so
-    # `.results[].key` came back null for callers who read it the way the siblings taught.
-    #
-    # A record that scored zero with no excerpt is not a match, and Probe emits it
-    # inconsistently between identical runs. Dropping it makes ranked output reproducible.
     excerpted = [record for record in probe_results(payload) if is_scored_match(record)]
     skipped = sorted(probe_skipped_files(payload), key=lambda record: json_int(record, "all"), reverse=True)
     unexcerpted: list[JsonObject] = [{"file": record["file"], "lines": None, "code": None, "match_count": record["all"]} for record in skipped[:limit]]
@@ -1531,8 +1471,6 @@ def probe_search_root(
 ) -> JsonObject:
     result = run_checked(
         [
-            # A different package, @buger/probe, also installs `probe`. The dedicated
-            # install name preserves the ranked-search engine at this boundary.
             str(PROBE_BINARY),
             "search",
             query,
@@ -1603,10 +1541,6 @@ def probe_results(payload: JsonObject) -> list[JsonObject]:
 
 
 def probe_skipped_files(payload: JsonObject) -> list[JsonObject]:
-    # Probe's JSON contract emits "skipped_files" only when it skips files under the
-    # token budget; when nothing is skipped the key is omitted entirely. Absence is the
-    # documented "no files skipped" outcome. A present key must be a real list of objects
-    # or the payload is malformed and must fail loudly.
     raw_skipped = payload.get("skipped_files")
     if raw_skipped is None:
         assert "skipped_files" not in payload, "probe skipped_files must be a list, not null"
@@ -1718,8 +1652,6 @@ def merge_memory(key: str, reference: str, cwd: Path) -> JsonObject:
         (wikilink_rewrite(reference, f"{key}#{reference_title}"),),
     )
     index_zk_notebook(config.vault)
-    # Build pathspecs without asserting existence -- iwe.inline deletes the
-    # reference file, so memory_path_for_key() would fail on the merged-away key.
     affected_paths = [config.vault / f"{k}.md" for k in affected_keys]
     paths = list(set(affected_paths + [p.parent / "index.md" for p in affected_paths] + rewritten_record_paths(rewritten) + rewritten_record_parent_index_paths(rewritten)))
     commit_vault_changes(config.vault, f"Merge memory reference: {reference}", paths=paths)
@@ -1741,9 +1673,6 @@ def move_memory(key: str, destination: str, cwd: Path) -> JsonObject:
     memory_type = metadata_memory_type(source_document.metadata, source_path)
     title = metadata_string(source_document.metadata, "title", source_path)
     description = metadata_string(source_document.metadata, "description", source_path)
-    # A promotion pointer is an index artifact of the project note directory it replaces.
-    # A source stranded outside that directory has no index entry to repoint and no project
-    # to attribute the stub to, so the move leaves nothing behind (issue #107).
     leaves_pointer = source_path.parent == memory_directory(config, MemoryScope.PROJECT, memory_type)
     iwe.rename(config.vault, key, destination_key)
 
@@ -1851,9 +1780,6 @@ def doctor(cwd: Path) -> JsonObject:
 
 
 def unbound_doctor(basic: JsonObject) -> JsonObject:
-    # `doctor` from an unbound directory reports global vault and tool health instead of
-    # crashing (issue #25). global_only_config() resolves the known global vault and names
-    # the init-global remedy if it is missing.
     config = global_only_config()
     assert_vault_zk_initialized(config.vault)
     return {
@@ -1902,13 +1828,11 @@ def commit_vault_changes(vault: Path, message: str, paths: list[Path] | None = N
             rel_path = path.relative_to(vault)
             if str(rel_path) in rel_paths:
                 run_checked(["git", "add", "--", str(rel_path)], cwd=vault)
-        # Skip commit if there are no cached changes for these paths
         diff_res = run_checked_optional(["git", "diff", "--cached", "--quiet", "--", *rel_paths], cwd=vault)
         if diff_res.returncode != 0:
             run_checked(["git", "commit", "-m", message, "--", *rel_paths], cwd=vault)
     else:
         run_checked(["git", "add", "--all", "."], cwd=vault)
-        # Skip commit if there are no cached changes in the vault
         diff_res = run_checked_optional(["git", "diff", "--cached", "--quiet"], cwd=vault)
         if diff_res.returncode != 0:
             run_checked(["git", "commit", "-m", message], cwd=vault)
@@ -2051,8 +1975,6 @@ def write_sync_state(result: JsonObject) -> JsonObject:
     }
     state_path.parent.mkdir(parents=True, exist_ok=True)
     rendered = json.dumps(state, indent=2, sort_keys=True) + "\n"
-    # ponytail: atomic replace so an interrupted/concurrent sync cannot leave a truncated
-    # state file that wedges every later doctor/sync run in json.loads.
     temporary = state_path.with_name(f".{state_path.name}.{uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8") as stream:
@@ -2229,8 +2151,6 @@ def sync_status(cwd: Path) -> JsonObject:
     assert_vault_zk_initialized(config.vault)
     vault = config.vault
     changes = git_status_records(vault)
-    # A vault with no remote or no upstream is unsynced, not broken: `maintain init-global`
-    # creates exactly that, so status reports the absence instead of raising from git.
     tracking = git_ahead_behind(vault)
     return {
         "vault": str(vault),
@@ -2423,7 +2343,7 @@ def agents_pointer_section(vault: Path, project_id: str) -> str:
         "```bash\n"
         f"{add_examples}"
         "```\n\n"
-        "Plan work is card-backed. Create and update plan cards with `agent-memory plan add` and `agent-memory plan update`, not `agent-memory add --type plan`.\n\n"
+        "Use Spec Kit to plan each itree work unit. Its GitHub issue owns the current plan, tasks and progress.\n\n"
         "Use `agent-memory retrieve <key>`, `agent-memory update <key>`, and `agent-memory delete <key>` for memory CRUD.\n\n"
         "The vault should be committed at all times. Treat staged or unstaged vault changes as an ephemeral error state. "
         f"Before normal memory work resumes, load the bundled vault-maintenance skill with `{VAULT_MAINTENANCE_SKILL_COMMAND}` "
@@ -2520,8 +2440,6 @@ def unowned_tags(
     scope: MemoryScope,
     memory_type: MemoryType,
 ) -> tuple[str, ...]:
-    # The tags a rewrite must carry across: everything the canonical scope/type pair does
-    # not account for.
     canonical = set(okf_tags(scope, memory_type, ()))
     return tuple(tag for tag in metadata_string_tuple(metadata, "tags", path) if tag not in canonical)
 
@@ -2678,8 +2596,6 @@ def metadata_string_optional(metadata: dict[str, MetadataValue], key: str, path:
     value = metadata[key]
     if not isinstance(value, str):
         raise MalformedMemoryError(path, f"frontmatter field {key} must be a string")
-    # An empty string reads as ABSENT: missing and empty are both "no value", so a blank
-    # optional field never reaches a consumer (e.g. parse_memory_timestamp) as "".
     if value == "":
         return None
     return value
@@ -2813,8 +2729,6 @@ def config_from_agent_state_link(git_root: Path) -> ProjectConfig | None:
 
 
 def find_project_config(cwd: Path) -> ProjectConfig | None:
-    # Return the cwd repo's vault-backed project binding, or None when the directory is
-    # not a git repo or lacks the agent-state symlink installed by init project.
     try:
         git_root = git_root_for(cwd)
     except subprocess.CalledProcessError:
@@ -2822,9 +2736,6 @@ def find_project_config(cwd: Path) -> ProjectConfig | None:
     config = config_from_agent_state_link(git_root)
     if config is not None:
         return config
-    # Binding is repository identity, not checkout identity: a linked worktree carries no
-    # agent-state symlink of its own, so it inherits the primary checkout's binding and
-    # every worktree of one repository resolves to one project (issue #101).
     primary = primary_worktree_root(cwd)
     if primary is None or primary == git_root:
         return None
@@ -2832,10 +2743,6 @@ def find_project_config(cwd: Path) -> ProjectConfig | None:
 
 
 def primary_worktree_root(cwd: Path) -> Path | None:
-    # Every worktree of a repository shares one common git directory; the primary checkout
-    # is its parent. git reports that directory relative to cwd in the primary checkout and
-    # absolutely from a linked worktree, so resolve it against cwd either way. A bare
-    # repository has no primary checkout, so there is none to report.
     result = run_checked(["git", "rev-parse", "--git-common-dir"], cwd=cwd)
     common_dir = (cwd / result.stdout.strip()).resolve()
     if common_dir.name != ".git":
@@ -2851,17 +2758,12 @@ def load_project_config(cwd: Path) -> ProjectConfig:
 
 
 def require_project_id(config: ProjectConfig) -> str:
-    # Project-scoped paths read project_id through here, so a config that resolved to no
-    # project fails loud instead of silently composing a wrong vault path.
     if config.project_id is None:
         raise ProjectNotInitializedError(config.vault)
     return config.project_id
 
 
 def global_vault_path() -> Path:
-    # The vault a scope-global operation targets when the cwd is unbound. Resolved from
-    # AGENT_MEMORY_VAULT when set, else the shipped default vault. Independent of any cwd
-    # project binding (issue #25).
     override = os.environ.get("AGENT_MEMORY_VAULT")
     if override is not None:
         if not override:
@@ -2871,9 +2773,6 @@ def global_vault_path() -> Path:
 
 
 def global_only_config() -> ProjectConfig:
-    # Config for operations whose scope is global only. The global vault is the known
-    # location, so no cwd project binding is required; project_id stays None because the
-    # global scope root never reads it.
     vault = global_vault_path()
     if not (vault / ".agents" / "memories" / "config.toml").is_file():
         raise GlobalVaultNotInitializedError(vault)
@@ -2884,13 +2783,6 @@ def global_only_config() -> ProjectConfig:
 
 
 def config_for_schema_advertisement(cwd: Path) -> ProjectConfig | None:
-    # The vault whose card schema `inspect schema` should advertise: the cwd's bound
-    # project when bound, else the configured global vault when it is actually
-    # initialized. When no vault is configured+initialized, return None so the caller
-    # advertises the packaged defaults -- the honest answer for a genuinely
-    # unconfigured state. That state is selected here by the explicit initialized-vault
-    # query, never by catching GlobalVaultNotInitializedError. Any other error (e.g. an
-    # empty AGENT_MEMORY_VAULT) still propagates loudly from global_vault_path.
     config = find_project_config(cwd)
     if config is not None:
         return config
@@ -2901,9 +2793,6 @@ def config_for_schema_advertisement(cwd: Path) -> ProjectConfig | None:
 
 
 def config_for_memory_scope(scope: MemoryScope, cwd: Path) -> ProjectConfig:
-    # A bound repo's configured vault is authoritative for every scope, including global,
-    # since its global memory lives in that same vault. Only an unbound directory falls
-    # back to the standalone global vault, and only for a global write (issue #25).
     config = find_project_config(cwd)
     if config is not None:
         return config
@@ -2913,11 +2802,6 @@ def config_for_memory_scope(scope: MemoryScope, cwd: Path) -> ProjectConfig:
 
 
 def resolve_search_scope(scope: SearchScope, cwd: Path) -> tuple[ProjectConfig, SearchScope]:
-    # The resolution boundary for every scope-addressed read: it answers which vault to
-    # read AND which scope survives, because an unbound directory has no project half to
-    # read. BOTH degrades to GLOBAL there rather than failing, so search, list, and inspect
-    # work from `~`, `/tmp`, and scratchpads. Only an explicit `--scope project` still
-    # fails, and it names the working alternative.
     config = find_project_config(cwd)
     if config is not None:
         return config, scope
@@ -2928,17 +2812,10 @@ def resolve_search_scope(scope: SearchScope, cwd: Path) -> tuple[ProjectConfig, 
 
 
 def config_for_key(key: str, cwd: Path) -> ProjectConfig:
-    # The resolution boundary for every key-addressed read or mutation. Precedence: a
-    # fully-qualified key names its own project, so it is never reinterpreted or re-homed
-    # through the cwd binding (issue #88); a `global/...` key needs no project at all
-    # (issue #108); only an unqualified key falls through to the cwd binding.
     binding = find_project_config(cwd)
     vault = binding.vault if binding is not None else global_only_config().vault
     parts = key.split("/")
     if parts[0] != "projects":
-        # `global/...`, `harnesses/...`: the key is not project-scoped, so no binding is
-        # required to read or write it. project_id carries the binding only for the paths
-        # that legitimately need one.
         return ProjectConfig(vault=vault, project_id=binding.project_id if binding is not None else None)
     if len(parts) < 3:
         raise MemoryOperationError(
@@ -2977,19 +2854,12 @@ def load_project_records(projects_file: Path) -> list[ProjectRecord]:
 
 
 def scope_root(config: ProjectConfig, scope: MemoryScope) -> Path:
-    # Branch instead of building both paths eagerly: the global root needs no project_id,
-    # so a global-only config (project_id is None) must not touch the project path.
     if scope is MemoryScope.GLOBAL:
         return config.vault / "global"
     assert scope is MemoryScope.PROJECT, f"unsupported memory scope: {scope}"
     return config.vault / "projects" / require_project_id(config)
 
 
-# Search scopes resolve to one or both memory scopes. The order for BOTH is a contract:
-# content search (search_roots) walks project-then-global, while inspection
-# (inspect_root_paths) reports global-then-project so that overview/tree roots list the
-# shared global vault first. Parameterizing the order keeps that difference explicit
-# instead of forking the dispatch table four ways.
 def search_scope_memory_scopes(config: ProjectConfig, scope: SearchScope, *, both_order: tuple[MemoryScope, MemoryScope]) -> tuple[MemoryScope, ...]:
     scopes = {
         SearchScope.PROJECT: (MemoryScope.PROJECT,),
@@ -3000,9 +2870,6 @@ def search_scope_memory_scopes(config: ProjectConfig, scope: SearchScope, *, bot
 
 
 def available_search_scope(config: ProjectConfig, scope: SearchScope) -> SearchScope:
-    # A config that resolved to no project has no project half to read, so BOTH means
-    # GLOBAL there. Every root-listing walk asks here, so a caller that hardcodes BOTH
-    # degrades the same way an unbound `--scope both` does (issue #25).
     if scope is SearchScope.BOTH and config.project_id is None:
         return SearchScope.GLOBAL
     return scope
@@ -3123,9 +2990,6 @@ def unmigrated_card_candidate_paths(config: ProjectConfig, scope: SearchScope) -
 
 
 def is_promotion_pointer_path(path: Path) -> bool:
-    # A promotion pointer is `maintain move` output, not a stranded card: reporting it as
-    # unmigrated makes the sanctioned migration route produce a finding that never clears,
-    # with a project-scoped destination that is wrong for a pointer (issue #107).
     try:
         document = read_memory(path)
     except MalformedMemoryError:
@@ -3942,9 +3806,6 @@ def memory_path_for_key(config: ProjectConfig, key: str) -> Path:
 
 
 def card_command_for_path(config: ProjectConfig, path: Path) -> str | None:
-    # Where a record lives decides its kind, never the current directory: cards live in
-    # per-card subdirectories of the project's card tree, while memory notes sit directly
-    # in their type's directory. Returns the generated command that owns the card.
     if config.project_id is None:
         return None
     cards_root = memory_directory(config, MemoryScope.PROJECT, MemoryType.PLAN)
@@ -4032,10 +3893,6 @@ def markdown_link_targets(markdown: str) -> tuple[str, ...]:
 def outgoing_link_keys(config: ProjectConfig, path: Path) -> tuple[str, ...]:
     keys: list[str] = []
     for target in markdown_link_targets(path.read_text(encoding="utf-8")):
-        # outgoing_link_keys owns intra-vault note-to-note edges only. The markdown-it
-        # walk yields every link (external URLs, autolinks, reference-style, non-.md);
-        # a target that is not a vault-relative .md file is simply not an outgoing vault
-        # edge, so skip it by contract. This is a membership test, not error handling.
         if not target.endswith(".md"):
             continue
         target_path = (path.parent / target).resolve()
@@ -4403,7 +4260,6 @@ def json_metadata_value(value: MetadataValue) -> JsonValue:
     return {key: json_metadata_value(item) for key, item in value.items()}
 
 
-# --- Plan cards (issue #4): bridge the config-driven card engine to the project vault ---
 
 
 def load_card_system(config: ProjectConfig | None = None) -> tuple[CardSystemConfig, dict[str, type[BaseModel]]]:
@@ -4476,10 +4332,6 @@ def parse_card_fields(
         if field is None:
             raise CardFieldError(f"unknown field {key} for card type {type_name}")
         if value == "":
-            # `--set <field>=` means unset: clear a list, drop an optional scalar, refuse a
-            # required one. Without a single rule the empty value fell through to coercion
-            # and wrote `''`, which reads as a value the caller never set and which no later
-            # update could remove.
             if field.required:
                 raise CardFieldError(f"field {key} is required for card type {type_name}; `--set {key}=` means unset, so give it a value instead")
             fields[key] = [] if field.type in LIST_FIELD_TYPES else UNSET_FIELD
@@ -4651,9 +4503,6 @@ def list_queue_items(cwd: Path) -> JsonObject:
 
 
 def update_card_record(card_id: str, assignments: Sequence[str], cwd: Path, body: str | None = None) -> JsonObject:
-    # body is None when the caller passed neither --body nor --body-file, which leaves the
-    # stored Markdown alone; add_card takes the same argument as a required string because
-    # a new card has no stored body to keep.
     config = load_project_config(cwd)
     cards_config, models = load_card_system(config)
     type_name = card_type_for_id(cards_config, card_id).name
@@ -4690,8 +4539,6 @@ def show_card(card_id: str, cwd: Path) -> JsonObject:
 
 
 def card_project_id(config: ProjectConfig, path: Path) -> str:
-    # The project that owns a card file, read from its vault path. Cards live under
-    # <vault>/projects/<project_id>/...; anything else is vault-level, not project-owned.
     relative = path.relative_to(config.vault).parts
     if relative[0] == "projects" and len(relative) > 1:
         return relative[1]
@@ -4699,9 +4546,6 @@ def card_project_id(config: ProjectConfig, path: Path) -> str:
 
 
 def local_card_closure(records: Mapping[str, CardRecord], cards_config: CardSystemConfig, local_root: Path) -> set[str]:
-    # The card ids a local operation actually depends on: the touched project's own cards
-    # plus everything they reference, transitively. A defect inside this set is causally
-    # connected to local work; a defect outside it is another project's debt (issue #102).
     reference_fields = reference_field_names(cards_config)
     closure: set[str] = set()
     pending = [card_id for card_id, record in records.items() if record.path.is_relative_to(local_root)]
@@ -4729,8 +4573,6 @@ def card_load_finding_json(config: ProjectConfig, finding: CardLoadFinding) -> J
 
 
 def doctor_card_findings(config: ProjectConfig) -> list[JsonObject]:
-    # Each storage area uses its own schema: a project's override must never be used to
-    # diagnose the global queue. An unbound doctor checks just the global queue.
     findings: list[CardLoadFinding] = []
     if config.project_id is not None:
         cards_config, models = load_card_system(config)

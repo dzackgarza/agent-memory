@@ -1,20 +1,19 @@
 # Harness State Routing Decisions
 
-`agent-memory` owns durable memory, planning, and artifact tracking.
-Native harnesses still write their own memory, plan, task, and artifact files on disk.
-Initialization therefore routes those native disk surfaces into the `agent-memory` vault while preserving CLI/app compatibility.
+Use the vault for durable memory and harness artifacts. Use itree to select
+the work-unit issue and Spec Kit for its plan and tasks. A harness may keep a
+temporary working file during a stage. Resume from the confirmed issue state.
 
 Use native settings where the harness exposes them; otherwise preserve the harness's expected path shape with symlinks.
 
 ## Normal Vault Shape
 
-Use a native-compatibility area for harness-owned layouts, separate from typed project memory/planning records:
+Use a native-compatibility area for harness-owned layouts, separate from typed project memories:
 
 ```text
 <agent-memory-vault>/
   harnesses/
     claude/
-      plans/
       projects/<encoded-project>/memory/
     codex/
       memories/
@@ -23,7 +22,6 @@ Use a native-compatibility area for harness-owned layouts, separate from typed p
       brain/
   projects/<project-id>/
     memories/
-    plans/
     artifacts/
 ```
 
@@ -47,14 +45,7 @@ Decisions:
 
 - If the default Claude project memory directory already has files, move them into the corresponding vault directory and replace the original `memory/` path with a symlink so native recall still works.
 
-- Use Claude's `plansDirectory` setting for plan routing.
-  Point it at the vault-owned Claude plans directory.
-
-- If `~/.claude/plans/` already has files, move them into the configured `plansDirectory` target, then remove the default path.
-  Do not leave a `~/.claude/plans` compatibility symlink once `plansDirectory` is set.
-
-- Do not decode, classify, or reorganize Claude plan filenames.
-  Claude plans are dumped into the configured plans directory and referenced from there.
+- Recover obligations in existing Claude plans on their owning issues. Use the issue for the next Spec Kit stage.
 
 ## Codex
 
@@ -84,9 +75,7 @@ Decisions:
 - Built-in Codex plan mode, `update_plan`, proposed plans, todo-list deltas, and plan implementation requests are protocol/thread state.
   Do not route them by moving or symlinking sessions.
 
-- Durable Codex execution plans are Markdown artifacts.
-  Route the Markdown plan files named by `PLANS.md`/`AGENTS.md` guidance into the agent-memory project plan directory.
-  If a repo-local path is needed for compatibility, make it a pointer, template, or symlink to the vault-owned plan location.
+- Route durable planning instructions in `PLANS.md` or `AGENTS.md` to the selected itree issue and its Spec Kit stages.
 
 - Current official config docs and local desktop runtime evidence did not expose a fixed `~/.codex/plans/` directory or a `plansDirectory`-style Codex setting.
   Do not invent one during initialization.
@@ -130,7 +119,7 @@ For each harness route:
 
 4. Use the harness's native setting when one exists; otherwise use a symlink that preserves the exact path shape the harness expects.
 
-5. Verify with the native harness that the same memories, plans, or artifacts are still visible.
+5. Verify with the native harness that the same memories or harness artifacts are still visible.
 
 Do not re-open settled alternatives during initialization.
 The initialization task is to ensure this structure is present and working.

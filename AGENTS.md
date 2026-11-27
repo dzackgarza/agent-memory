@@ -23,8 +23,9 @@ agent-memory add --scope project --type trap --title <title> --content <content>
 agent-memory add --scope project --type advice --title <title> --content <content>
 agent-memory add --scope project --type context --title <title> --content <content>
 agent-memory add --scope project --type reference --title <title> --content <content>
-agent-memory add --scope project --type plan --title <title> --content <content>
 ```
+
+Use Spec Kit to plan each itree work unit. Its GitHub issue owns the current plan, tasks and progress.
 
 Use `agent-memory retrieve <key>`, `agent-memory update <key>`, and `agent-memory delete <key>` for memory CRUD.
 

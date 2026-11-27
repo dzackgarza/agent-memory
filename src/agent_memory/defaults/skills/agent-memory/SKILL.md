@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: "Use when storing, searching, retrieving, or maintaining memories and plan cards in the agent-memory vault."
+description: "Use when storing, searching, retrieving, or maintaining reusable knowledge or retrieving existing cards from the agent-memory vault."
 ---
 
 # Agent Memory
@@ -38,6 +38,8 @@ description: "Use when storing, searching, retrieving, or maintaining memories a
 * * *
 
 ## Invocation
+
+Project work starts on an itree issue. Use Spec Kit for its plan and tasks. Read existing vault cards when transferring their obligations, order and evidence to the owning issue.
 
 This is the only supported command form:
 
@@ -359,7 +361,7 @@ agent-memory plan update PLAN-ID --body-file /tmp/card-body.md
   `plan add PLAN-X` succeeds; `plan add X` fails.
 
 - `add --type plan` is rejected.
-  Create plans with `plan add`.
+  Use Spec Kit on the owning itree issue for a project plan.
 
 - `maintain move` destinations must start with `global/`.
 
@@ -454,14 +456,10 @@ Check memories when starting related work:
 
 ## Central Vault Policy
 
-`agent-memory` is the only agent-facing interface for durable memories and project planning state.
+Use `agent-memory` to read and write durable memories.
 Agents do not need to know or call the storage backend during normal project work.
 
-The configured vault is the only durable agent-facing store for memory and plan state.
-Do not create loose repo-local Markdown plans, correction logs, decision ledgers, or agent-facing doctrine files as substitutes for typed `agent-memory` records.
-
-Use repo-local files only as temporary scratchpads while working through in-the-weeds investigation.
-Before handoff, delete the scratchpad or promote its durable content:
+The vault holds reusable knowledge. Route each item to its owner:
 
 - significant experiences, causal sequences, contemporaneous reflections, and unresolved interpretations -> `reference` or `context` memories;
 
@@ -469,7 +467,7 @@ Before handoff, delete the scratchpad or promote its durable content:
 
 - stable decisions and rationale -> `decision` memories;
 
-- plans, phase state, queues, and residue ledgers -> plan cards;
+- current plans, task order, open obligations and progress -> the owning itree issue through Spec Kit;
 
 - durable product/project doctrine, architecture rationale, and readable roadmap/proof projections -> wiki;
 
@@ -504,7 +502,7 @@ Meaningful titles and tags become the searchable anchors for steps 1 and 2. Keep
 | Later interpretations and provisional lessons | Linked memories or additive sections in the experience record | “At the time, rushing and missing directions appeared relevant; leaving earlier might help” |
 | Reusable operational guidance and proposed interventions | `advice` or `trap` memories | “Avoid unescaped `%` in crontab; build time strings in recipe/script” |
 | Decisions with future agent relevance | `decision` memories | “Treat generated AGENTS output as derived; edit fragments instead” |
-| Plans, phase state, contracts, queues, and residue ledgers | Plan cards | “Current phase is extraction; active residue is parser boundary proof” |
+| Current plan, tasks and progress | Owning itree issue, through Spec Kit | A task to prove the parser handles a quoted path |
 | Durable project doctrine, architecture rationale, and readable roadmap/proof projections | GitHub wiki | Feature page linked to stories, proof burdens, issues, and roadmap projections |
 | Active public stories, roadmap nodes, proof burdens, execution state, bugs, gaps, handoffs, and TODOs | GitHub issue trees, milestones, and PR claim maps | Story issue with proof obligations; draft PR linked to milestone and claim set |
 
@@ -524,7 +522,7 @@ Before writing a memory, ask:
 
 4. **What is known versus suspected?** Label direct observation, contemporary inference, later analysis, and proposed intervention separately.
 
-5. **Is this live execution state?** TODOs and public work status belong in GitHub; plans belong in plan cards; neither should be disguised as memory.
+5. **Is this live execution state?** The work-unit issue holds the Spec Kit plan, tasks and evidence.
 
 A memory is warranted when future recognition or understanding would materially degrade without it.
 It need not prescribe what the future agent should do.

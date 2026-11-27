@@ -72,11 +72,6 @@ ZK_BIN_DIR = Path(ZK_TEMP_DIR.name)
 
 
 def ensure_zk_binary() -> Path:
-    # Fetch the real zk binary the integration tests put on PATH. This runs lazily on
-    # first use (from agent_memory_env), not at module import: keeping the gh release download
-    # out of collection means a zk-org/zk release-asset change or a GitHub outage breaks
-    # the runs that actually need zk, fail-loud via check=True, instead of breaking
-    # collection of the whole module. Idempotent: a present binary is reused.
     zk_path = ZK_BIN_DIR / "zk"
     if zk_path.is_file():
         return zk_path
@@ -646,27 +641,16 @@ def test_maintain_init_global_creates_iwe_backed_layout(tmp_path: Path) -> None:
 
 
 def bundled_skill_dir(name: str) -> Path:
-    # The *served* directory: resolved through the same resource loader bundled_skill_text()
-    # reads. Correct oracle only for questions about what shipped alongside the served
-    # document. Never use it as the expected value for transport fidelity -- see
-    # source_tree_skill_document.
     packaged = Path(str(resources.files("agent_memory.defaults").joinpath("skills", name))).resolve()
     assert packaged.is_dir(), f"packaged skill directory missing: {packaged}"
     return packaged
 
 
 def source_tree_skill_document(name: str) -> Path:
-    # The *repo source* document, addressed by path and deliberately not through
-    # resources.files(). Transport fidelity needs an oracle independent of the loader under
-    # test: routing both sides through resources.files() would compare the CLI's lookup
-    # against itself, so shipping a stale or wrong document would stay green. Going through
-    # the source tree also proves the served document is the one this repo authored.
     return PROJECT_ROOT / "src" / "agent_memory" / "defaults" / "skills" / name / "SKILL.md"
 
 
 def test_bundled_skill_names_is_nonempty() -> None:
-    # Every bundled-skill assertion below is parametrized over BUNDLED_SKILL_NAMES; an empty
-    # advertised list would collect zero cases and pass vacuously.
     assert BUNDLED_SKILL_NAMES, "the package must advertise at least one bundled skill"
 
 
@@ -679,9 +663,6 @@ def test_maintain_skill_emits_packaged_bytes_unaltered(tmp_path: Path, skill_nam
 
 @pytest.mark.parametrize("skill_name", BUNDLED_SKILL_NAMES)
 def test_maintain_skill_document_declares_the_requested_skill_name(tmp_path: Path, skill_name: str) -> None:
-    # The emitted document is a dispatch entrypoint an agent reads and follows: a caller that
-    # asks for skill X must receive a document declaring itself X, or the agent loads the
-    # wrong procedure. Asserted against the bytes the CLI actually emitted.
     emitted = run_agent_memory(tmp_path, "maintain", "skill", skill_name).stdout
 
     metadata = load_frontmatter_text(emitted).metadata
@@ -691,10 +672,6 @@ def test_maintain_skill_document_declares_the_requested_skill_name(tmp_path: Pat
 
 @pytest.mark.parametrize("skill_name", BUNDLED_SKILL_NAMES)
 def test_maintain_skill_document_reference_links_resolve(tmp_path: Path, skill_name: str) -> None:
-    # A dispatch document whose reference links dangle sends the reading agent nowhere. Link
-    # set is discovered from the emitted bytes, so a fourth reference link is covered without
-    # a test edit. Resolved against the served directory, not the source tree: the question is
-    # whether the referenced files are packaged alongside the document the CLI actually served.
     emitted = run_agent_memory(tmp_path, "maintain", "skill", skill_name).stdout
     skill_dir = bundled_skill_dir(skill_name)
 
@@ -816,7 +793,8 @@ def test_project_initialization_writes_config_indexes_and_agent_pointer(tmp_path
     assert pointer_add_types, "agent pointer must demonstrate agent-memory add invocations"
     assert [MemoryType(token) for token in pointer_add_types] == [memory_type for memory_type in MemoryType if memory_type is not MemoryType.PLAN]
     assert "agent-memory add --scope project --type plan" not in agents_pointer
-    assert "agent-memory plan add" in agents_pointer
+    assert "Use Spec Kit to plan each itree work unit. Its GitHub issue owns the current plan, tasks and progress." in agents_pointer
+    assert "agent-memory plan add" not in agents_pointer
 
     project_index_path = workspace.vault / "projects" / workspace.project_id / "index.md"
     project_index = project_index_path.read_text()
@@ -1368,7 +1346,6 @@ def test_plan_progress_discovers_nested_plan_cards(tmp_path: Path) -> None:
     assert json_records(global_progress, "unsupported_plans") == []
     assert json_records(global_progress, "findings") == []
 
-    # A malformed nested card must not silently disappear either.
     malformed = plan_path.parent.parent / "PLAN-INVALID" / "PLAN-INVALID.md"
     malformed.parent.mkdir()
     malformed.write_text("---\nid: PLAN-INVALID\ntitle: Incomplete Plan\n---\n", encoding="utf-8")
@@ -1386,8 +1363,6 @@ def test_plan_progress_uses_configured_card_root_and_counts_todos(tmp_path: Path
     cards = yaml.safe_load((workspace.vault / "_meta" / "cards.yaml").read_text(encoding="utf-8"))
     assert isinstance(cards, dict)
     cards["root"] = root
-    # A project may configure a plan type that stores structured todos and lives
-    # directly in its root, rather than nested beneath a feature.
     plan = next(card for card in cards["card_types"] if card["name"] == "plan")
     plan.update(parents=[], container="", own_dir=False)
     plan["fields"].append(
@@ -1400,7 +1375,6 @@ def test_plan_progress_uses_configured_card_root_and_counts_todos(tmp_path: Path
             ],
         }
     )
-    # The flat plan type has no child card types in this project schema.
     plan.pop("ordered_children")
     cards["card_types"] = [plan]
     cards_path.write_text(yaml.safe_dump(cards, sort_keys=False), encoding="utf-8")
@@ -2899,8 +2873,6 @@ def test_doctor_reports_cards_with_missing_stored_status(tmp_path: Path, monkeyp
     plan_path = Path(json_string(plan["path"]))
     queue = parse_json_stdout(run_agent_memory(workspace.repo, "queue", "add", "--project", workspace.project_id, "--status", "pending", "--summary", "Old queue item"))
     queue_path = Path(json_string(queue["path"]))
-    # Simulate cards written before the fix, including an explicit YAML null and a
-    # missing required status. Doctor must not repair files as a side effect.
     for path, null_status in ((feature_path, False), (plan_path, True), (queue_path, False)):
         metadata = frontmatter(path)
         metadata.pop("status")
@@ -3009,7 +2981,6 @@ def test_card_add_and_doctor_use_custom_status_set_without_explicit_status_field
     with pytest.raises(ValidationError):
         run_agent_memory(workspace.repo, "card", "add", "ticket", "TICKET-2", "--set", "title=Invalid", "--set", "status=pending")
     assert not list(workspace.vault.rglob("TICKET-2.md"))
-    # The project override must not be applied to the separately owned queue schema.
     queue = parse_json_stdout(run_agent_memory(workspace.repo, "queue", "add", "--project", workspace.project_id, "--summary", "Queue item"))
     assert frontmatter(Path(json_string(queue["path"])))["status"] == "pending"
     assert json_records(parse_json_stdout(run_agent_memory(workspace.repo, "doctor")), "card_findings") == []
@@ -3158,8 +3129,6 @@ def test_inspect_links_ignores_links_in_fenced_code_blocks(tmp_path: Path) -> No
 
 
 def test_search_keys_tolerates_note_missing_timestamp(tmp_path: Path) -> None:
-    # Issue #45: a note missing the optional `timestamp` field must not crash the
-    # record scan (search/inspect). It should still be discoverable.
     workspace = initialized_workspace(tmp_path)
     note = workspace.vault / "projects" / workspace.project_id / "decisions" / "no-timestamp.md"
     note.write_text(
@@ -3329,8 +3298,6 @@ def test_inspect_overview_reports_malformed_note_findings(tmp_path: Path) -> Non
 
 
 def test_read_memory_invalid_yaml_frontmatter_is_structured_finding(tmp_path: Path) -> None:
-    # F4: frontmatter.loads raises yaml.YAMLError on invalid YAML. The scan reports the
-    # file as a finding so the rest of the vault remains readable.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -3350,8 +3317,6 @@ def test_read_memory_invalid_yaml_frontmatter_is_structured_finding(tmp_path: Pa
 
 
 def test_note_missing_required_field_is_structured_finding(tmp_path: Path) -> None:
-    # F1: a note missing a required frontmatter field (scope) must become a path-bearing
-    # finding, not a scan-wide abort.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -3371,8 +3336,6 @@ def test_note_missing_required_field_is_structured_finding(tmp_path: Path) -> No
 
 
 def test_note_optional_field_wrong_type_is_structured_finding(tmp_path: Path) -> None:
-    # F2: a present-but-non-string optional field (timestamp: true) must become a
-    # structured finding, not a scan-wide abort.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -3392,8 +3355,6 @@ def test_note_optional_field_wrong_type_is_structured_finding(tmp_path: Path) ->
 
 
 def test_note_missing_tags_is_structured_finding(tmp_path: Path) -> None:
-    # F3: a note missing the required `tags` field must become a path-bearing finding,
-    # not a scan-wide abort.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -3413,9 +3374,6 @@ def test_note_missing_tags_is_structured_finding(tmp_path: Path) -> None:
 
 
 def test_note_empty_timestamp_reads_as_absent(tmp_path: Path) -> None:
-    # F6: an empty-string optional timestamp must read as ABSENT (None), so the note is
-    # treated as having no timestamp. Otherwise "" reaches parse_memory_timestamp("") ->
-    # datetime.fromisoformat("") -> uncaught ValueError during a --since filter.
     workspace = initialized_workspace(tmp_path)
     write_raw_project_note(
         workspace,
@@ -3437,15 +3395,11 @@ def test_note_empty_timestamp_reads_as_absent(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "Traceback" not in result.stderr
-    # Treated as having no timestamp: an absent timestamp is excluded from a since filter.
     recent = parse_json_stdout(result)
     assert project_memory_key(workspace, "decisions", "empty-timestamp") not in result_keys(recent)
 
 
 def test_outgoing_link_keys_skips_non_vault_links_and_extracts_vault_links(tmp_path: Path) -> None:
-    # F11: outgoing_link_keys owns intra-vault note-to-note edges. The markdown-it walk now
-    # yields ALL links; a non-vault link (external URL) must be SKIPPED by contract, not
-    # crash the extraction. Intra-vault .md links, including reference-style, are extracted.
     workspace = initialized_workspace(tmp_path)
     note = write_raw_project_note(
         workspace,
@@ -3470,8 +3424,6 @@ def test_outgoing_link_keys_skips_non_vault_links_and_extracts_vault_links(tmp_p
 
 
 def test_doctor_reports_non_symlink_agent_state_without_crashing(tmp_path: Path) -> None:
-    # Issue #44: a real-directory `.agents` (not a symlink) must be a structured
-    # doctor finding, not an AssertionError that aborts the whole report.
     workspace = initialized_workspace(tmp_path)
     agents = workspace.repo / ".agents"
     agents.unlink()
@@ -3624,8 +3576,6 @@ def test_inspect_links_reports_broken_wikilinks_with_file_and_target_evidence(tm
 
     assert existing["key"] == "global/advice/existing-link-target"
     assert source["key"] == source_key
-    # Broken links are findings, not a command failure. The report below carries them; a
-    # nonzero exit here would leave a caller unable to tell "found some" from "it broke".
     assert result.returncode == 0
     assert parse_json_stdout(result) == {
         "scope": "both",
@@ -3781,9 +3731,6 @@ def test_inspect_stats_real_vault(tmp_path: Path) -> None:
     for count in day_counts.values():
         assert isinstance(count, int)
         counts.append(count)
-    # Both fixture notes are created in the same run, so they share one calendar day and
-    # must land in a SINGLE day bucket of 2. A broken day-key split reports [1, 1] (two
-    # buckets) with the same total; the exact histogram shape excludes that shape.
     assert counts == [2]
 
 
@@ -3807,10 +3754,6 @@ def test_inspect_export_profiles_real_vault(tmp_path: Path) -> None:
 
 
 def test_merge_probe_payloads_treats_absent_skipped_files_as_no_skips() -> None:
-    # Probe 0.6.0's --format json contract emits "skipped_files" only when it skips
-    # files under the token budget; when nothing is skipped it omits the key entirely.
-    # agent-memory must interpret that omission as the documented "no files skipped" outcome and
-    # produce an empty skipped-files section, not raise.
     payload_no_skips: JsonObject = {
         "limits": {"total_bytes": 685, "total_tokens": 201},
         "results": [{"file": "/vault/note.md", "score": 0.42}],
@@ -3822,9 +3765,6 @@ def test_merge_probe_payloads_treats_absent_skipped_files_as_no_skips() -> None:
 
 
 def test_merge_probe_payloads_rejects_null_skipped_files() -> None:
-    # When the key is present it must carry a real list. A null or non-list value is a
-    # malformed/incompatible Probe payload, not a "no skips" outcome, and must fail
-    # loudly instead of being silently coerced to an empty section.
     payload_null_skips: JsonObject = {
         "limits": {"total_bytes": 685, "total_tokens": 201},
         "results": [{"file": "/vault/note.md", "score": 0.42}],
@@ -3836,11 +3776,6 @@ def test_merge_probe_payloads_rejects_null_skipped_files() -> None:
 
 
 def test_ranked_results_payload_is_stable_when_probe_adds_a_phantom(tmp_path: Path) -> None:
-    # The captured specimen: this exact record appeared in some ranked runs and not others,
-    # over a byte-identical vault and an identical query, which is what made ranked output
-    # irreproducible. It scored zero and carried no excerpt, so it matched nothing a reader
-    # could see. The payload boundary must return the same ranked response whether Probe
-    # includes that record or omits it.
     workspace = initialized_workspace(tmp_path)
     config = operations_load_project_config(workspace.repo)
     real_match: JsonObject = {
@@ -3908,8 +3843,6 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     feature_key = f"projects/{workspace.project_id}/plans/features/FEATURE-DEMO/FEATURE-DEMO"
     search = parse_json_stdout(run_agent_memory(workspace.repo, "search", "--scope", "project", "plan-card-signal-9c1f"))
     assert feature_key in result_keys(search)
-    # A card is off-limits to the memory commands: reading one through the note path kept
-    # the body and dropped every schema field, so `retrieve` refuses the key outright.
     with pytest.raises(MemoryOperationError):
         run_agent_memory(workspace.repo, "retrieve", feature_key)
     shown = parse_json_stdout(run_agent_memory(workspace.repo, "feature", "show", "FEATURE-DEMO"))
@@ -3917,7 +3850,6 @@ def test_plan_cli_lifecycle_and_unified_search(tmp_path: Path) -> None:
     assert shown["body"] == "# FEATURE-DEMO\n"
     assert json_object(shown["metadata"])["status"] == "in-progress"
 
-    # migrate an in-repo card tree (carrying trackerStatus) into the vault
     source = tmp_path / "incoming" / "plans" / "features" / "FEATURE-MIG"
     source.mkdir(parents=True)
     (source / "FEATURE-MIG.md").write_text(
@@ -4169,17 +4101,12 @@ def test_plan_add_parented_type_without_parent_fails_cleanly_before_root_write(t
 
 
 def unbound_dir(tmp_path: Path) -> Path:
-    # A directory with no project binding and no git repository at all, modeling the
-    # `$HOME`/unbound-repo case from issue #25 where global operations must still work.
     loose = tmp_path / "loose"
     loose.mkdir()
     return loose
 
 
 def test_global_add_and_search_run_without_project_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Issue #25: storing or searching a *global* memory must not require the cwd to be a
-    # bound project. The global vault is resolved from AGENT_MEMORY_VAULT (falling back to
-    # the shipped default) independent of any cwd project binding file.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))
@@ -4207,8 +4134,6 @@ def test_global_add_and_search_run_without_project_binding(tmp_path: Path, monke
 
 
 def test_global_doctor_runs_without_project_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Issue #25: `doctor` must not crash from an unbound directory; it reports global vault
-    # and tool health and marks the absence of a project binding instead of raising.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     monkeypatch.setenv("AGENT_MEMORY_VAULT", str(vault))
@@ -4221,10 +4146,6 @@ def test_global_doctor_runs_without_project_binding(tmp_path: Path, monkeypatch:
 
 
 def test_global_op_error_names_init_global_only_when_vault_missing(tmp_path: Path) -> None:
-    # Issue #25: when the global vault genuinely does not exist, the error names that
-    # condition and the `maintain init-global` remedy only -- never `init project` in the
-    # unrelated cwd. Run as a real subprocess so an uncaught error surfaces as a nonzero
-    # exit with the message on stderr.
     missing_vault = tmp_path / "no-such-vault"
     env = agent_memory_env()
     env["AGENT_MEMORY_VAULT"] = str(missing_vault)
@@ -4249,8 +4170,6 @@ def test_global_op_error_names_init_global_only_when_vault_missing(tmp_path: Pat
 
 
 def test_queue_add_and_list_round_trip_across_projects(tmp_path: Path) -> None:
-    # Issue #39: the queue is a single global-vault surface, not project-local checkout
-    # state. Two distinct project bindings that share one vault must see the same item.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
@@ -4299,8 +4218,6 @@ def test_queue_add_and_list_round_trip_across_projects(tmp_path: Path) -> None:
 
 
 def test_queue_add_rejects_schema_invalid_items_without_writing(tmp_path: Path) -> None:
-    # Issue #39: malformed queue items are rejected by the card-schema path before any
-    # global queue file is written.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "queue-project-a")
@@ -4353,8 +4270,6 @@ def test_queue_add_rejects_schema_invalid_items_without_writing(tmp_path: Path) 
 
 
 def test_queue_add_requires_vault_owned_card_schema(tmp_path: Path) -> None:
-    # Issue #39: the global queue is a vault-owned card surface. Removing the vault schema
-    # must fail loudly rather than falling back to the packaged schema.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     (vault / "_meta" / "cards.yaml").unlink()
@@ -4379,8 +4294,6 @@ def test_queue_add_requires_vault_owned_card_schema(tmp_path: Path) -> None:
 
 
 def test_queue_item_cannot_be_added_through_project_card_command(tmp_path: Path) -> None:
-    # Issue #39: queue-item is a schema-defined card type, but creation belongs to the
-    # global queue command, not the project-local generic card command.
     workspace = initialized_workspace(tmp_path)
 
     result = run_agent_memory_subprocess(
@@ -4403,12 +4316,6 @@ def test_queue_item_cannot_be_added_through_project_card_command(tmp_path: Path)
 
 
 def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Card Schema System (PR #35): `inspect schema` must advertise the card types the
-    # *configured* vault will actually enforce and route by. From an unbound cwd with a
-    # global vault configured via AGENT_MEMORY_VAULT, that vault's own `_meta/cards.yaml`
-    # owns the advertised schema -- not the tool's packaged defaults. Here the vault
-    # declares a `signal` type that is absent from the packaged defaults, so a schema that
-    # advertised packaged types would omit it.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     cards_path = vault / "_meta" / "cards.yaml"
@@ -4447,12 +4354,6 @@ def test_inspect_schema_advertises_configured_global_vault_card_types_when_unbou
 
 
 def test_inspect_schema_advertises_packaged_defaults_when_no_vault_initialized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Card Schema System (PR #35): the honest no-vault branch. From an unbound cwd whose
-    # configured global vault (AGENT_MEMORY_VAULT) is NOT initialized, `inspect schema`
-    # advertises exactly the tool's packaged default card types. It must select that answer
-    # by an explicit state query -- not by naively resolving the global vault, which would
-    # raise GlobalVaultNotInitializedError and abort the command. A regression that dropped
-    # the initialized-vault guard would crash here instead of returning the packaged schema.
     uninitialized_vault = tmp_path / "empty-vault"
     uninitialized_vault.mkdir()
     monkeypatch.setenv("AGENT_MEMORY_VAULT", str(uninitialized_vault))
@@ -4465,7 +4366,6 @@ def test_inspect_schema_advertises_packaged_defaults_when_no_vault_initialized(t
 
 
 def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:
-    # Issue #22: a bare `search <term>` with no --scope searches both project and global.
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
         workspace,
@@ -4490,7 +4390,6 @@ def test_search_defaults_to_both_scopes(tmp_path: Path) -> None:
 
 def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    # Configure the vault to require GPG signing and use a failing gpg program
     subprocess.run(["git", "config", "commit.gpgsign", "true"], cwd=workspace.vault, check=True)
     subprocess.run(["git", "config", "gpg.program", "false"], cwd=workspace.vault, check=True)
 
@@ -4511,27 +4410,22 @@ def test_atomic_add_rollback_on_commit_failure(tmp_path: Path) -> None:
     assert "gpg" in str(exc_info.value).lower() or "signing" in str(exc_info.value).lower()
     assert "agent-memory maintain skill vault-maintenance" in str(exc_info.value)
 
-    # Note file should not exist
     note_path = workspace.vault / "global" / "traps" / "failing-commit-memory.md"
     assert not note_path.exists()
 
-    # index.md should not have the link
     index_path = workspace.vault / "global" / "traps" / "index.md"
     assert "Failing Commit Memory" not in index_path.read_text(encoding="utf-8")
 
-    # Vault git status is clean
     status = subprocess.run(["git", "status", "--short"], cwd=workspace.vault, check=True, text=True, capture_output=True)
     assert not status.stdout.strip()
 
 
 def test_add_commits_only_operation_pathspecs(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    # Manually create and stage an unrelated file in the vault
     unrelated_file = workspace.vault / "unrelated.txt"
     unrelated_file.write_text("unrelated content", encoding="utf-8")
     subprocess.run(["git", "add", "unrelated.txt"], cwd=workspace.vault, check=True)
 
-    # Perform a successful add command
     add_cli_memory(
         workspace,
         scope="global",
@@ -4540,37 +4434,30 @@ def test_add_commits_only_operation_pathspecs(tmp_path: Path) -> None:
         content="some content",
     )
 
-    # The unrelated file should still be staged (not committed)
     status = subprocess.run(["git", "status", "--short"], cwd=workspace.vault, check=True, text=True, capture_output=True)
     assert "A  unrelated.txt" in status.stdout
 
 
 def test_delete_malformed_note_without_frontmatter(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
-    # Write a frontmatter-less note
     note_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "malformed.md"
     note_path.parent.mkdir(parents=True, exist_ok=True)
     note_path.write_text("No frontmatter here\njust plain text\n", encoding="utf-8")
 
-    # Manually link it in the index.md
     index_path = workspace.vault / "projects" / workspace.project_id / "decisions" / "index.md"
     index_path.write_text(index_path.read_text("utf-8") + "\n* [Malformed](malformed.md) - description\n", encoding="utf-8")
 
-    # Commit the manual addition to keep vault clean
     subprocess.run(["git", "add", "."], cwd=workspace.vault, check=True)
     subprocess.run(["git", "commit", "-m", "Manual malformed note addition"], cwd=workspace.vault, check=True)
 
-    # Delete the malformed note using the CLI
     run_agent_memory(
         workspace.repo,
         "delete",
         f"projects/{workspace.project_id}/decisions/malformed",
     )
 
-    # Malformed file should be gone
     assert not note_path.exists()
 
-    # The link should be gone from index.md
     assert "Malformed" not in index_path.read_text(encoding="utf-8")
 
 
@@ -4579,18 +4466,14 @@ def test_init_project_idempotent_when_vault_dir_exists(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
 
-    # Manually create the vault project directory beforehand
     project_dir = vault / "projects" / git_repo.project_id
     project_dir.mkdir(parents=True)
 
-    # Initialize project memory (should reconcile instead of crashing with FileExistsError)
     run_agent_memory(git_repo.path, "init", "project", "--vault", str(vault))
 
-    # Assert binding resolves through the registry-backed project state, not a repo-local config file.
     assert not (git_repo.path / ".agent-memory.toml").exists()
     assert operations_load_project_config(git_repo.path).project_id == git_repo.project_id
 
-    # Rerun the initialization (should be idempotent and exit 0)
     run_agent_memory(git_repo.path, "init", "project", "--vault", str(vault))
 
 
@@ -4642,14 +4525,12 @@ card_types:
 def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
-    # Scenario 1: plan add --help documents required fields & enums
     help_result = run_agent_memory_subprocess(workspace.repo, "plan", "add", "--help")
     assert "status" in help_result.stdout
     assert "parents" in help_result.stdout
     assert "successCriteria" in help_result.stdout
     assert "needs-human-input" in help_result.stdout or "blocked" in help_result.stdout
 
-    # Scenario 2: bad enum validation produces clean field-level error without traceback
     invalid_enum_arguments = (
         "plan",
         "add",
@@ -4670,7 +4551,6 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     assert [(error["loc"], error["type"]) for error in excinfo.value.errors()] == [(("status",), "value_error")]
     assert_cli_failure(run_agent_memory_subprocess(workspace.repo, *invalid_enum_arguments))
 
-    # Scenario 3: malformed --set input does not escape as Cyclopts AssertionError
     malformed_set = run_agent_memory_subprocess(
         workspace.repo,
         "plan",
@@ -4693,7 +4573,6 @@ def test_plan_add_help_and_validation_errors(tmp_path: Path) -> None:
     assert "AssertionError" not in malformed_set.stderr
     assert "Traceback" not in malformed_set.stderr
 
-    # Scenario 4: body file support
     body_file = tmp_path / "body.md"
     body_file.write_text("### Markdown body from file\nWith some content\n", encoding="utf-8")
 
@@ -4850,7 +4729,6 @@ def test_root_list_global_memory_type_does_not_require_project_card_schema(tmp_p
 def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     workspace = initialized_workspace(tmp_path)
 
-    # Scenario 1: add --type instead of --scope
     r1 = run_agent_memory_subprocess(
         workspace.repo,
         "add",
@@ -4863,21 +4741,15 @@ def test_cli_misuse_diagnostics(tmp_path: Path) -> None:
     )
     assert_cli_failure(r1)
 
-    # Scenario 2: a genuinely missing required argument -- the query, since --mode now
-    # defaults -- reaches the caller as a typed cyclopts error, and as a structured error
-    # rather than a traceback once main() renders it.
     with pytest.raises(cyclopts.exceptions.MissingArgumentError):
         run_agent_memory(workspace.repo, "search", "content")
     assert_cli_failure(run_agent_memory_subprocess(workspace.repo, "search", "content"))
 
-    # Scenario 3: invalid search mode
     unsupported_mode = "substring"
     with pytest.raises(cyclopts.exceptions.CoercionError):
         run_agent_memory(workspace.repo, "search", "content", "query", "--mode", unsupported_mode)
     assert_cli_failure(run_agent_memory_subprocess(workspace.repo, "search", "content", "query", "--mode", unsupported_mode))
 
-    # Scenario 4: a type no listing can hold is rejected by name. Bare `list` is not misuse
-    # -- it is the documented default path, proved positively in the list default test.
     with pytest.raises(MemoryOperationError):
         run_agent_memory(workspace.repo, "list", "--type", "descision")
     assert_cli_failure(run_agent_memory_subprocess(workspace.repo, "list", "--type", "descision"))
@@ -4897,13 +4769,9 @@ def test_bare_command_groups_fail_without_stdout(tmp_path: Path, arguments: tupl
     assert result.stdout == ""
 
 
-# --- record-model wave one (#99): regressions at the CLI boundary ----------------------
 
 
 def stored_card_parts(path: Path) -> tuple[str, str]:
-    # Raw split of a stored card, deliberately not routed through cards.storage.split_card:
-    # the frontmatter claim below is about the bytes on disk, so re-rendering them through
-    # the writer's own YAML dump would compare the writer against itself.
     opening, delimiter, rest = path.read_text(encoding="utf-8").partition("---\n")
     assert opening == "" and delimiter == "---\n", f"card {path} does not open with a frontmatter delimiter"
     block, closing, body = rest.partition("---\n")
@@ -4916,15 +4784,10 @@ def project_card_path(workspace: CliWorkspace, *parts: str) -> Path:
 
 
 def documented_card_prefixes(document: str) -> dict[str, str]:
-    # The card-type table the emitted skill document states as its command surface, read
-    # back as data so it can be compared against the schema the CLI itself advertises.
     return dict(re.findall(r"^\| `([a-z-]+)` \| `([A-Z]+)-` \|", document, flags=re.MULTILINE))
 
 
 def test_card_update_replaces_the_body_and_leaves_frontmatter_byte_identical(tmp_path: Path) -> None:
-    # Revising a card's prose was delete-and-re-add or a hand edit of the vault file, because
-    # update reached frontmatter fields only. Byte identity is the load-bearing half: a body
-    # write that re-renders the frontmatter reorders or retypes fields nobody asked to change.
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(
         workspace.repo,
@@ -4955,9 +4818,6 @@ def test_card_update_replaces_the_body_and_leaves_frontmatter_byte_identical(tmp
 
 
 def test_show_card_owned_by_another_project_raises_a_typed_lookup_error(tmp_path: Path) -> None:
-    # One vault holds every project's cards, so an id from a sibling project is an ordinary
-    # miss a caller has to handle, not a broken invariant. It arrived as a bare assertion and
-    # a traceback; the recovery route is the caller's decision, so the failure must be typed.
     vault = tmp_path / "vault"
     run_agent_memory(tmp_path, "maintain", "init-global", "--vault", str(vault))
     project_a = initialized_git_repo_with_remote(tmp_path, "project-a", "cards-project-a")
@@ -4974,21 +4834,15 @@ def test_show_card_owned_by_another_project_raises_a_typed_lookup_error(tmp_path
         plan_title="Plan owned by B",
         description_signal="cross-project-card-6d2e",
     )
-    # Project A owns cards of its own, so the miss is "not this project's card" rather than
-    # "this project has no card tree yet"; both used to raise the same bare assertion.
     run_agent_memory(project_a.path, "feature", "add", "FEATURE-A-OWNED", "--set", "title=Owned by A")
 
     with pytest.raises(CardLookupError):
         run_agent_memory(project_a.path, "plan", "show", "PLAN-B-OWNED")
 
-    # The id is real: the lookup failed over ownership, not over a card that exists nowhere.
     assert parse_json_stdout(run_agent_memory(project_b.path, "plan", "show", "PLAN-B-OWNED"))["id"] == "PLAN-B-OWNED"
 
 
 def test_plan_add_parent_places_the_card_and_writes_the_parents_link(tmp_path: Path) -> None:
-    # --parent carried placement only, so the containment edge had to be restated as
-    # `--set parents`, and a caller who gave only --parent failed schema validation on the
-    # field the option already knew. One option, one meaning: location and link together.
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(workspace.repo, "feature", "add", "FEATURE-PARENT", "--set", "title=Parent feature")
     run_agent_memory(
@@ -5020,10 +4874,6 @@ def test_plan_add_parent_places_the_card_and_writes_the_parents_link(tmp_path: P
 
 
 def test_root_card_tagged_with_its_own_id_validates_clean(tmp_path: Path) -> None:
-    # A tagged-ancestor type roots its own subtree, so at that root the tag its descendants
-    # inherit is the root's own id. Declaring it was reported as tags without a tagged
-    # ancestor, which made the rule unsatisfiable: the root could not carry the tag its
-    # children were required to carry.
     workspace = initialized_workspace(tmp_path)
     add_cli_plan_tree(
         workspace,
@@ -5035,15 +4885,11 @@ def test_root_card_tagged_with_its_own_id_validates_clean(tmp_path: Path) -> Non
         plan_title="Inheriting plan",
         description_signal="self-tag-signal-4b7d",
     )
-    # The descendants already carry FEATURE-SELFTAG as their inherited ancestor tag; the root
-    # now declares the same tag it hands down.
     run_agent_memory(workspace.repo, "feature", "update", "FEATURE-SELFTAG", "--set", "tags=FEATURE-SELFTAG")
 
     clean = parse_json_stdout(run_agent_memory(workspace.repo, "card", "validate"))
     assert json_array(clean["problems"]) == []
 
-    # The rule still binds: a root carrying a tag that is not its own id has no tagged
-    # ancestor to justify it, so exactly that card is reported and the self-tagged root is not.
     run_agent_memory(
         workspace.repo,
         "feature",
@@ -5059,18 +4905,12 @@ def test_root_card_tagged_with_its_own_id_validates_clean(tmp_path: Path) -> Non
 
 
 def probe_result_scores(payload: JsonObject) -> dict[Path, JsonValue]:
-    # File -> relevance score. Scoring is what ranked mode does and the other two modes do
-    # not: exact returns line matches and fuzzy returns keys, neither of which ranks anything.
     records = json_records(payload, "results")
     assert all("bm25_score" in record for record in records), "ranked results carry a relevance score; this payload came from another search mode"
     return {Path(json_string(record["file"])).resolve(): record["bm25_score"] for record in records}
 
 
 def test_search_content_without_mode_runs_the_ranked_search(tmp_path: Path) -> None:
-    # `search content` rejected a call that named no mode. Ranked is the mode a caller then
-    # retried with. Judged on one run rather than against a second ranked run: probe varies
-    # its excerpt window and its block set between identical calls, but a scored answer over
-    # the scoped corpus is something only the ranked mode ever produces.
     workspace = initialized_workspace(tmp_path)
     project_note = add_cli_memory(
         workspace,
@@ -5095,9 +4935,6 @@ def test_search_content_without_mode_runs_the_ranked_search(tmp_path: Path) -> N
 
 
 def test_inspect_paths_without_kind_lists_every_path_class(tmp_path: Path) -> None:
-    # `inspect paths` rejected a call that named no path class. All is the class that answers
-    # "where does this vault keep things", so the defaulted answer must span roots, indexes,
-    # and notes rather than any single one of them.
     workspace = initialized_workspace(tmp_path)
     note = add_cli_memory(
         workspace,
@@ -5132,9 +4969,6 @@ INSPECT_FORMAT_OPTIONAL_INVOCATIONS: tuple[tuple[str, ...], ...] = (
 
 
 def test_inspect_commands_answer_without_the_format_option(tmp_path: Path) -> None:
-    # Each of these eight commands emits exactly one format and rejected the call that did
-    # not name it. The answer they give under an explicit --format is proved by the inspect
-    # tests above, so serving that same answer with the option omitted is the whole claim.
     workspace = initialized_workspace(tmp_path)
     note = add_cli_memory(
         workspace,
@@ -5154,10 +4988,6 @@ def test_inspect_commands_answer_without_the_format_option(tmp_path: Path) -> No
 
 
 def test_list_spans_every_type_by_default_and_rejects_an_undeclared_type(tmp_path: Path) -> None:
-    # The two halves of making --type optional, one line apart because the distinction is
-    # the point: absence means every type, while a name nothing declares can no longer be
-    # answered with an empty list and a zero exit, which read as "the vault holds none of
-    # these" for what was only a typo.
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(workspace.repo, "feature", "add", "FEATURE-LISTED", "--set", "title=Listed feature")
     add_cli_memory(workspace, scope="project", memory_type="decision", title="Listed Decision", content="A listed decision record.")
@@ -5165,8 +4995,6 @@ def test_list_spans_every_type_by_default_and_rejects_an_undeclared_type(tmp_pat
     listed = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--type", "feature", "--scope", "project"))
     assert {json_string(record["path"]) for record in json_records(listed, "results")} == {str(project_card_path(workspace, "features", "FEATURE-LISTED", "FEATURE-LISTED.md"))}
 
-    # Absence is the valid way to ask for everything: the answer spans types, so a default
-    # implemented as one chosen type -- or as the literal "" or "all" -- fails here.
     every_type = parse_json_stdout(run_agent_memory(workspace.repo, "list", "--scope", "project"))
     assert {json_string(record["type"]) for record in json_records(every_type, "results")} == {"feature", "decision"}
 
@@ -5175,9 +5003,6 @@ def test_list_spans_every_type_by_default_and_rejects_an_undeclared_type(tmp_pat
 
 
 def test_set_with_an_empty_value_clears_a_list_field(tmp_path: Path) -> None:
-    # The capability that replaced --empty-set, and the only way back from a populated list:
-    # repeating --set appends, so without this an unwanted entry could be removed only by
-    # deleting the card and adding it again. An appended "" is not a cleared list.
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(
         workspace.repo,
@@ -5200,9 +5025,6 @@ def test_set_with_an_empty_value_clears_a_list_field(tmp_path: Path) -> None:
 
 
 def test_papercut_files_and_triages_through_the_generated_card_lifecycle(tmp_path: Path) -> None:
-    # A papercut is filed mid-task with whatever the agent has, which is a title, and triaged
-    # later. It rides the generated card lifecycle every other type uses: no bespoke command,
-    # no bespoke storage, and the filed card leaves the vault valid at both steps.
     workspace = initialized_workspace(tmp_path)
     run_agent_memory(workspace.repo, "papercut", "add", "PC-STALE-SKILL", "--set", "title=maintain skill served a stale document")
 
@@ -5231,10 +5053,6 @@ def test_papercut_files_and_triages_through_the_generated_card_lifecycle(tmp_pat
 
 
 def test_maintain_skill_serves_the_agent_memory_document_from_outside_the_checkout(tmp_path: Path) -> None:
-    # The document is served through the package resource loader, so it is reachable only
-    # from inside the installed package; a repo-root copy resolved for no caller. The reader
-    # is an agent following it as the command surface, so it must describe this CLI's own
-    # card schema rather than merely be a document that exists.
     workspace = initialized_workspace(tmp_path)
     run_directory = unbound_dir(tmp_path)
     assert not run_directory.is_relative_to(PROJECT_ROOT), "the served document must resolve without the source checkout on the path"

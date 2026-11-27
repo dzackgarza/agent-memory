@@ -1,7 +1,7 @@
 # agent-memory
 
 `agent-memory` is a global and project-scoped Markdown memory database for agents.
-It stores memories and vault-backed plan cards as plain files in an IWE-backed vault and exposes a small CLI for normal agent work: create, retrieve, update, delete, search, inspect, and plan-card lifecycle operations.
+It stores reusable project knowledge as plain files in an IWE-backed vault. Use itree to select work and Spec Kit to plan it on the owning GitHub issue.
 
 ## Install And Setup
 
@@ -95,45 +95,17 @@ Validate the current repository setup:
 agent-memory doctor
 ```
 
-## Plan Cards
+## Reading existing plan cards
 
-Project plan cards live in the same vault under `projects/<project-id>/plans/`. Card definitions generate their own CLI groups, so `feature add`, `plan add`, `phase add`, and `task add` all route through the same card creation engine.
-`plan` is a configured card type with plan-specific extras such as validation and DAG rendering, not a separate memory-note write path.
-
-Create plan cards in the vault:
-
-```bash
-agent-memory feature add FEATURE-DEMO --set title=Demo --set status=in-progress --set description="Plan card in the vault" --set plans=[[PLAN-DEMO]]
-agent-memory plan add PLAN-DEMO --parent FEATURE-DEMO --set title=Plan --set status=in-progress --set parents=[[FEATURE-DEMO]] --set successCriteria=ships --set tasks=[[TASK-DEMO]] --set tags=FEATURE-DEMO
-agent-memory phase add PHASE-DEMO --parent PLAN-DEMO --set title=Phase --set status=in-progress --set parents=[[PLAN-DEMO]] --set successCriteria=phase-ships --set tasks=[[TASK-DEMO]] --set tags=FEATURE-DEMO --set tags=PLAN-DEMO
-agent-memory task add TASK-DEMO --parent PHASE-DEMO --set title=Task --set status=in-progress --set parents=[[PHASE-DEMO]] --set successCriteria=task-ships --set tags=FEATURE-DEMO --set tags=PLAN-DEMO --set tags=PHASE-DEMO
-```
-
-When `add` omits `--set status=...`, the new card stores its configured status set's default, including for types whose stored status is required. An explicit status still takes precedence and is validated against the schema. `queue add` uses the same rule for an omitted `--status`.
-
-`agent-memory doctor` lists missing or null stored statuses in `card_findings`, with the card's path and configured default. It checks the bound project's card tree and the global queue (only the global queue when unbound), using the appropriate schema for each. It does not change existing files.
-
-Validate and render the shared DAG:
-
-```bash
-agent-memory plan validate
-agent-memory plan dag
-```
-
-Migrate an existing in-repo card tree into the vault:
-
-```bash
-agent-memory plan migrate --from .agents/plans
-```
-
-Search and retrieve plan cards through the same vault-key surface:
+When moving an existing plan into the issue tree, read the card and its dependencies.
+Match each open obligation to its owning issue. Preserve task order, acceptance
+criteria and evidence. Resume work through Spec Kit on the issue.
 
 ```bash
 agent-memory search --scope project "plan card"
 agent-memory retrieve projects/<project-id>/plans/features/FEATURE-DEMO/FEATURE-DEMO
+agent-memory plan dag
 ```
-
-`plan validate` and `plan dag` load every registered project plans root from the vault metadata, so cross-project `dependsOn` references are validated and rendered from one shared graph.
 
 ## Search
 
