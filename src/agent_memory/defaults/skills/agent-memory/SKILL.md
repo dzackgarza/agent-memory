@@ -183,35 +183,9 @@ Optional fields on a `papercut`: `status`, `category` (`tool-failure`, `broken-e
 A card with several parents uses repeated assignments: `--set parents=[[FEATURE-A]] --set parents=[[FEATURE-B]]`. An explicit `parents` assignment replaces the link from `--parent`. Never write a bare `--set parents=` to add one.
 An empty value clears the field.
 
-Build the graph top down — a plan needs its feature to exist:
-
-```bash
-agent-memory feature add FEATURE-CLI-FRICTION --set title="CLI discovery friction"
-
-printf '# Close the friction backlog\n\nMeasured from the invocation corpus.\n' \
-  > /tmp/plan-body.md
-
-agent-memory plan add PLAN-CLOSE-FRICTION-BACKLOG --parent FEATURE-CLI-FRICTION \
-  --set title="Close the friction backlog" \
-  --set status=in-progress \
-  --set description="Remove the measured CLI-discovery friction." \
-  --set successCriteria="Skill states the command surface" \
-  --set successCriteria="Help probes fall to zero" \
-  --body-file /tmp/plan-body.md
-
-agent-memory phase add PHASE-DOCS --parent PLAN-CLOSE-FRICTION-BACKLOG \
-  --set title="Documentation" \
-  --set description="Rewrite the shipped skill document." \
-  --set successCriteria="Interface section is findable first"
-
-agent-memory task add TASK-REWRITE-SKILL --parent PHASE-DOCS \
-  --set title="Rewrite the skill document" \
-  --set description="State the surface instead of delegating to --help." \
-  --set successCriteria="Cold agent reaches a correct first invocation"
-
-agent-memory plan update PLAN-CLOSE-FRICTION-BACKLOG --set status=complete
-agent-memory plan show PLAN-CLOSE-FRICTION-BACKLOG
-```
+To recover a plan, read it with `agent-memory plan show PLAN-ID`. Trace its
+dependencies with `agent-memory plan dag` and match the tasks to their itree
+issue before resuming work through Spec Kit.
 
 Card bodies are editable through the CLI. Never hand-edit vault Markdown to change a body.
 

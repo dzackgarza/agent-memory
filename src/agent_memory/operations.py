@@ -640,7 +640,7 @@ def add_memory(
     cwd: Path,
 ) -> JsonObject:
     if memory_type is MemoryType.PLAN:
-        raise MemoryOperationError("plain plan memories are not supported; use agent-memory plan add so cards.yaml validates the task tree")
+        raise MemoryOperationError("Use Spec Kit on the owning itree issue for project plans.")
     config = config_for_memory_scope(scope, cwd)
     slug = memory_slug(title)
     directory = memory_directory(config, scope, memory_type)

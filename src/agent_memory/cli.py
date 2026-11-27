@@ -125,8 +125,6 @@ todo_app = app.command(App(name="todo", help="Mutate structured todos on vault p
 queue_app = app.command(App(name="queue", help="Append and list global agent work queue items."))
 
 
-# Shared by every add command. It cannot name this card type's parent, because the option is
-# declared once for all of them; each command's description names its own rule.
 PARENT_OPTION_HELP = "Parent card id; it sets both the location and the parents link. Root types take none, every other type requires one - the description above names which."
 
 
@@ -186,7 +184,7 @@ def init_project_command(
 def add_command(
     *,
     scope: Annotated[MemoryScope, Parameter(help="Memory scope: project or global.")],
-    memory_type: Annotated[MemoryType, Parameter(name="type", help="Memory type directory to write into. Plain plan memories are rejected; use agent-memory plan add.")],
+    memory_type: Annotated[MemoryType, Parameter(name="type", help="Memory type to write. Use Spec Kit on the owning itree issue for project plans.")],
     title: Annotated[str, Parameter(help="Memory title. The key is generated from this title.")],
     content: Annotated[str, Parameter(help="Markdown body content to store under the title.")],
 ) -> None:
@@ -424,8 +422,6 @@ def inspect_links_command(
     if mode is InspectLinksMode.BROKEN:
         if key is not None:
             raise CliUsageError(f"inspect links --mode broken takes no key; drop {key!r}, or use --mode record")
-        # Broken links are findings, not a command failure: exiting nonzero while printing
-        # a valid report leaves a caller unable to tell "found some" from "the command broke".
         emit(inspect_broken_links(scope=scope, output_format=output_format, cwd=Path.cwd()))
         return None
     if key is None:
@@ -583,8 +579,6 @@ def list_command(
 
 
 def read_card_body(body: str | None, body_file: Path | None) -> str | None:
-    # None means the caller passed neither option. update leaves the stored body alone;
-    # add substitutes a heading, since a new card has no stored body to keep.
     if body is not None and body_file is not None:
         raise CliUsageError("Cannot specify both --body and --body-file")
     if body_file is None:
@@ -894,8 +888,6 @@ def field_help(config: CardSystemConfig, card_type_name: str, field: FieldSpec) 
 
 
 def set_required_fields(config: CardSystemConfig, card_type: CardTypeSpec) -> list[str]:
-    # ID and parents come from positional/parent arguments; creation supplies a missing
-    # status from the status set. None belongs on the required --set line.
     supplied_elsewhere = {"id", "status", "parents"} if card_type.parents else {"id", "status"}
     return [field_help(config, card_type.name, field) for field in card_type.fields if field.required and field.name not in supplied_elsewhere]
 

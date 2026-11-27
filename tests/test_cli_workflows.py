@@ -1075,7 +1075,7 @@ def test_generic_add_refuses_plain_plan_memory(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
-    assert "agent-memory plan add" in result.stderr
+    assert "Use Spec Kit on the owning itree issue" in result.stderr
     assert "Traceback" not in result.stderr
     plain_plan = workspace.vault / "projects" / workspace.project_id / "plans" / "tree-less-plan.md"
     assert not plain_plan.exists()
